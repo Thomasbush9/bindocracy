@@ -1,0 +1,106 @@
+{
+  "caliby": {
+    "tool": "caliby",
+    "elapsed_min": 1.35,
+    "jobid": "42130000",
+    "max_rss_gb": 4.93,
+    "cpus": 8,
+    "req_mem_gb": 32.0,
+    "gpu_mem_peak": 4.1416015625,
+    "gpu_util_mean": 19.8,
+    "gpu_util_peak": 99,
+    "prealloc": "<unset, JAX preallocates ~75%>"
+  },
+  "pxdesign": {
+    "tool": "pxdesign",
+    "elapsed_min": 15.4,
+    "jobid": "42120828",
+    "max_rss_gb": 13.42,
+    "cpus": 16,
+    "req_mem_gb": 96.0,
+    "gpu_mem_peak": 6.2255859375,
+    "gpu_util_mean": 32.131147540983605,
+    "gpu_util_peak": 100,
+    "prealloc": "<unset, JAX preallocates ~75%>"
+  },
+  "boltzgen": {
+    "tool": "boltzgen",
+    "elapsed_min": 23.133333333333333,
+    "jobid": "42120827",
+    "max_rss_gb": 27.62,
+    "cpus": 8,
+    "req_mem_gb": 96.0,
+    "gpu_mem_peak": 7.6240234375,
+    "gpu_util_mean": 53.924731182795696,
+    "gpu_util_peak": 100,
+    "prealloc": "<unset, JAX preallocates ~75%>"
+  },
+  "proteina_complexa": {
+    "tool": "proteina_complexa",
+    "elapsed_min": 25.933333333333334,
+    "jobid": "42120960",
+    "max_rss_gb": 8.91,
+    "cpus": 16,
+    "req_mem_gb": 160.0,
+    "gpu_mem_peak": 15.8623046875,
+    "gpu_util_mean": 13.067307692307692,
+    "gpu_util_peak": 100,
+    "prealloc": "false"
+  },
+  "rfdiffusion": {
+    "tool": "rfdiffusion",
+    "elapsed_min": 41.15,
+    "jobid": "42124002",
+    "max_rss_gb": 3.39,
+    "cpus": 8,
+    "req_mem_gb": 64.0,
+    "gpu_mem_peak": 6.9130859375,
+    "gpu_util_mean": 77.9030303030303,
+    "gpu_util_peak": 91,
+    "prealloc": "<unset, JAX preallocates ~75%>"
+  },
+  "protein_hunter": {
+    "tool": "protein_hunter",
+    "elapsed_min": 59.733333333333334,
+    "jobid": "42120347",
+    "max_rss_gb": 3.82,
+    "cpus": 8,
+    "req_mem_gb": 64.0,
+    "gpu_mem_peak": 13.7724609375,
+    "gpu_util_mean": 51.32217573221757,
+    "gpu_util_peak": 100,
+    "prealloc": "<unset, JAX preallocates ~75%>"
+  },
+  "genie3": {
+    "tool": "genie3",
+    "elapsed_min": 64.3,
+    "jobid": "42138152",
+    "max_rss_gb": 20.54,
+    "cpus": 16,
+    "req_mem_gb": 96.0,
+    "gpu_mem_peak": 4.4853515625,
+    "gpu_util_mean": 34.249027237354085,
+    "gpu_util_peak": 100,
+    "prealloc": "<unset, JAX preallocates ~75%>"
+  },
+  "mosaic": {
+    "tool": "mosaic",
+    "elapsed_min": 280.03333333333336,
+    "jobid": "42118187",
+    "max_rss_gb": 9.26,
+    "cpus": 8,
+    "req_mem_gb": 128.0
+  },
+  "freebindcraft": {
+    "tool": "freebindcraft",
+    "elapsed_min": 444.25,
+    "jobid": "42120045",
+    "max_rss_gb": 8.9,
+    "cpus": 8,
+    "req_mem_gb": 64.0,
+    "gpu_mem_peak": 61.7744140625,
+    "gpu_util_mean": 34.1496904895892,
+    "gpu_util_peak": 100,
+    "prealloc": "<unset, JAX preallocates ~75%>"
+  }
+}

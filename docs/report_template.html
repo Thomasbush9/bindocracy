@@ -1,0 +1,731 @@
+<title>Bindocracy Alpha Run</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+
+<style>
+  :root {
+    color-scheme: light;
+    --ground:    #fbfbfc;
+    --surface:   #ffffff;
+    --surface-2: #f4f5f8;
+    --ink:       #14161c;
+    --ink-2:     #444a58;
+    --muted:     #5c6270;
+    --hairline:  #e4e5ea;
+    --accent:    #2a78d6;
+    --accent-sf: #eaf1fb;
+    --warn:      #b4551f;
+    --warn-sf:   #fbeee6;
+    --crit:      #b4322c;
+    --crit-sf:   #fbeae9;
+    --good:      #1f7a4d;
+    --good-sf:   #e8f4ee;
+    --plate:     #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --ground:    #14161a;
+      --surface:   #1c1f25;
+      --surface-2: #22262d;
+      --ink:       #f2f3f5;
+      --ink-2:     #c8ccd4;
+      --muted:     #9aa0ad;
+      --hairline:  #2b2f37;
+      --accent:    #5b9df0;
+      --accent-sf: #1b2a3d;
+      --warn:      #f0925f;
+      --warn-sf:   #33231a;
+      --crit:      #e2685f;
+      --crit-sf:   #33201f;
+      --good:      #46a97a;
+      --good-sf:   #172a22;
+      --plate:     #1c1f25;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground:    #14161a;
+    --surface:   #1c1f25;
+    --surface-2: #22262d;
+    --ink:       #f2f3f5;
+    --ink-2:     #c8ccd4;
+    --muted:     #9aa0ad;
+    --hairline:  #2b2f37;
+    --accent:    #5b9df0;
+    --accent-sf: #1b2a3d;
+    --warn:      #f0925f;
+    --warn-sf:   #33231a;
+    --crit:      #e2685f;
+    --crit-sf:   #33201f;
+    --good:      #46a97a;
+    --good-sf:   #172a22;
+    --plate:     #1c1f25;
+  }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 28px 96px; }
+  .prose { max-width: 68ch; }
+
+  /* ---------- masthead ---------- */
+  header.top {
+    border-bottom: 1px solid var(--hairline);
+    padding: 64px 0 40px;
+    margin-bottom: 48px;
+  }
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 20px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+  }
+  .eyebrow span::after { content: " ·"; color: var(--hairline); }
+  .eyebrow span:last-child::after { content: ""; }
+  h1 {
+    font-size: clamp(30px, 5vw, 46px);
+    line-height: 1.1;
+    letter-spacing: -0.022em;
+    font-weight: 600;
+    margin: 0 0 20px;
+    text-wrap: balance;
+    max-width: 20ch;
+  }
+  .standfirst { font-size: 18px; color: var(--ink-2); margin: 0; max-width: 62ch; }
+  .running {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11.5px; letter-spacing: 0.05em;
+    background: var(--warn-sf); color: var(--warn);
+    border-radius: 3px; padding: 5px 10px; margin: 0 0 20px;
+  }
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  /* ---------- stat row ---------- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 1px;
+    background: var(--hairline);
+    border: 1px solid var(--hairline);
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 44px 0 0;
+  }
+  .stat { background: var(--surface); padding: 20px 22px; }
+  .stat .k {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 8px;
+  }
+  .stat .v {
+    font-size: 27px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+    margin: 0;
+  }
+  .stat .n { font-size: 13px; color: var(--muted); margin: 6px 0 0; line-height: 1.4; }
+
+  /* ---------- sections ---------- */
+  section { margin-top: 68px; }
+  h2 {
+    font-size: 13px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-weight: 600;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 8px;
+  }
+  h3 {
+    font-size: clamp(21px, 2.6vw, 27px);
+    font-weight: 600;
+    letter-spacing: -0.018em;
+    margin: 0 0 18px;
+    text-wrap: balance;
+    max-width: 26ch;
+  }
+  p { margin: 0 0 16px; }
+  .prose p:last-child { margin-bottom: 0; }
+  a { color: var(--accent); }
+  code, .mono {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.88em;
+  }
+  code {
+    background: var(--surface-2);
+    padding: 0.12em 0.4em;
+    border-radius: 3px;
+  }
+
+  /* ---------- figure plates ---------- */
+  figure {
+    margin: 32px 0 0;
+    background: var(--plate);
+    border: 1px solid var(--hairline);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  figure .plate { padding: 8px 8px 0; }
+  figure img { display: block; width: 100%; height: auto; }
+  figure img.dark-only { display: none; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) figure img.light-only { display: none; }
+    :root:not([data-theme="light"]) figure img.dark-only { display: block; }
+  }
+  :root[data-theme="dark"] figure img.light-only { display: none; }
+  :root[data-theme="dark"] figure img.dark-only { display: block; }
+  figcaption {
+    border-top: 1px solid var(--hairline);
+    padding: 16px 20px;
+    font-size: 14.5px;
+    color: var(--ink-2);
+    background: var(--surface);
+  }
+  figcaption b {
+    color: var(--ink);
+    font-weight: 600;
+  }
+  figcaption .lede {
+    display: block;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 7px;
+  }
+
+  /* ---------- tables ---------- */
+  .scroll { overflow-x: auto; margin-top: 28px; border: 1px solid var(--hairline); border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; background: var(--surface); }
+  th, td { text-align: left; padding: 13px 16px; border-bottom: 1px solid var(--hairline); vertical-align: top; }
+  th {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    white-space: nowrap;
+    background: var(--surface-2);
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num { font-variant-numeric: tabular-nums; font-family: "IBM Plex Mono", ui-monospace, monospace; white-space: nowrap; }
+  td .tool { font-weight: 600; white-space: nowrap; }
+
+  .chip {
+    display: inline-block;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 3px;
+    white-space: nowrap;
+    font-weight: 500;
+  }
+  .chip.fixed { background: var(--good-sf); color: var(--good); }
+  .chip.open  { background: var(--crit-sf); color: var(--crit); }
+  .chip.wrk   { background: var(--warn-sf); color: var(--warn); }
+
+  /* ---------- requirement list ---------- */
+  .reqs { display: flex; flex-direction: column; gap: 1px; background: var(--hairline);
+          border: 1px solid var(--hairline); border-radius: 4px; overflow: hidden; margin-top: 28px; }
+  .req { background: var(--surface); padding: 22px 24px; display: grid;
+         grid-template-columns: 2.4rem 1fr; gap: 4px 16px; }
+  .req .idx {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 13px;
+    color: var(--accent);
+    font-weight: 600;
+    padding-top: 2px;
+  }
+  .req h4 { grid-column: 2; margin: 0 0 6px; font-size: 17px; font-weight: 600; letter-spacing: -0.012em; }
+  .req p { grid-column: 2; margin: 0; font-size: 14.5px; color: var(--ink-2); max-width: 74ch; }
+  .req p + p { margin-top: 10px; }
+  .req .because {
+    grid-column: 2;
+    margin-top: 10px;
+    font-size: 13.5px;
+    color: var(--muted);
+    border-left: 2px solid var(--hairline);
+    padding-left: 12px;
+  }
+
+  .callout {
+    margin-top: 28px;
+    background: var(--surface);
+    border: 1px solid var(--hairline);
+    border-left: 3px solid var(--warn);
+    border-radius: 3px;
+    padding: 18px 22px;
+    font-size: 15px;
+    color: var(--ink-2);
+  }
+  .callout b { color: var(--ink); }
+
+  footer {
+    margin-top: 80px;
+    padding-top: 28px;
+    border-top: 1px solid var(--hairline);
+    font-size: 13.5px;
+    color: var(--muted);
+  }
+  footer code { background: none; padding: 0; color: var(--ink-2); }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<div class="wrap">
+
+<header class="top">
+  <p class="eyebrow">
+    <span>DIO3-cut · 201 aa</span><span>9 tools</span><span>40 binders each</span>
+    <span>FASRC Kempner</span><span>2026-08-26/27</span>
+  </p>
+  __STATUS__
+  <h1>Nine binder tools, one target, one harness</h1>
+  <p class="standfirst">
+    A shakedown run of every generation tool in the suite against the same target.
+    The point was never binder quality — it was to find out <strong>what a library has to
+    absorb</strong> to drive nine of these containers from one place. What it found was
+    mostly not about protein design.
+  </p>
+
+  <div class="stats">
+    <div class="stat">
+      <p class="k">Tools launched</p>
+      <p class="v">9 / 9</p>
+      <p class="n">Every one now has a working, documented command</p>
+    </div>
+    <div class="stat">
+      <p class="k">Host RAM actually used</p>
+      <p class="v">__RAM_PCT__%</p>
+      <p class="n">__RAM_USED__ GB used of __RAM_REQ__ GB reserved</p>
+    </div>
+    <div class="stat">
+      <p class="k">Peak GPU demand</p>
+      <p class="v">~16 GiB</p>
+      <p class="n">A 40 GB card would serve every tool here</p>
+    </div>
+    <div class="stat">
+      <p class="k">Silent failures found</p>
+      <p class="v">6</p>
+      <p class="n">Bugs that produce confident, well-formed, wrong output</p>
+    </div>
+  </div>
+</header>
+
+<section>
+  <h2>The finding</h2>
+  <h3>Almost nothing that went wrong was a science problem</h3>
+  <div class="prose">
+    <p>
+      Nine tools ran against one predicted DIO3-cut structure (mean pLDDT 86.3), 40 designs
+      each, one job per tool so per-design cost stayed visible. Seven completed on the first
+      or second attempt. The two that did not were stopped by a CUDA architecture mismatch and
+      a missing Python package — neither of which any amount of protein-design expertise would
+      have predicted.
+    </p>
+    <p>
+      The expensive category is worse than a crash: <b>six of the bugs found do not raise at
+      all.</b> They produce a full, well-formed output file that is wrong. A harness that only
+      checks exit codes catches none of them.
+    </p>
+  </div>
+</section>
+
+<section>
+  <h2>Time</h2>
+  <h3>A 48× spread, and the slow tools are slow for different reasons</h3>
+  <figure>
+    <div class="plate">
+      <img class="light-only" src="__FIG1__" alt="Dot plot of wall clock time to 40 binders per tool on a log axis, ranging from Caliby at 1.4 minutes to the slowest tools at several hours.">
+      <img class="dark-only" src="__FIG1D__" alt="">
+    </div>
+    <figcaption>
+      <span class="lede">Figure 1 — wall clock to 40 binders</span>
+      <b>For the harness:</b> per-design cost is the only figure worth storing, and it is only
+      visible if each tool runs as one job rather than an array. Genie 3 is the clearest case
+      for stage-level accounting: generation takes 9.6 s per design, but AF2 refolding takes 84 s
+      per sequence and is 88% of its wall clock. A single per-tool number would hide that the
+      expensive part is optional.
+    </figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>Memory</h2>
+  <h3>Every job over-requested, most by an order of magnitude</h3>
+  <figure>
+    <div class="plate">
+      <img class="light-only" src="__FIG2__" alt="Dumbbell chart comparing requested versus used host RAM per tool; every tool used far less than it reserved.">
+      <img class="dark-only" src="__FIG2D__" alt="">
+    </div>
+    <figcaption>
+      <span class="lede">Figure 2 — host RAM, requested vs used</span>
+      <b>For the harness:</b> resource requests should be measured and reused, never guessed.
+      Collecting <code>sacct</code> on every run is nearly free and makes the next request
+      correct. Over-requesting costs queue position, which on a busy partition costs more than
+      the memory ever would.
+    </figcaption>
+  </figure>
+
+  <figure>
+    <div class="plate">
+      <img class="light-only" src="__FIG3__" alt="Bar chart of peak GPU memory per tool, with FreeBindCraft's bar highlighted as JAX preallocation rather than real demand.">
+      <img class="dark-only" src="__FIG3D__" alt="">
+    </div>
+    <figcaption>
+      <span class="lede">Figure 3 — peak GPU memory</span>
+      <b>For the harness:</b> a GPU-memory number is meaningless without the allocator
+      convention that produced it. JAX reserves ~75% of the card by default, so the tall bar is
+      the allocator, not the model. Proteina-Complexa is the only job here run with
+      <code>XLA_PYTHON_CLIENT_PREALLOCATE=false</code>, which is why its 15.9 GiB is the one
+      figure that means demand. Every measurement the harness stores has to carry that label.
+    </figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>Utilisation</h2>
+  <h3>Low GPU utilisation is normal here — except when it isn't</h3>
+  <figure>
+    <div class="plate">
+      <img class="light-only" src="__FIG4__" alt="Small multiple traces of GPU utilisation over time for each tool, showing alternating busy and idle stretches.">
+      <img class="dark-only" src="__FIG4D__" alt="">
+    </div>
+    <figcaption>
+      <span class="lede">Figure 4 — GPU utilisation over each job's life</span>
+      <b>For the harness:</b> these pipelines alternate GPU inference with CPU-side work — MPNN
+      subprocesses, PDB parsing, relaxation — so a 13–78% mean is expected, and extra CPUs often
+      help more than a bigger GPU. But the same shape diagnoses a real bug: a flat zero that
+      <i>never ends</i> is what Genie 3's CPU-only JAX looked like. Utilisation is worth
+      sampling continuously, not just reporting as a mean.
+    </figcaption>
+  </figure>
+  <div class="callout">
+    <b>A measurement trap worth encoding.</b> <code>jobstats</code> reported
+    “GPU utilization 0% &lt;-- GPU was not used” for a job whose GPU memory it simultaneously
+    reported at 76 GB. Its sampler is too coarse for short jobs. The 15-second
+    <code>nvidia-smi</code> trace these figures are built from exists because of that.
+  </div>
+</section>
+
+<section>
+  <h2>Batching</h2>
+  <h3>What a bigger batch actually buys, measured</h3>
+  <div class="prose">
+    <p>
+      Three tools expose a batch knob, so we swept them. The result is not one
+      answer — it is three different ones, which is itself the point.
+    </p>
+  </div>
+  <figure>
+    <div class="plate">
+      <img class="light-only" src="__FIG5__" alt="Two panels: Caliby GPU memory rising linearly with batch size, and wall clock plateauing after batch size 8.">
+      <img class="dark-only" src="__FIG5D__" alt="">
+    </div>
+    <figcaption>
+      <span class="lede">Figure 5 — Caliby batch sweep</span>
+      <b>For the harness:</b> the two tools use the same word in their config and
+      need <i>opposite</i> advice — Caliby's memory is linear in batch and its time
+      plateaus at 8, so it has a knee you must not exceed; BoltzGen's memory is flat
+      (and non-monotonic — batch 40 is cheaper than batch 1), so it has no memory
+      ceiling and is limited only by diminishing time returns. Store the measured
+      <i>shape</i>, not a batch size —
+      “~0.9&nbsp;GiB per structure, time stops improving at 8” answers what fits on any
+      card for any future target, where a remembered number does not. And note the two
+      knobs are opposites: <code>batch_size</code> is linear in memory and flat in time
+      past the knee; <code>num_seqs_per_pdb</code> is linear in time and <i>flat in
+      memory</i> — 4× the sequences at identical 14.5&nbsp;GiB. A driver that models
+      them as one “batch” concept will size jobs wrong.
+    </figcaption>
+  </figure>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>Tool</th><th>Change</th><th>Wall clock</th><th>Peak GPU</th><th>Verdict</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="tool">Caliby</span></td>
+          <td class="num">batch 4 &rarr; 16, 8 seqs</td>
+          <td class="num">2.9 &rarr; 2.3 min</td>
+          <td class="num">4.1 &rarr; 14.5 GiB</td>
+          <td><b>6&times; throughput</b> at the best point (1,280 sequences in 7.2 min)</td>
+        </tr>
+        <tr>
+          <td><span class="tool">BoltzGen</span></td>
+          <td class="num">batch 1 &rarr; 40</td>
+          <td class="num">22.9 &rarr; 15.0 min</td>
+          <td class="num">7.3 &rarr; 7.1 GiB</td>
+          <td><b>34% faster at flat memory</b> — memory is not its constraint at all</td>
+        </tr>
+        <tr>
+          <td><span class="tool">Proteina-Complexa</span></td>
+          <td class="num">batch 8 &rarr; 16</td>
+          <td class="num">25.9 &rarr; 23.5 min</td>
+          <td class="num">15.9 &rarr; 24.6 GiB</td>
+          <td>9% for 55% more memory — <b>not worth it</b>; its idle time is AF2</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout">
+    <b>Throughput and utilisation are different objectives.</b> BoltzGen got 34% faster
+    while its utilisation moved only 56% &rarr; 61%, because the win was 40 trunk runs
+    collapsing to 1 — not a fuller GPU. Proteina-Complexa's utilisation rose and bought almost nothing.
+    Utilisation is a diagnostic; designs per GPU-hour is the goal.
+  </div>
+</section>
+
+<section>
+  <h2>Silent failures</h2>
+  <h3>The bugs that cost a campaign rather than an hour</h3>
+  <div class="prose">
+    <p>
+      None of these raise an error. Each produces output that looks entirely normal. They are
+      the reason the harness needs preflight assertions rather than post-hoc checks.
+    </p>
+  </div>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>Tool</th><th>What happens</th><th>What you'd see</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="tool">RFdiffusion</span></td>
+          <td>Selects the <b>monomer</b> checkpoint when hotspots are omitted</td>
+          <td>40 plausible backbones designed against nothing</td>
+          <td><span class="chip fixed">pinned</span></td>
+        </tr>
+        <tr>
+          <td><span class="tool">Caliby</span></td>
+          <td>Redesigns the <b>target</b> if a <code>pdb_key</code> is missing from its CSV</td>
+          <td>A complete, well-formed output CSV</td>
+          <td><span class="chip fixed">asserted</span></td>
+        </tr>
+        <tr>
+          <td><span class="tool">Genie 3</span></td>
+          <td>JAX had no CUDA plugin, so AF2 ran on the <b>CPU</b></td>
+          <td>A live process, an idle GPU, and no error — forever</td>
+          <td><span class="chip fixed">fixed</span></td>
+        </tr>
+        <tr>
+          <td><span class="tool">PXDesign</span></td>
+          <td><code>--preset</code> defaults to <code>custom</code>, configuring no filters</td>
+          <td>A normal-looking summary with nothing filtered</td>
+          <td><span class="chip fixed">explicit</span></td>
+        </tr>
+        <tr>
+          <td><span class="tool">PXDesign</span></td>
+          <td>CLI defaults silently overwrite its own sampling schedule</td>
+          <td>Different sampling than the config states</td>
+          <td><span class="chip fixed">explicit</span></td>
+        </tr>
+        <tr>
+          <td><span class="tool">Mosaic</span></td>
+          <td>Epitope indices wrong whenever the target is cropped</td>
+          <td>Three campaign rounds aimed ~100 residues off-site</td>
+          <td><span class="chip fixed">fixed</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout">
+    <b>Exit status is not a success signal either.</b> Genie 3's fixed run logged
+    “Run completed”, wrote 40 sequences, 40 backbones and 200 AF2 outputs — and
+    <code>sacct</code> recorded FAILED. The cause was a trailing <code>find … | head</code> in
+    our own launcher: under <code>set -o pipefail</code> the SIGPIPE fails the pipeline, and a
+    job's exit status is its last command's. Trusting <code>sacct</code> would have discarded an
+    hour of correct work.
+  </div>
+</section>
+
+<section>
+  <h2>The specification</h2>
+  <h3>Nine things the library has to absorb</h3>
+  <div class="prose">
+    <p>
+      Each of these is here because something above proved it was needed. Ordered by how much
+      of the design it constrains.
+    </p>
+  </div>
+  <div class="reqs">
+    <div class="req">
+      <div class="idx">01</div>
+      <h4>A <i>Target</i> is not one thing, and the harness must own the conversion</h4>
+      <p>
+        The brief supplied a sequence and an MSA. The tools wanted, between them: sequence only;
+        PDB; mmCIF; a structure plus a two-file MSA directory; a problem-set directory of JSON
+        and per-chain trees; and an entry appended to a Hydra registry that lives read-only
+        inside an image. Two of those cannot be produced by format conversion at all.
+      </p>
+      <p class="because">
+        Fold once, cache every representation. It is also the only way a cross-tool comparison
+        means anything — otherwise each tool folds the target with whatever it ships.
+      </p>
+    </div>
+    <div class="req">
+      <div class="idx">02</div>
+      <h4>“Generate N designs” is not portable — model three numbers</h4>
+      <p>
+        Every tool interprets a count differently: generated, accepted, post-filter, or padded
+        with failures to hit N. The schema needs <b>attempted / produced / passed</b> as separate
+        fields plus the filter that produced the third.
+      </p>
+      <p class="because">
+        A single <code>n_designs</code> field records “40” for both PXDesign and Genie 3, hiding
+        that one had 5 dual-filter passes and the other had none.
+      </p>
+    </div>
+    <div class="req">
+      <div class="idx">03</div>
+      <h4>Output adapters are unavoidable</h4>
+      <p>
+        Only one tool writes a FASTA. Elsewhere sequences live in a CSV column and no two name it
+        the same. One column that <i>looks</i> like a sequence is actually integer indices — its
+        real sequence has to be read off a PDB chain. Chain conventions are inconsistent:
+        RFdiffusion makes the binder chain A, Proteina-Complexa makes the target chain A.
+      </p>
+      <p class="because">
+        Write adapters against observed output, not upstream docs — several document output
+        paths and flags the code does not have.
+      </p>
+    </div>
+    <div class="req">
+      <div class="idx">04</div>
+      <h4>Environment hygiene belongs in one place</h4>
+      <p>
+        Three tools broke on two host-environment problems with nothing to do with protein
+        design: <code>TMPDIR</code> on Lustre kills any Triton-JIT tool, and the host's RHEL CA
+        bundle breaks <code>httpx</code> inside every Ubuntu image at import.
+      </p>
+      <p class="because">
+        It should be impossible for a tool driver to opt out of the launch layer.
+      </p>
+    </div>
+    <div class="req">
+      <div class="idx">05</div>
+      <h4>Preflight assertions are the highest-value code in the harness</h4>
+      <p>
+        Check the resolved checkpoint against the requested mode; check the constraint file
+        covers every input; check the framework resolved to a GPU backend; echo the resolved
+        config and diff it against the requested one. Refuse to launch, don't warn.
+      </p>
+      <p class="because">
+        Every silent failure in the table above is cheap to assert before the GPU work starts.
+      </p>
+    </div>
+    <div class="req">
+      <div class="idx">06</div>
+      <h4>Success is “the expected artifacts exist and parse”</h4>
+      <p>
+        Exit status is corroboration only. The adapter already knows what the artifacts are, so
+        it should own the predicate.
+      </p>
+    </div>
+    <div class="req">
+      <div class="idx">07</div>
+      <h4>Probe image capability; don't read the manifest</h4>
+      <p>
+        A weight audit that asks only “are the checkpoints present” passes both of the worst
+        images here. One has all nine checkpoints embedded and cannot execute a single CUDA
+        kernel on H100. The other has every weight and shipped a CPU-only JAX. Both were
+        documented as fine.
+      </p>
+      <p class="because">
+        Generate capability metadata by <i>running</i> a probe on the target GPU class, and store
+        it beside the SIF checksum — along with any overlay, since the image alone then no longer
+        determines the result.
+      </p>
+    </div>
+    <div class="req">
+      <div class="idx">08</div>
+      <h4>Measure resources, then reuse them</h4>
+      <p>
+        Collect <code>sacct</code> plus a sampled <code>nvidia-smi</code> trace on every run and
+        derive the next request from history. Label every GPU-memory figure with the allocator
+        convention behind it.
+      </p>
+    </div>
+    <div class="req">
+      <div class="idx">09</div>
+      <h4>Know the scheduler's realities</h4>
+      <p>
+        Cluster reservations silently defer long jobs — a walltime that overlaps a maintenance
+        window does not queue, it waits until after. Resume-safety varies per tool and should be
+        declared: one skips work already done, one silently no-ops a rerun, and one has no seed
+        at all, so its runs are not reproducible and cannot be split across jobs.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Scope</h2>
+  <h3>What this run deliberately does not tell you</h3>
+  <div class="prose">
+    <p>
+      <b>There is no cross-tool quality comparison here, and the numbers in the full report
+      should not be read as one.</b> Every score comes from a different scorer, mostly the same
+      model that produced the design, evaluating its own work. Running all designs through one
+      common scorer is the next step.
+    </p>
+    <p>
+      The one comparison that <i>is</i> fair is amino-acid composition, measured identically for
+      everything. Every tool sits well below natural protein (Shannon entropy 3.15–3.72 against
+      ~4.1), which is expected for de novo binders — but the spread is large, and the
+      alanine-rich end is the classic gradient-hallucination failure mode. Inverse folding onto a
+      fixed backbone produced the cleanest composition of anything tested.
+    </p>
+    <p>
+      The epitope question is also open. Eight tools ran without hotspots and each chose its own
+      surface, so they are unlikely to agree. The one tool given hotspots achieved a median
+      coverage of <b>zero</b> — the conditioning did not take, which is a finding about
+      conditioning strategy rather than sample size, and worth chasing before that tool is scaled
+      up.
+    </p>
+    <p>
+      Two images need rebuilding before their tools are first-class: one for sm_90 support, one
+      for a GPU-capable JAX. Both are one-line dependency changes and each currently costs a
+      whole tool.
+    </p>
+  </div>
+</section>
+
+<footer>
+  <p>
+    Launchers and configs: <code>bindocracy/launching_scripts/</code> — one directory per tool,
+    each with a commented <code>run_&lt;tool&gt;.sbatch</code>.
+    Full report: <code>docs/benchmark-alpha.md</code> ·
+    Bug catalogue: <code>docs/known-issues.md</code> ·
+    Harness spec: <code>docs/harness-design.md</code> ·
+    Figures regenerate from measured data with
+    <code>launching_scripts/common/make_figures.py</code>.
+  </p>
+</footer>
+
+</div>

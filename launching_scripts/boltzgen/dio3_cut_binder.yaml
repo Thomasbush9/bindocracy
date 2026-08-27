@@ -1,0 +1,34 @@
+# BoltzGen design spec — de novo protein binder against DIO3-cut.
+#
+# Entity 1 is the thing being designed: `sequence: 70..90` is not a sequence but
+# an inclusive LENGTH RANGE, resampled per design. The separator must be `..`;
+# `70-90` is malformed and errors out. A bare integer would pin the length.
+#
+# Entity 2 is the target, pulled straight out of the predicted CIF. The target
+# sequence is read from the file — it is deliberately not repeated here, so this
+# spec cannot drift out of sync with the structure.
+#
+# `path` resolves relative to this YAML's directory; absolute is used so the
+# spec works from any submit directory.
+#
+# NO MSA KEY ON PURPOSE. BoltzGen never uses an MSA at inference: designed
+# chains default to -1 (no MSA) and the inference path hardcodes `msa={}`.
+# The precomputed DIO3.a3m is irrelevant to this tool.
+#
+# NO HOTSPOTS, matching the rest of the benchmark. To aim at an epitope later,
+# add to the `file` entity (1-based label_seq_id, NOT author numbering):
+#     binding_types:
+#       - chain:
+#           id: A
+#           binding: 95..110,143
+
+entities:
+  - protein:
+      id: B
+      sequence: 70..90
+
+  - file:
+      path: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/outputs/_shared/dio3_cut.cif
+      include:
+        - chain:
+            id: A

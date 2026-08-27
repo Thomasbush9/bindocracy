@@ -1,0 +1,27 @@
+# PXDesign input spec — de novo binder against DIO3-cut.
+#
+# task_name is undocumented in the README but real: it names the results
+# directory (design_outputs/<task_name>/). Without it the YAML filename stem is
+# used, which couples the output path to what you happened to call this file.
+#
+# NO `crop`: omitting it keeps the whole 201-residue chain. NO `hotspots`,
+# matching the rest of the benchmark — the key is optional and leaving it out
+# lets the model choose its own epitope. If you add hotspots later for a .cif
+# target the numbering is label_seq_id (1-based, sequential, defined on the
+# FULL-LENGTH uncropped chain), and a residue absent from the structure raises
+# KeyError rather than a readable message. Never copy the [40, 99, 107] from the
+# upstream example — those are PD-L1's residues.
+#
+# `msa` must be a DIRECTORY containing both non_pairing.a3m and pairing.a3m, or
+# the parser raises FileNotFoundError. Built by make_pxdesign_msa.py from the
+# lab's precomputed DIO3.a3m. It must be built on the full-length target chain:
+# PXDesign maps (asym_id, residue_index) to MSA columns itself and applies any
+# crop afterwards, so pre-slicing the alignment would silently misalign it.
+
+task_name: dio3_cut
+target:
+  file: "/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/outputs/_shared/dio3_cut.cif"
+  chains:
+    A:
+      msa: "/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/outputs/_shared/msa/dio3_cut/0"
+binder_length: 80

@@ -1,0 +1,57 @@
+# Genie 3 binder design against DIO3-cut.
+#
+# `paths.dataset` points at the problem set built by prepare_problemset.py.
+# Genie 3 cannot consume a raw target PDB: `source: target` needs a problem-set
+# directory (problems/*.json + targets/{pdb,fasta,msa}/), and the shipped
+# builder calls the ColabFold MSA server, which a compute node cannot reach.
+# prepare_problemset.py reproduces the same JSON offline. That is only sound
+# because folding.mode below is `template`, which never reads the MSA.
+#
+# n_sample is PER PROBLEM. There is one problem, so 40 is the total.
+# Binder length is NOT set here — it comes from binder_min_length /
+# binder_max_length in the problem JSON (60..120), sampled per design.
+#
+# direction_scale 0.0 is the binder setting; nonzero trades diversity for
+# per-sample quality and is meant for unconditional generation.
+#
+# Genie 3 emits UNK backbones, so the `evaluation` block is what turns them into
+# actual binder SEQUENCES via ProteinMPNN. Dropping it would leave this tool
+# producing nothing comparable to the others.
+
+experiment:
+  name: dio3_cut_binders
+  seed: 0
+
+paths:
+  rootdir: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/outputs/genie3
+  dataset: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/outputs/_shared/genie3_dataset
+
+generation:
+  dataset:
+    source: target
+    selections: dio3_cut
+    n_sample: 40
+    # 'extended' is the paper default: the hotspot triple plus the 12-residue
+    # interface patch computed around it. 'hotspot' would condition on the three
+    # residues alone.
+    cond_strategy: extended
+  sampler:
+    sampler:
+      direction_scale: 0.0
+
+evaluation:
+  version: binder
+  inverse_folding:
+    model_name: proteinmpnn
+    num_seq: 1          # one sequence per backbone -> 40 binder sequences
+  folding:
+    model_name: colabfold
+    # `template` runs AF2-multimer single-sequence with the target supplied as a
+    # custom template. No MSA, no network. `msa` mode would call the server.
+    mode: template
+    backend: subprocess
+    num_models: 5       # v0 success filters are calibrated at 5 models / 20 recycles
+    num_recycles: 20
+
+runtime:
+  num_devices: 1

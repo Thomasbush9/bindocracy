@@ -18,6 +18,8 @@ use the login node only to edit inputs, inspect help, and submit jobs.
   anything; several tools produce confident, well-formed output when misconfigured
 - **[Campaign database and output-adapter contract](docs/database.md)** — the
   single-target schema, empty-database command, and normalized parser interface
+- **[Generation workflow](workflow/README.md)** — the Snakemake rule graph that
+  takes a Mosaic config to designs in DuckDB, and how to run it
 - **[launching_scripts/](launching_scripts/)** — ready-to-run, heavily commented
   `sbatch` launchers and configs, one directory per tool
 - [Running containers on the cluster](docs/running-containers.md)

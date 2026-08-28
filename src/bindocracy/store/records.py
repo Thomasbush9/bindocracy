@@ -36,8 +36,13 @@ def config_hash(payload: dict[str, Any]) -> str:
     return sha256_text(canonical_json(payload))
 
 
-def stable_config_id(kind: str, *parts: str) -> str:
-    """Return a deterministic ID for a config or general+model pair."""
+def stable_id(kind: str, *parts: str) -> str:
+    """Return a deterministic ID derived from a record's stable identity.
+
+    Collection uses this so that reparsing an unchanged run directory produces
+    exactly the same rows. Run IDs are deliberately *not* derived this way: the
+    same configuration executed twice is two distinct runs.
+    """
     return str(uuid5(NAMESPACE_URL, ":".join(("bindocracy", kind, *parts))))
 
 
@@ -130,10 +135,8 @@ class ConfigRecord(Record):
     def fill_or_check_identity(self) -> Self:
         expected_general_hash = config_hash(self.general_config_json)
         expected_model_hash = config_hash(self.model_config_json)
-        expected_general_id = stable_config_id("general", expected_general_hash)
-        expected_model_id = stable_config_id(
-            "model", expected_general_id, expected_model_hash
-        )
+        expected_general_id = stable_id("general", expected_general_hash)
+        expected_model_id = stable_id("model", expected_general_id, expected_model_hash)
 
         expected = {
             "general_config_hash": expected_general_hash,
@@ -297,3 +300,7 @@ class CollectedRun(Record):
                 f"collected records must use run_id={self.run.run_id}; got {mismatches[0]}"
             )
         return self
+
+    def content_hash(self) -> str:
+        """Hash the whole bundle, so a repeated ingestion can be recognized."""
+        return sha256_text(canonical_json(self.model_dump(mode="json")))

@@ -8,3 +8,6 @@ wheels/
 .ruff_cache
 # Virtual environments
 .venv
+.pytest_cache
+# Snakemake's per-invocation metadata and logs
+.snakemake

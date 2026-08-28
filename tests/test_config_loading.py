@@ -5,6 +5,7 @@ from pathlib import Path
 import duckdb
 import pytest
 import yaml
+from conftest import write_configs
 from pydantic import ValidationError
 
 from bindocracy.config import (
@@ -17,76 +18,8 @@ from bindocracy.config import (
 from bindocracy.store import CampaignStore
 
 
-def _write_config_fixture(root: Path) -> tuple[Path, Path]:
-    fasta = root / "target.fasta"
-    msa = root / "target.a3m"
-    script = root / "hallucinate.py"
-    container = root / "mosaic.sif"
-    weights = root / "weights"
-    (weights / "boltz").mkdir(parents=True)
-    fasta.write_text(">target\nACDEFG\n")
-    msa.write_text(">target\nACDEFG\n")
-    script.write_text("print('fixture')\n")
-    container.write_bytes(b"fixture")
-
-    general_path = root / "general.yaml"
-    general_path.write_text(
-        yaml.safe_dump(
-            {
-                "schema_version": 1,
-                "campaign": {"name": "test-campaign"},
-                "target": {
-                    "name": "test-target",
-                    "sequence_fasta": str(fasta),
-                    "msa": str(msa),
-                    "chain_id": "A",
-                    "hotspots": [],
-                },
-                "cluster": {
-                    "executor": "slurm",
-                    "account": "test-account",
-                    "default_partition": "test-gpu",
-                    "max_concurrent_jobs": 2,
-                },
-            },
-            sort_keys=False,
-        )
-    )
-
-    model_path = root / "mosaic.yaml"
-    model_path.write_text(
-        yaml.safe_dump(
-            {
-                "schema_version": 1,
-                "name": "mosaic-test",
-                "tool": "mosaic",
-                "driver": {"script": str(script), "archive": True},
-                "sampling": {
-                    "binder_length": 70,
-                    "jobs": 2,
-                    "designs_per_job": 4,
-                    "max_runtime_hours": 1,
-                    "seed_base": 0,
-                },
-                "runtime": {
-                    "container": str(container),
-                    "weights": str(weights),
-                },
-                "resources": {
-                    "gpus": 1,
-                    "cpus": 8,
-                    "memory_gb": 32,
-                    "walltime": "02:00:00",
-                },
-            },
-            sort_keys=False,
-        )
-    )
-    return general_path, model_path
-
-
 def test_load_mosaic_configs_returns_typed_models(tmp_path: Path) -> None:
-    general_path, model_path = _write_config_fixture(tmp_path)
+    general_path, model_path = write_configs(tmp_path)
 
     loaded = load_mosaic_configs(general_path, model_path)
 
@@ -105,7 +38,7 @@ def test_load_mosaic_configs_returns_typed_models(tmp_path: Path) -> None:
 
 
 def test_unknown_mosaic_key_is_rejected(tmp_path: Path) -> None:
-    _, model_path = _write_config_fixture(tmp_path)
+    _, model_path = write_configs(tmp_path)
     raw = yaml.safe_load(model_path.read_text())
     raw["scrpit"] = "typo.py"
     model_path.write_text(yaml.safe_dump(raw))
@@ -115,7 +48,7 @@ def test_unknown_mosaic_key_is_rejected(tmp_path: Path) -> None:
 
 
 def test_config_load_populates_only_configs_and_is_idempotent(tmp_path: Path) -> None:
-    general_path, model_path = _write_config_fixture(tmp_path)
+    general_path, model_path = write_configs(tmp_path)
     loaded = load_mosaic_configs(general_path, model_path)
     record = loaded.to_record()
     database = tmp_path / "campaign.duckdb"
@@ -139,7 +72,7 @@ def test_config_load_populates_only_configs_and_is_idempotent(tmp_path: Path) ->
 
 
 def test_recover_general_and_model_yaml(tmp_path: Path) -> None:
-    general_path, model_path = _write_config_fixture(tmp_path)
+    general_path, model_path = write_configs(tmp_path)
     loaded = load_mosaic_configs(general_path, model_path)
     record = loaded.to_record()
     assert record.general_config_id is not None

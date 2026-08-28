@@ -1,0 +1,13 @@
+# Slurm execution. Account, partition, GPU, CPU, memory, and walltime come
+# from the validated configs via the launch connector, so nothing scientific is
+# duplicated here.
+executor: slurm
+jobs: 10
+latency-wait: 60
+printshellcmds: true
+rerun-incomplete: true
+
+# One ingestion at a time, so DuckDB stays single-writer even when several
+# model configs finish together.
+resources:
+  - db_writer=1

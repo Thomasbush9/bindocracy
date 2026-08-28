@@ -1,0 +1,135 @@
+# Mosaic generation: authored config -> designs in DuckDB.
+#
+#   prepare_mosaic_run
+#           |
+#           +--> mosaic_generate[task=0..N] --> collect_mosaic --> ingest_mosaic
+#                                                                       |
+#                                                                       v
+#                                                             generation_complete
+#
+# The workflow config is an execution index; the scientific inputs stay in the
+# general and model YAML it points at. Run:
+#
+#   uv run snakemake --configfile workflow/campaign.yaml --profile workflow/profiles/slurm
+#
+# One run directory per model config, named after that config's file stem. To
+# execute the same configuration a second time, give it a new run directory.
+
+import os
+import subprocess
+from pathlib import Path
+
+from bindocracy.adapters.mosaic import collect_mosaic_run
+from bindocracy.config import load_mosaic_configs
+from bindocracy.runs import (
+    RunManifest,
+    ingest_bundle,
+    mosaic_launch_spec,
+    mosaic_resources,
+    plan_mosaic_run,
+    write_collected,
+)
+from bindocracy.runs.manifest import write_json_atomic
+
+GENERAL = Path(config["general_config"])
+RUN_ROOT = Path(config["run_root"])
+DATABASE = Path(config["database"])
+
+# Validated at DAG time, so a bad config fails in a second rather than in the
+# queue. This is also where the task count comes from, which is why no
+# checkpoint is needed to know the shape of the fan-out.
+LOADED = {
+    Path(path).stem: load_mosaic_configs(GENERAL, path)
+    for path in config["models"]["mosaic"]
+}
+TASKS = {
+    model: [f"{task_id:04d}" for task_id in range(loaded.mosaic.sampling.jobs)]
+    for model, loaded in LOADED.items()
+}
+
+
+def slurm(name):
+    """One launch resource, resolved at DAG time from the configs alone."""
+    return lambda wildcards: mosaic_resources(LOADED[wildcards.model])[name]
+
+
+# Everything except the GPU work runs on the submitting host.
+localrules: all, prepare_mosaic_run, collect_mosaic, ingest_mosaic, generation_complete
+
+
+rule all:
+    input:
+        expand(str(RUN_ROOT / "{model}" / "generation.done"), model=list(LOADED)),
+
+
+rule prepare_mosaic_run:
+    """Create or reuse the run identity, directory, and archived inputs."""
+    output:
+        RUN_ROOT / "{model}" / "run.json",
+    run:
+        plan_mosaic_run(
+            LOADED[wildcards.model], RUN_ROOT / wildcards.model, name=wildcards.model
+        )
+
+
+rule mosaic_generate:
+    """One GPU task. Exit status is not the success signal: status.json is."""
+    input:
+        RUN_ROOT / "{model}" / "run.json",
+    output:
+        RUN_ROOT / "{model}" / "tasks" / "{task}" / "status.json",
+    log:
+        RUN_ROOT / "{model}" / "logs" / "task-{task}.log",
+    resources:
+        slurm_account=slurm("slurm_account"),
+        slurm_partition=slurm("slurm_partition"),
+        slurm_extra=slurm("slurm_extra"),
+        cpus_per_task=slurm("cpus_per_task"),
+        mem_mb=slurm("mem_mb"),
+        runtime=slurm("runtime"),
+    run:
+        spec = mosaic_launch_spec(
+            LOADED[wildcards.model], RunManifest.read(input[0]), int(wildcards.task)
+        )
+        with open(log[0], "w") as stream:
+            subprocess.run(
+                spec.argv,
+                env={**os.environ, **spec.env},
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                check=True,
+            )
+
+
+rule collect_mosaic:
+    """Parse every planned task, keeping whatever partial work exists."""
+    input:
+        manifest=RUN_ROOT / "{model}" / "run.json",
+        tasks=lambda wildcards: expand(
+            str(RUN_ROOT / wildcards.model / "tasks" / "{task}" / "status.json"),
+            task=TASKS[wildcards.model],
+        ),
+    output:
+        RUN_ROOT / "{model}" / "collected.json",
+    run:
+        write_collected(collect_mosaic_run(input.manifest), output[0])
+
+
+rule ingest_mosaic:
+    """The only DuckDB writer. db_writer serializes it across models."""
+    input:
+        RUN_ROOT / "{model}" / "collected.json",
+    output:
+        RUN_ROOT / "{model}" / "ingested.json",
+    resources:
+        db_writer=1,
+    run:
+        inserted = ingest_bundle(DATABASE, input[0])
+        write_json_atomic(output[0], {"database": str(DATABASE), "inserted": inserted})
+
+
+rule generation_complete:
+    input:
+        RUN_ROOT / "{model}" / "ingested.json",
+    output:
+        touch(RUN_ROOT / "{model}" / "generation.done"),

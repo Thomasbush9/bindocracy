@@ -79,6 +79,11 @@ class MosaicSamplingConfig(ConfigModel):
 class MosaicRuntimeConfig(ConfigModel):
     container: Path
     weights: Path
+    # mosaic-exec.sh is the only supported entry point: it builds the private
+    # container HOME and binds the external weight caches onto the paths mosaic
+    # looks for. See docs/containers/mosaic.md.
+    exec_wrapper: Path
+    scratch: Path
 
 
 class ResourceConfig(ConfigModel):

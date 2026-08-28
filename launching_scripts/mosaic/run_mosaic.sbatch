@@ -66,15 +66,19 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 # for a JAX process means the ~75% preallocation rather than real demand.
 gpu_trace_start "$OUT/resources/gpu_trace.csv"
 
+# One task writes one designs.jsonl + status.json under its own task directory.
+# The harness runs the same driver through Snakemake instead; see
+# docs/mosaic-generation-plan.md and workflow/Snakefile.
 "$MOSAIC_REPO/singularity/mosaic-exec.sh" python \
     "$REPO_ROOT/launching_scripts/mosaic/hallucinate_binders.py" \
     --target-fasta   "$TARGET_FASTA" \
-    --msa-path       "$TARGET_MSA" \
+    --target-msa     "$TARGET_MSA" \
     --binder-length  "$BINDER_LENGTH" \
     --n-designs      "$N_BINDERS" \
     --max-runtime    11 \
-    --array-id       0 \
-    --save-dir       "$OUT/designs"
+    --task-id        0 \
+    --seed-base      0 \
+    --save-dir       "$OUT/designs/0000"
 
 gpu_trace_stop
 echo "end=$(date -Is)"

@@ -138,3 +138,20 @@ configs -> run -> designs -> artifacts -> metrics -> decisions
 
 This keeps DuckDB single-writer, makes failed ingestion atomic, and allows the
 database to be rebuilt from immutable run directories and staging bundles.
+
+The two steps are separate commands, so a parser problem never leaves a
+half-written database:
+
+```bash
+uv run bindocracy collect mosaic runs/<model>/run.json \
+  --output runs/<model>/collected.json
+
+uv run bindocracy ingest campaign.duckdb runs/<model>/collected.json
+```
+
+`collect` reads files only. `ingest` deserializes and revalidates the bundle
+before opening DuckDB, and takes the config pair from the run manifest that was
+written when the run was planned. It is restart-safe by content: re-ingesting an
+identical bundle is a no-op, and a changed bundle for an already-ingested
+`run_id` raises `IngestConflictError` without writing anything. Neither path can
+create a second copy of a run under new IDs.

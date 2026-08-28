@@ -1,26 +1,32 @@
-"""Mosaic hallucination-based binder design, parameterised.
+"""Mosaic hallucination-based binder design: one task, one process, one GPU.
 
-This is a lightly generalised copy of
-`mosaic_setup/mosaic/hallucinate/hallucinate.py`. It is copied rather than
-imported for one reason: the upstream script hard-codes both the target
-sequence and
+A lightly generalised copy of `mosaic_setup/mosaic/hallucinate/hallucinate.py`.
+It is copied rather than imported because the upstream script hard-codes the
+target sequence, the binder length, and an MSA path that no longer exists (see
+docs/known-issues.md). Everything that matters scientifically — the nine-term
+loss, the three-stage APGM schedule, the ranking re-fold — is preserved
+verbatim so results stay comparable to the runs the lab has already done.
 
-    MSA_PATH = ".../tbush/mosaic_setup/dio3_cut/.../DIO3.a3m"
+Nothing campaign-specific is hard-coded here. Every run-dependent value arrives
+as an argument, which is what lets the harness archive this file per run and
+execute the archived copy.
 
-which no longer exists — the tree moved under `binder_design/` — so the
-upstream script cannot run as-is (see docs/known-issues.md). Everything that
-matters scientifically (the loss, the three-stage APGM schedule, the ranking
-re-fold) is preserved verbatim so results stay comparable to the runs the lab
-has already done.
-
-Run inside the mosaic container, one GPU per process:
+Run inside the mosaic container:
 
     singularity/mosaic-exec.sh python hallucinate_binders.py \
-        --target-fasta <fa> --msa-path <a3m> --binder-length 80 \
-        --n-designs 40 --save-dir <dir>
+        --target-fasta <fa> --target-msa <a3m> --binder-length 80 \
+        --task-id 0 --seed-base 0 --n-designs 40 --max-runtime 11 \
+        --save-dir <dir>
 
-Sequences are appended as each finishes, so a job killed by the walltime still
-leaves everything completed up to that point.
+Output contract, consumed by `bindocracy.adapters.mosaic`:
+
+    <save-dir>/designs.jsonl   one JSON object per completed design, appended
+                               and fsynced, so a task killed by the walltime
+                               still leaves every fully written record
+    <save-dir>/status.json     written once, atomically, when the task stops
+
+The process exits 0 whenever it managed to write `status.json`. Success is
+`status.json` plus the designs it accounts for, never the exit code.
 
 The models and the loss are built ONCE per process. Boltz2() loads a 2.3 GB
 torch checkpoint and converts it to Equinox, which costs minutes; rebuilding it
@@ -31,6 +37,8 @@ import argparse
 import json
 import os
 import time
+import traceback
+from datetime import UTC, datetime
 from pathlib import Path
 
 import jax
@@ -45,6 +53,13 @@ from mosaic.models.boltz2 import Boltz2
 from mosaic.optimizers import simplex_APGM
 from mosaic.proteinmpnn.mpnn import load_mpnn_sol
 from mosaic.structure_prediction import TargetChain
+
+DESIGNS_FILE = "designs.jsonl"
+STATUS_FILE = "status.json"
+
+
+def now() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 def read_fasta(path: str) -> str:
@@ -155,63 +170,97 @@ def design(folder, loss, seed, target_sequence, msa_path, binder_length):
     return seq_str, loss_value.item()
 
 
-def main() -> int:
+def write_status(save_dir: Path, payload: dict) -> None:
+    """Write status.json atomically so a reader never sees a half file."""
+    tmp = save_dir / (STATUS_FILE + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2) + "\n")
+    os.replace(tmp, save_dir / STATUS_FILE)
+
+
+def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--target-fasta", required=True)
-    ap.add_argument("--msa-path", required=True)
-    ap.add_argument("--binder-length", type=int, default=80)
-    ap.add_argument("--n-designs", type=int, default=40,
-                    help="stop after this many designs (0 = time-bounded)")
-    ap.add_argument("--max-runtime", type=float, default=11.0,
+    ap.add_argument("--target-msa", required=True)
+    ap.add_argument("--binder-length", type=int, required=True)
+    ap.add_argument("--task-id", type=int, required=True,
+                    help="names the designs and offsets the seeds, so parallel "
+                         "tasks explore different inits")
+    ap.add_argument("--seed-base", type=int, default=0)
+    ap.add_argument("--n-designs", type=int, required=True)
+    ap.add_argument("--max-runtime", type=float, required=True,
                     help="hours; set below the job walltime so the last design "
                          "finishes and gets written")
-    ap.add_argument("--array-id", type=int, default=0,
-                    help="names the output file and seeds the RNG, so parallel "
-                         "tasks explore different inits")
     ap.add_argument("--save-dir", required=True)
-    a = ap.parse_args()
+    return ap.parse_args()
 
-    target_sequence = read_fasta(a.target_fasta)
-    os.makedirs(a.save_dir, exist_ok=True)
-    out_path = f"{a.save_dir}/designs_{a.array_id}.txt"
-    jsonl_path = f"{a.save_dir}/designs_{a.array_id}.jsonl"
+
+def main() -> int:
+    a = parse_args()
+    save_dir = Path(a.save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    designs_path = save_dir / DESIGNS_FILE
+
+    started_at = now()
+    attempted = 0
+    produced = 0
+    error = None
 
     print(f"jax {jax.__version__} {jax.default_backend()} {jax.devices()}", flush=True)
-    print(f"target: {len(target_sequence)} aa   binder: {a.binder_length} aa", flush=True)
+    try:
+        target_sequence = read_fasta(a.target_fasta)
+        print(f"target: {len(target_sequence)} aa   binder: {a.binder_length} aa", flush=True)
 
-    t_build = time.time()
-    folder, loss = build(target_sequence, a.msa_path, a.binder_length)
-    build_s = time.time() - t_build
-    print(f"models + loss built in {build_s:.1f}s", flush=True)
+        t_build = time.time()
+        folder, loss = build(target_sequence, a.target_msa, a.binder_length)
+        print(f"models + loss built in {time.time() - t_build:.1f}s", flush=True)
 
-    start = time.time()
-    n = 0
-    max_runtime_sec = a.max_runtime * 3600
-    while time.time() - start < max_runtime_sec:
-        if a.n_designs and n >= a.n_designs:
-            break
-        # Distinct per (task, design) so no two trajectories share an init.
-        seed = a.array_id * 100_000 + n
-        t0 = time.time()
-        seq, loss_value = design(
-            folder, loss, seed, target_sequence, a.msa_path, a.binder_length
-        )
-        dt = time.time() - t0
-        n += 1
-        with open(out_path, "a") as f:
-            f.write(f">{loss_value:.4f}\n{seq}\n")
-        # A machine-readable sibling of the FASTA-ish file above: the benchmark
-        # needs per-design wall-clock, which the .txt format cannot carry.
-        with open(jsonl_path, "a") as f:
-            f.write(json.dumps({
-                "index": n, "seed": seed, "sequence": seq,
-                "score": loss_value, "seconds": round(dt, 1),
-            }) + "\n")
-        print(f"[{n}] loss={loss_value:.4f} ({dt:.0f}s) {seq}", flush=True)
+        deadline = time.monotonic() + a.max_runtime * 3600
+        with designs_path.open("a") as out:
+            while produced < a.n_designs and time.monotonic() < deadline:
+                index = produced
+                # Distinct per (task, design) so no two trajectories share an init.
+                seed = a.seed_base + a.task_id * 100_000 + index
+                attempted += 1
+                t0 = time.time()
+                sequence, ranking_loss = design(
+                    folder, loss, seed, target_sequence, a.target_msa, a.binder_length
+                )
+                seconds = time.time() - t0
+                out.write(json.dumps({
+                    "native_id": f"task-{a.task_id:04d}-design-{index:06d}",
+                    "sequence": sequence,
+                    "seed": seed,
+                    "ranking_loss": ranking_loss,
+                    "completed_at": now(),
+                    "seconds": round(seconds, 1),
+                }) + "\n")
+                out.flush()
+                os.fsync(out.fileno())
+                produced += 1
+                print(f"[{produced}] loss={ranking_loss:.4f} ({seconds:.0f}s) {sequence}",
+                      flush=True)
+    except Exception as exc:  # noqa: BLE001 -- any failure must still write status.json
+        error = f"{type(exc).__name__}: {exc}"
+        traceback.print_exc()
 
-    total_min = (time.time() - start) / 60
-    print(f"done: {n} designs in {total_min:.1f} min "
-          f"({total_min / max(n, 1):.1f} min/design) -> {out_path}")
+    if error is not None or produced == 0:
+        status = "failed"
+    elif produced >= a.n_designs:
+        status = "succeeded"
+    else:
+        status = "partial"
+
+    write_status(save_dir, {
+        "task_id": a.task_id,
+        "status": status,
+        "started_at": started_at,
+        "finished_at": now(),
+        "n_attempted": attempted,
+        "n_produced": produced,
+        "output_file": DESIGNS_FILE,
+        "error": error,
+    })
+    print(f"{status}: {produced}/{a.n_designs} designs -> {designs_path}", flush=True)
     return 0
 
 

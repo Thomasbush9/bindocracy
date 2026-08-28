@@ -125,6 +125,10 @@ _JSON_COLUMNS = {
 }
 
 
+class IngestConflictError(RuntimeError):
+    """A different bundle has already been ingested under this run ID."""
+
+
 class CampaignStore:
     """Own one DuckDB connection; only the serialized ingest job should write."""
 
@@ -193,13 +197,40 @@ class CampaignStore:
         collected: CollectedRun,
         *,
         configs: Iterable[ConfigRecord] = (),
-    ) -> None:
-        """Atomically ingest one normalized adapter result and its configs."""
+    ) -> bool:
+        """Atomically ingest one normalized adapter result and its configs.
+
+        Restart-safe, because Snakemake may rerun the ingestion rule: an
+        already-ingested identical bundle is a no-op returning ``False``, and a
+        changed bundle for a known run raises before writing anything. Neither
+        path can ever create a second copy of the run under new IDs.
+        """
+        digest = collected.content_hash()
+        stored = self.connection.execute(
+            "SELECT workflow_metadata->>'bundle_sha256' FROM runs WHERE run_id = ?",
+            [collected.run.run_id],
+        ).fetchone()
+        if stored is not None:
+            if stored[0] == digest:
+                return False
+            raise IngestConflictError(
+                f"run {collected.run.run_id} is already ingested with different "
+                "content; collect into a new run directory instead"
+            )
+
+        run = collected.run.model_copy(update={
+            "workflow_metadata": {
+                **(collected.run.workflow_metadata or {}),
+                "bundle_sha256": digest,
+            }
+        })
+        new_configs = [config for config in configs if not self._config_exists(config)]
+
         con = self.connection
         con.execute("BEGIN TRANSACTION")
         try:
-            self._insert("configs", configs)
-            self._insert("runs", [collected.run])
+            self._insert("configs", new_configs)
+            self._insert("runs", [run])
             self._insert("designs", collected.designs)
             self._insert("artifacts", collected.artifacts)
             self._insert("metrics", collected.metrics)
@@ -208,6 +239,12 @@ class CampaignStore:
         except Exception:
             con.execute("ROLLBACK")
             raise
+        return True
+
+    def _config_exists(self, record: ConfigRecord) -> bool:
+        return self.connection.execute(
+            "SELECT 1 FROM configs WHERE model_config_id = ?", [record.model_config_id]
+        ).fetchone() is not None
 
     def _insert(self, table: str, records: Iterable[BaseModel]) -> None:
         rows = list(records)

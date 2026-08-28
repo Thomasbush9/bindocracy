@@ -9,7 +9,7 @@ from bindocracy.store.records import (
     MetricRecord,
     RunRecord,
 )
-from bindocracy.store.store import CampaignStore, create_database
+from bindocracy.store.store import CampaignStore, IngestConflictError, create_database
 
 __all__ = [
     "ArtifactRecord",
@@ -18,6 +18,7 @@ __all__ = [
     "ConfigRecord",
     "DecisionRecord",
     "DesignRecord",
+    "IngestConflictError",
     "MetricRecord",
     "RunRecord",
     "create_database",

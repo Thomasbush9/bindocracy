@@ -11,6 +11,7 @@ import typer
 from pydantic import ValidationError
 
 from bindocracy import __version__
+from bindocracy.adapters.mosaic import collect_mosaic_run
 from bindocracy.config import (
     ConfigLoadError,
     ConfigNotFoundError,
@@ -18,7 +19,8 @@ from bindocracy.config import (
     load_mosaic_configs,
     recover_config_yaml,
 )
-from bindocracy.store import CampaignStore, create_database
+from bindocracy.runs import ingest_bundle, write_collected
+from bindocracy.store import CampaignStore, IngestConflictError, create_database
 
 app = typer.Typer(
     add_completion=False,
@@ -26,6 +28,8 @@ app = typer.Typer(
 )
 config_app = typer.Typer(help="Validate and load campaign configuration.")
 app.add_typer(config_app, name="config")
+collect_app = typer.Typer(help="Parse a finished run directory into a staging bundle.")
+app.add_typer(collect_app, name="collect")
 
 
 @app.callback()
@@ -101,6 +105,34 @@ def export_config(
         typer.echo(str(error), err=True)
         raise typer.Exit(code=2) from error
     typer.echo(output_path)
+
+
+@collect_app.command("mosaic")
+def collect_mosaic(
+    manifest: Annotated[Path, typer.Argument(help="runs/<run>/run.json")],
+    output: Annotated[Path, typer.Option("--output", help="Staging bundle to write.")],
+) -> None:
+    """Parse one Mosaic run directory into a validated staging bundle."""
+    collected = collect_mosaic_run(manifest)
+    write_collected(collected, output)
+    run = collected.run
+    typer.echo(f"run: {run.run_id} [{run.status}]")
+    typer.echo(f"designs: {run.n_produced}/{run.n_requested} produced")
+    typer.echo(output)
+
+
+@app.command()
+def ingest(
+    database: Path,
+    collected: Annotated[Path, typer.Argument(help="A collect-produced bundle.")],
+) -> None:
+    """Write one staging bundle to the campaign database, once."""
+    try:
+        inserted = ingest_bundle(database, collected)
+    except IngestConflictError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=2) from error
+    typer.echo("ingested" if inserted else "already ingested; nothing to do")
 
 
 if __name__ == "__main__":

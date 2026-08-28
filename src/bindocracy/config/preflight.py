@@ -51,12 +51,18 @@ def preflight_mosaic(general: GeneralConfig, mosaic: MosaicConfig) -> MosaicPref
         "target MSA": general.target.msa,
         "Mosaic driver": mosaic.driver.script,
         "Mosaic container": mosaic.runtime.container,
+        "Mosaic exec wrapper": mosaic.runtime.exec_wrapper,
     }
     errors = [
         f"{description} does not exist: {path}"
         for description, path in required_files.items()
         if not path.is_file()
     ]
+
+    # The wrapper creates the scratch tree itself, but only one level down, so
+    # its parent has to exist already.
+    if not mosaic.runtime.scratch.parent.is_dir():
+        errors.append(f"Mosaic scratch parent does not exist: {mosaic.runtime.scratch.parent}")
 
     if not mosaic.runtime.weights.is_dir():
         errors.append(f"Mosaic weights directory does not exist: {mosaic.runtime.weights}")

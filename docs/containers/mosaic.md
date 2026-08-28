@@ -56,3 +56,7 @@ Use absolute paths and verify the backends listed in the first task's log.
 Mosaic is memory-intensive. H100 80 GB is the practical baseline; H200 is
 preferable for the ESM-C 6B model. A precomputed target MSA avoids runtime
 queries to the ColabFold service.
+
+For the planned config-to-DuckDB generation workflow, including the output
+contract, run manifest, adapter, ingestion boundary, tests, and Snakemake rule
+graph, see [Mosaic generation: end-to-end implementation plan](../mosaic-generation-plan.md).

@@ -104,7 +104,7 @@ def build(target_sequence: str, msa_path: str, binder_length: int):
     return folder, loss
 
 
-def design(folder, loss, seed, target_sequence, msa_path, binder_length):
+def design(folder, loss, seed, target_sequence, msa_path, binder_length, schedule):
     # NoCys makes the optimizer's alphabet 19 tokens, not 20 — cysteine is
     # spliced back in with zero probability by NoCys.sequence below.
     _pssm = np.random.uniform(low=0.25, high=0.75) * jax.random.gumbel(
@@ -116,7 +116,7 @@ def design(folder, loss, seed, target_sequence, msa_path, binder_length):
         loss_function=loss,
         x=jax.nn.softmax(_pssm),
         stepsize=0.2 * np.sqrt(binder_length),
-        n_steps=100,
+        n_steps=schedule["soft"],
         momentum=0.3,
         scale=1.00,
         logspace=False,
@@ -128,7 +128,7 @@ def design(folder, loss, seed, target_sequence, msa_path, binder_length):
         loss_function=loss,
         x=jnp.log(pssm + 1e-5),
         stepsize=0.5 * np.sqrt(binder_length),
-        n_steps=50,
+        n_steps=schedule["sharpen"],
         momentum=0.0,
         scale=1.25,
         logspace=True,
@@ -137,7 +137,7 @@ def design(folder, loss, seed, target_sequence, msa_path, binder_length):
     pssm, _ = simplex_APGM(
         loss_function=loss,
         x=jnp.log(pssm + 1e-5),
-        n_steps=15,
+        n_steps=schedule["final"],
         stepsize=0.5 * np.sqrt(binder_length),
         momentum=0.0,
         scale=1.4,
@@ -191,6 +191,11 @@ def parse_args() -> argparse.Namespace:
                     help="hours; set below the job walltime so the last design "
                          "finishes and gets written")
     ap.add_argument("--save-dir", required=True)
+    # The APGM schedule: soft optimization, then two sharpening passes. The
+    # defaults are the lab's benchmarked settings, at ~7 min per design.
+    ap.add_argument("--soft-steps", type=int, default=100)
+    ap.add_argument("--sharpen-steps", type=int, default=50)
+    ap.add_argument("--final-steps", type=int, default=15)
     return ap.parse_args()
 
 
@@ -205,10 +210,13 @@ def main() -> int:
     produced = 0
     error = None
 
+    schedule = {"soft": a.soft_steps, "sharpen": a.sharpen_steps, "final": a.final_steps}
+
     print(f"jax {jax.__version__} {jax.default_backend()} {jax.devices()}", flush=True)
     try:
         target_sequence = read_fasta(a.target_fasta)
         print(f"target: {len(target_sequence)} aa   binder: {a.binder_length} aa", flush=True)
+        print(f"schedule: {schedule}", flush=True)
 
         t_build = time.time()
         folder, loss = build(target_sequence, a.target_msa, a.binder_length)
@@ -223,7 +231,8 @@ def main() -> int:
                 attempted += 1
                 t0 = time.time()
                 sequence, ranking_loss = design(
-                    folder, loss, seed, target_sequence, a.target_msa, a.binder_length
+                    folder, loss, seed, target_sequence, a.target_msa,
+                    a.binder_length, schedule,
                 )
                 seconds = time.time() - t0
                 out.write(json.dumps({

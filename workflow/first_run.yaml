@@ -1,0 +1,10 @@
+# The first real Mosaic run: 5 designs, a 10/10/10 optimizer schedule.
+# Deliberately cheap, and deliberately not scientifically comparable.
+database: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/campaign.duckdb
+run_root: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/runs
+
+general_config: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/configs/general_config.yaml
+
+models:
+  mosaic:
+    - /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/configs/mosaic/first_run.yaml

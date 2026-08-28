@@ -26,7 +26,8 @@ from datetime import UTC, datetime
 ap = argparse.ArgumentParser()
 for flag in ("--target-fasta", "--target-msa", "--save-dir"):
     ap.add_argument(flag, required=True)
-for flag in ("--binder-length", "--task-id", "--seed-base", "--n-designs"):
+for flag in ("--binder-length", "--task-id", "--seed-base", "--n-designs",
+             "--soft-steps", "--sharpen-steps", "--final-steps"):
     ap.add_argument(flag, type=int, required=True)
 ap.add_argument("--max-runtime", type=float, required=True)
 a = ap.parse_args()

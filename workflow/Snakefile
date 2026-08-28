@@ -83,7 +83,7 @@ rule mosaic_generate:
     resources:
         slurm_account=slurm("slurm_account"),
         slurm_partition=slurm("slurm_partition"),
-        slurm_extra=slurm("slurm_extra"),
+        gres=slurm("gres"),
         cpus_per_task=slurm("cpus_per_task"),
         mem_mb=slurm("mem_mb"),
         runtime=slurm("runtime"),

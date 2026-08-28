@@ -68,12 +68,27 @@ class MosaicDriverConfig(ConfigModel):
     archive: bool = True
 
 
+class MosaicOptimizerConfig(ConfigModel):
+    """APGM schedule. The defaults are the lab's benchmarked settings.
+
+    Three stages: a soft optimization over the PSSM, then two sharpening
+    passes towards a discrete sequence. Shortening them is how a test run
+    stays cheap; it is also the only real lever on Mosaic's per-design cost,
+    which is ~7 min at these defaults.
+    """
+
+    soft_steps: int = Field(default=100, gt=0)
+    sharpen_steps: int = Field(default=50, gt=0)
+    final_steps: int = Field(default=15, gt=0)
+
+
 class MosaicSamplingConfig(ConfigModel):
     binder_length: int = Field(gt=0)
     jobs: int = Field(gt=0)
     designs_per_job: int = Field(gt=0)
     max_runtime_hours: float = Field(gt=0)
     seed_base: int = Field(ge=0)
+    optimizer: MosaicOptimizerConfig = MosaicOptimizerConfig()
 
 
 class MosaicRuntimeConfig(ConfigModel):

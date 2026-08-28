@@ -55,6 +55,9 @@ def mosaic_launch_spec(
         "--n-designs", str(task.n_requested),
         "--max-runtime", str(mosaic.sampling.max_runtime_hours),
         "--save-dir", str(run_dir / task.directory),
+        "--soft-steps", str(mosaic.sampling.optimizer.soft_steps),
+        "--sharpen-steps", str(mosaic.sampling.optimizer.sharpen_steps),
+        "--final-steps", str(mosaic.sampling.optimizer.final_steps),
     )
     return LaunchSpec(
         argv=argv,
@@ -99,7 +102,8 @@ def mosaic_resources(loaded: LoadedMosaicConfigs) -> dict[str, Any]:
     return {
         "slurm_account": cluster.account,
         "slurm_partition": cluster.default_partition,
-        "slurm_extra": f"--gres=gpu:{resources.gpus}",
+        # The plugin owns --gres and rejects it in slurm_extra.
+        "gres": f"gpu:{resources.gpus}",
         "cpus_per_task": resources.cpus,
         "mem_mb": resources.memory_gb * 1024,
         "runtime": resources.walltime_seconds // 60,

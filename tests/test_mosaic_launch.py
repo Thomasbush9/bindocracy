@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from bindocracy.config import load_mosaic_configs
 from bindocracy.runs import mosaic_launch_spec, plan_mosaic_run
@@ -30,7 +31,25 @@ def test_argv_passes_every_run_dependent_value(planned) -> None:
         "--n-designs": "4",
         "--max-runtime": "1.0",
         "--save-dir": str(manifest.directory / "tasks" / "0001"),
+        "--soft-steps": "100",
+        "--sharpen-steps": "50",
+        "--final-steps": "15",
     }
+
+
+def test_a_shortened_schedule_reaches_the_driver(configs, tmp_path: Path) -> None:
+    general_path, model_path = configs
+    raw = yaml.safe_load(model_path.read_text())
+    raw["sampling"]["optimizer"] = {"soft_steps": 10, "sharpen_steps": 5, "final_steps": 2}
+    model_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    loaded = load_mosaic_configs(general_path, model_path)
+
+    argv = mosaic_launch_spec(loaded, plan_mosaic_run(loaded, tmp_path / "run"), 0).argv
+
+    flags = dict(zip(argv[3::2], argv[4::2], strict=True))
+    assert flags["--soft-steps"] == "10"
+    assert flags["--sharpen-steps"] == "5"
+    assert flags["--final-steps"] == "2"
 
 
 def test_it_runs_the_archived_driver_not_the_authored_one(planned) -> None:
@@ -61,7 +80,7 @@ def test_resources_come_from_the_validated_configs(planned) -> None:
     assert resources == {
         "slurm_account": "test-account",
         "slurm_partition": "test-gpu",
-        "slurm_extra": "--gres=gpu:1",
+        "gres": "gpu:1",
         "cpus_per_task": 8,
         "mem_mb": 32 * 1024,
         "runtime": 120,

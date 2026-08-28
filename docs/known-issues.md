@@ -287,7 +287,23 @@ created there anyway.
 
 **Fix:** `inference.schedule_directory_path=<writable dir>` whose parent exists.
 
-### 2.9 The host Python is 3.6.8
+### 2.9 Snakemake's Slurm plugin refuses `--gres` inside `slurm_extra`
+
+Translating an `sbatch` script to the executor plugin, the obvious move is to
+carry `--gres=gpu:1` over in `slurm_extra`. The plugin rejects it outright:
+
+```text
+The --generic-resources-(GRES) option is not allowed in the 'slurm_extra'
+parameter. The generic resources (GRES) is set by the snakemake executor
+plugin and must not be overwritten.
+```
+
+**Fix:** use the plugin's own resource, `gres="gpu:1"` (it also accepts
+`gpu=1`). Cheap to hit and cheap to fix — it fails at submission, before
+anything queues — but the error names `slurm_extra` rather than the rule, so it
+reads like a profile problem rather than a resource-name problem.
+
+### 2.10 The host Python is 3.6.8
 
 `/usr/bin/python3` on the login and compute nodes is Python 3.6.8. Any helper
 script that runs outside a container must avoid `from __future__ import

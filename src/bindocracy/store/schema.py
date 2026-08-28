@@ -7,27 +7,39 @@ in the general configuration; they are intentionally not repeated on every row.
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 TABLE_ORDER = ["configs", "runs", "designs", "artifacts", "metrics", "decisions"]
 
 TABLES: dict[str, str] = {
-    # Author-facing config files are compiled into immutable, content-addressed
-    # records. A run references one resolved config; its payload may list the
-    # hashes of the general/filter/model/optimization components used to build it.
+    # One row is one directly inspectable general + model configuration pair.
+    # Several model rows may share a general_config_id. JSON is the durable
+    # source of truth; source URIs and raw-file hashes are provenance aids.
     "configs": """
         CREATE TABLE IF NOT EXISTS configs (
-            config_hash    VARCHAR PRIMARY KEY,
-            kind           VARCHAR NOT NULL CHECK (kind IN (
-                               'general', 'filtering', 'model', 'optimization',
-                               'resolved'
-                           )),
-            name           VARCHAR NOT NULL,
-            schema_version INTEGER NOT NULL CHECK (schema_version > 0),
-            payload        JSON NOT NULL,
-            author         VARCHAR,
-            rationale      VARCHAR,
-            created_at     TIMESTAMPTZ NOT NULL
+            model_config_id       VARCHAR PRIMARY KEY,
+            general_config_id     VARCHAR NOT NULL,
+
+            general_name          VARCHAR NOT NULL,
+            general_schema_version INTEGER NOT NULL CHECK (general_schema_version > 0),
+            general_config_json   JSON NOT NULL,
+            general_config_hash   VARCHAR NOT NULL,
+            general_source_uri    VARCHAR,
+            general_source_sha256 VARCHAR,
+
+            model_name            VARCHAR NOT NULL,
+            tool                  VARCHAR NOT NULL,
+            model_schema_version  INTEGER NOT NULL CHECK (model_schema_version > 0),
+            model_config_json     JSON NOT NULL,
+            model_config_hash     VARCHAR NOT NULL,
+            model_source_uri      VARCHAR,
+            model_source_sha256   VARCHAR,
+
+            author                VARCHAR,
+            rationale             VARCHAR,
+            created_at            TIMESTAMPTZ NOT NULL,
+
+            UNIQUE (general_config_id, model_name, model_config_hash)
         )
     """,
     # Every operation is a run. Generation/optimization runs produce designs;
@@ -42,7 +54,7 @@ TABLES: dict[str, str] = {
                                    'generate', 'evaluate', 'filter', 'cluster',
                                    'optimize', 'rank', 'import'
                                )),
-            config_hash        VARCHAR NOT NULL REFERENCES configs(config_hash),
+            model_config_id    VARCHAR NOT NULL REFERENCES configs(model_config_id),
             status             VARCHAR NOT NULL CHECK (status IN (
                                    'planned', 'running', 'succeeded', 'partial',
                                    'failed', 'cancelled'
@@ -111,8 +123,8 @@ TABLES: dict[str, str] = {
         )
     """,
     # Long format: one numeric observation per design, evaluator run, metric,
-    # and replicate. Evaluator identity/version/parameters belong to the run's
-    # resolved config rather than being repeated in every row.
+    # and replicate. Evaluator identity/version/parameters are reached through
+    # the run's paired config rather than being repeated in every row.
     "metrics": """
         CREATE TABLE IF NOT EXISTS metrics (
             metric_id   VARCHAR PRIMARY KEY,
@@ -154,6 +166,8 @@ TABLES: dict[str, str] = {
 }
 
 INDEXES: list[str] = [
+    "CREATE INDEX IF NOT EXISTS idx_configs_general ON configs(general_config_id)",
+    "CREATE INDEX IF NOT EXISTS idx_configs_hashes ON configs(general_config_hash, model_config_hash)",
     "CREATE INDEX IF NOT EXISTS idx_runs_kind_status ON runs(kind, status)",
     "CREATE INDEX IF NOT EXISTS idx_designs_run ON designs(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_designs_parent ON designs(parent_design_id)",
@@ -175,9 +189,15 @@ VIEWS: dict[str, str] = {
             r.name AS producing_run_name,
             r.tool AS producing_tool,
             r.kind AS producing_run_kind,
-            r.config_hash AS producing_config_hash
+            c.general_config_id,
+            r.model_config_id,
+            c.general_name,
+            c.model_name,
+            c.general_config_json,
+            c.model_config_json
         FROM designs d
         JOIN runs r USING (run_id)
+        JOIN configs c USING (model_config_id)
     """,
     "metric_history": """
         CREATE OR REPLACE VIEW metric_history AS
@@ -185,9 +205,13 @@ VIEWS: dict[str, str] = {
             m.*,
             r.name AS evaluator_run_name,
             r.tool AS evaluator_tool,
-            r.config_hash AS evaluator_config_hash
+            c.general_config_id,
+            r.model_config_id,
+            c.general_name,
+            c.model_name
         FROM metrics m
         JOIN runs r USING (run_id)
+        JOIN configs c USING (model_config_id)
     """,
 }
 
@@ -234,7 +258,13 @@ def _migrate(con) -> None:
     if current is None:
         return
     for version in range(current + 1, SCHEMA_VERSION + 1):
-        for statement in MIGRATIONS.get(version, []):
+        statements = MIGRATIONS.get(version)
+        if statements is None:
+            raise RuntimeError(
+                f"database schema v{current} cannot be migrated automatically to v{SCHEMA_VERSION}; "
+                "create a new database"
+            )
+        for statement in statements:
             con.execute(statement)
 
 

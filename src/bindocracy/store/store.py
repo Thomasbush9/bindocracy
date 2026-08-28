@@ -16,11 +16,21 @@ from bindocracy.store.records import CollectedRun, ConfigRecord
 
 _COLUMNS: dict[str, tuple[str, ...]] = {
     "configs": (
-        "config_hash",
-        "kind",
-        "name",
-        "schema_version",
-        "payload",
+        "model_config_id",
+        "general_config_id",
+        "general_name",
+        "general_schema_version",
+        "general_config_json",
+        "general_config_hash",
+        "general_source_uri",
+        "general_source_sha256",
+        "model_name",
+        "tool",
+        "model_schema_version",
+        "model_config_json",
+        "model_config_hash",
+        "model_source_uri",
+        "model_source_sha256",
         "author",
         "rationale",
         "created_at",
@@ -31,7 +41,7 @@ _COLUMNS: dict[str, tuple[str, ...]] = {
         "name",
         "tool",
         "kind",
-        "config_hash",
+        "model_config_id",
         "status",
         "n_requested",
         "n_attempted",
@@ -103,7 +113,8 @@ _COLUMNS: dict[str, tuple[str, ...]] = {
 }
 
 _JSON_COLUMNS = {
-    "payload",
+    "general_config_json",
+    "model_config_json",
     "count_details",
     "workflow_metadata",
     "resources",
@@ -145,6 +156,37 @@ class CampaignStore:
         traceback: TracebackType | None,
     ) -> None:
         self.close()
+
+    def add_configs(self, configs: Iterable[ConfigRecord]) -> tuple[str, ...]:
+        """Insert config pairs atomically, skipping IDs already present.
+
+        This method intentionally touches only ``configs``. Re-loading identical
+        YAML is safe because IDs are derived from canonical JSON content.
+        """
+        records = list(configs)
+        if not records:
+            return ()
+
+        inserted: list[str] = []
+        con = self.connection
+        con.execute("BEGIN TRANSACTION")
+        try:
+            for record in records:
+                if record.model_config_id is None:  # guarded by ConfigRecord validation
+                    raise ValueError("ConfigRecord has no model_config_id")
+                exists = con.execute(
+                    "SELECT 1 FROM configs WHERE model_config_id = ?",
+                    [record.model_config_id],
+                ).fetchone()
+                if exists is not None:
+                    continue
+                self._insert("configs", [record])
+                inserted.append(record.model_config_id)
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+        return tuple(inserted)
 
     def ingest(
         self,

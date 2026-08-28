@@ -8,7 +8,7 @@ than being repeated in every table row.
 
 | Table | One row represents |
 |---|---|
-| `configs` | An immutable general, filtering, model, optimization, or resolved config |
+| `configs` | One paired general + model configuration, with complete JSON for both |
 | `runs` | One generation, evaluation, filtering, clustering, optimization, or ranking execution |
 | `designs` | One candidate produced by a generation or optimization run |
 | `artifacts` | One file associated with a run or design |
@@ -31,6 +31,44 @@ bindocracy init-db runs/dio3-cut/campaign.duckdb
 
 The command refuses to overwrite an existing file. Use `--if-not-exists` when an
 idempotent workflow rule should accept a database that is already initialized.
+
+## Load the general and Mosaic configs
+
+```bash
+bindocracy config load-mosaic runs/dio3-cut/campaign.duckdb \
+  --general /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/configs/general_config.yaml \
+  --model /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/configs/mosaic/config_01.yaml
+```
+
+This command validates the YAML with Pydantic, checks the referenced target,
+script, container, and weights, and inserts one row containing both complete JSON
+documents. The stable `general_config_id` groups model configurations using the
+same general parameters; the stable `model_config_id` identifies the exact pair
+and is what a future run references. Source paths and hashes of the original YAML
+bytes are retained as provenance. The command initializes the database if needed
+and does not write to any other domain table. Repeating it is safe.
+
+Inspect commonly used parameters directly:
+
+```sql
+SELECT
+  general_config_id,
+  model_config_id,
+  general_config_json->'target'->>'name' AS target,
+  model_config_json->'sampling'->>'binder_length' AS binder_length,
+  model_config_json->'resources'->>'walltime' AS walltime
+FROM configs;
+```
+
+Recover either JSON document as YAML using its corresponding ID:
+
+```bash
+bindocracy config export runs/dio3-cut/campaign.duckdb \
+  <general_config_id-or-model_config_id> recovered.yaml
+```
+
+The Python equivalents are `config_yaml_from_db()` for a YAML string and
+`recover_config_yaml()` for writing a file.
 
 ## Output-adapter contract
 

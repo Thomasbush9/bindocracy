@@ -8,7 +8,7 @@ import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Self
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -31,26 +31,19 @@ def sha256_text(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
 
 
-def config_hash(kind: str, schema_version: int, payload: dict[str, Any]) -> str:
-    """Hash behavior-bearing config content, excluding authorship metadata."""
-    return sha256_text(
-        canonical_json(
-            {"kind": kind, "schema_version": schema_version, "payload": payload}
-        )
-    )
+def config_hash(payload: dict[str, Any]) -> str:
+    """Hash canonical validated configuration parameters."""
+    return sha256_text(canonical_json(payload))
+
+
+def stable_config_id(kind: str, *parts: str) -> str:
+    """Return a deterministic ID for a config or general+model pair."""
+    return str(uuid5(NAMESPACE_URL, ":".join(("bindocracy", kind, *parts))))
 
 
 def sequence_hash(sequence: str) -> str:
     """Hash an uppercase, whitespace-free single-chain sequence."""
     return sha256_text(sequence)
-
-
-class ConfigKind(StrEnum):
-    GENERAL = "general"
-    FILTERING = "filtering"
-    MODEL = "model"
-    OPTIMIZATION = "optimization"
-    RESOLVED = "resolved"
 
 
 class RunKind(StrEnum):
@@ -111,22 +104,49 @@ class Record(BaseModel):
 
 
 class ConfigRecord(Record):
-    config_hash: str | None = None
-    kind: ConfigKind
-    name: str
-    schema_version: int = Field(default=1, gt=0)
-    payload: dict[str, Any]
+    model_config_id: str | None = None
+    general_config_id: str | None = None
+
+    general_name: str
+    general_schema_version: int = Field(gt=0)
+    general_config_json: dict[str, Any]
+    general_config_hash: str | None = None
+    general_source_uri: str | None = None
+    general_source_sha256: str | None = None
+
+    model_name: str
+    tool: str
+    model_schema_version: int = Field(gt=0)
+    model_config_json: dict[str, Any]
+    model_config_hash: str | None = None
+    model_source_uri: str | None = None
+    model_source_sha256: str | None = None
+
     author: str | None = None
     rationale: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")
-    def fill_or_check_hash(self) -> Self:
-        expected = config_hash(self.kind, self.schema_version, self.payload)
-        if self.config_hash is None:
-            object.__setattr__(self, "config_hash", expected)
-        elif self.config_hash != expected:
-            raise ValueError(f"config_hash does not match canonical payload: {expected}")
+    def fill_or_check_identity(self) -> Self:
+        expected_general_hash = config_hash(self.general_config_json)
+        expected_model_hash = config_hash(self.model_config_json)
+        expected_general_id = stable_config_id("general", expected_general_hash)
+        expected_model_id = stable_config_id(
+            "model", expected_general_id, expected_model_hash
+        )
+
+        expected = {
+            "general_config_hash": expected_general_hash,
+            "model_config_hash": expected_model_hash,
+            "general_config_id": expected_general_id,
+            "model_config_id": expected_model_id,
+        }
+        for field, value in expected.items():
+            current = getattr(self, field)
+            if current is None:
+                object.__setattr__(self, field, value)
+            elif current != value:
+                raise ValueError(f"{field} does not match config JSON: {value}")
         return self
 
 
@@ -136,7 +156,7 @@ class RunRecord(Record):
     name: str
     tool: str
     kind: RunKind
-    config_hash: str
+    model_config_id: str
     status: RunStatus = RunStatus.PLANNED
     n_requested: int | None = Field(default=None, ge=0)
     n_attempted: int | None = Field(default=None, ge=0)

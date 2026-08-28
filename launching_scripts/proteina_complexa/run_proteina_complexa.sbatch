@@ -12,10 +12,9 @@
 #   survivors during evaluate.
 #
 # TARGET REGISTRATION
-#   configs/ is copied out of the read-only image (see README.md in this dir)
-#   and configs/targets/targets_dict.yaml carries an appended `dio3_cut` entry.
-#   run_step passes --config-path <parent of the yaml>, so the host copy
-#   composes correctly and `complexa target list` sees our dict too.
+#   Proteina's reusable Hydra tree stays in the image. The launcher binds only
+#   the per-run target PDB and its small target registry, so changing targets
+#   never requires rebuilding the image or mounting the full 80-file tree.
 #
 # DESIGN-COUNT ARITHMETIC
 #   generate writes nsamples x nrepeat_per_sample x replicas structures.
@@ -51,19 +50,36 @@ HERE="$REPO_ROOT/launching_scripts/$TOOL"
 mkdir -p "$OUT/logs" "$OUT/resources"
 
 SIF="$IMAGE_ROOT/proteina_complexa.sif"
+PCX_TARGET_NAME="${PROTEINA_TARGET_NAME:-$TARGET_NAME}"
+PCX_TARGET_PDB="${PROTEINA_TARGET_PDB:-$TARGET_PDB}"
+PCX_TARGET_REGISTRY="${PROTEINA_TARGET_REGISTRY:-$HERE/target_registry.yaml}"
+CONTAINER_TARGET=/mnt/bindocracy_target.pdb
+CONTAINER_TARGET_REGISTRY=/opt/proteina-complexa/configs/targets/targets_dict.yaml
+PCX_BINDER_MIN="${PROTEINA_BINDER_MIN:-70}"
+PCX_BINDER_MAX="${PROTEINA_BINDER_MAX:-110}"
+
+test -s "$PCX_TARGET_PDB" \
+    || { echo "FATAL: target PDB not found: $PCX_TARGET_PDB"; exit 1; }
+test -s "$PCX_TARGET_REGISTRY" \
+    || { echo "FATAL: target registry not found: $PCX_TARGET_REGISTRY"; exit 1; }
+
 export TMPDIR="$(node_tmp $TOOL)"
 export SINGULARITYENV_TMPDIR="$TMPDIR"
 export SINGULARITYENV_COMPLEXA_RUNTIME_CACHE="$TMPDIR/complexa-cache"
 mkdir -p "$SINGULARITYENV_COMPLEXA_RUNTIME_CACHE"
 
 # AF2 is JAX and Complexa is PyTorch, on the same device. JAX otherwise
-# preallocates ~75% of the H100 and starves torch. This also makes the GPU-memory
+# preallocates ~75% of the GPU and starves torch. This also makes the GPU-memory
 # figure in resources/ mean actual demand rather than allocator reservation.
 export SINGULARITYENV_XLA_PYTHON_CLIENT_PREALLOCATE=false
 
-[[ -f "$TARGET_PDB" ]] || { echo "FATAL: target PDB missing: $TARGET_PDB"; exit 1; }
-grep -q "dio3_cut:" "$HERE/configs/targets/targets_dict.yaml" \
-    || { echo "FATAL: dio3_cut not registered in the host config copy"; exit 1; }
+singularity exec --cleanenv \
+    --bind "$PCX_TARGET_PDB:$CONTAINER_TARGET:ro" \
+    --bind "$PCX_TARGET_REGISTRY:$CONTAINER_TARGET_REGISTRY:ro" \
+    "$SIF" bash -c \
+    'test -s "$1" && grep -Fq "  $2:" "$3"' \
+    _ "$CONTAINER_TARGET" "$PCX_TARGET_NAME" "$CONTAINER_TARGET_REGISTRY" \
+    || { echo "FATAL: runtime target bind or registry is invalid"; exit 1; }
 
 # All outputs are written relative to CWD, so the working directory IS the
 # output directory here.
@@ -74,13 +90,16 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 gpu_trace_start "$OUT/resources/gpu_trace${RUN_NAME:+-$RUN_NAME}.csv"
 
 # gen_njobs/eval_njobs are GPU counts and must both be 1 on a single-GPU job.
-singularity run --cleanenv --nv --pwd "$OUT" "$SIF" \
-    design "$HERE/configs/search_binder_local_pipeline.yaml" \
-    ++run_name="${RUN_NAME:-dio3_cut_v1}" \
-    ++generation.task_name=dio3_cut \
+singularity run --cleanenv --nv --pwd "$OUT" \
+    --bind "$PCX_TARGET_PDB:$CONTAINER_TARGET:ro" \
+    --bind "$PCX_TARGET_REGISTRY:$CONTAINER_TARGET_REGISTRY:ro" \
+    "$SIF" \
+    design /opt/proteina-complexa/configs/search_binder_local_pipeline.yaml \
+    ++run_name="${RUN_NAME:-${PCX_TARGET_NAME}_v1}" \
+    ++generation.task_name="$PCX_TARGET_NAME" \
     ++generation.dataloader.dataset.nres.nsamples="$N_BINDERS" \
-    ++generation.dataloader.dataset.nres.low=70 \
-    ++generation.dataloader.dataset.nres.high=110 \
+    ++generation.dataloader.dataset.nres.low="$PCX_BINDER_MIN" \
+    ++generation.dataloader.dataset.nres.high="$PCX_BINDER_MAX" \
     ++generation.dataloader.dataset.nrepeat_per_sample=1 \
     ++generation.dataloader.batch_size="${GEN_BATCH_SIZE:-8}" \
     ++generation.search.algorithm=best-of-n \

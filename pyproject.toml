@@ -1,7 +1,69 @@
 [project]
 name = "bindocracy"
 version = "0.1.0"
-description = "Add your description here"
+description = "Run many binder-design models from one place, on one cluster, into one database."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+
+dependencies = [
+    # --- workflow engine -------------------------------------------------
+    # Snakemake 9 moved its executors out of core, so the SLURM backend is a
+    # separate plugin. It pulls snakemake-executor-plugin-slurm-jobstep in
+    # automatically -- that is the piece that runs inside the job step, and
+    # you should not depend on it directly.
+    "snakemake>=9.26",
+    "snakemake-executor-plugin-slurm>=2.8",
+
+    # --- data ------------------------------------------------------------
+    # DuckDB is the store: it reads the tools' heterogeneous CSVs in place,
+    # so the ingest step is SQL rather than nine bespoke parsers. pyarrow
+    # gives Parquet, so the unified design table is one file instead of nine.
+    "duckdb>=1.5",
+    "pandas>=2.2",
+    "pyarrow>=17",
+
+    # Terminal SQL IDE with the DuckDB adapter built in. Chosen over the
+    # `duckdb -ui` browser app because it needs no port forwarding from the
+    # login node -- see docs/env-setup.md.
+    "harlequin>=2.10",
+
+    # --- structure and sequence I/O --------------------------------------
+    # Reads mmCIF as well as PDB. This matters: BoltzGen writes CIF only, and
+    # Caliby's `out_pdb` column holds .cif paths, so neither is reachable with
+    # the hand-rolled PDB parser in launching_scripts/common/seq_qc.py.
+    "biotite>=1.7",
+
+    # --- configuration ---------------------------------------------------
+    # pyyaml parses the per-tool configs; pydantic validates them at submit
+    # time, so a mistyped key fails in a second instead of 40 minutes into a
+    # GPU job. jinja2 renders one target spec into each tool's own config and
+    # sbatch dialect (snakemake depends on it anyway).
+    "pyyaml>=6.0",
+    "pydantic>=2.9",
+    "jinja2>=3.1",
+
+    # --- CLI and reporting -----------------------------------------------
+    "typer>=0.15",
+    "rich>=13.9",
+    "matplotlib>=3.9",
+]
+
+[project.scripts]
+bindocracy = "bindocracy.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bindocracy"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

@@ -1,41 +1,25 @@
-# Proteina-Complexa configs
+# Proteina-Complexa runtime target contract
 
-`configs/` is a **verbatim copy of `/opt/proteina-complexa/configs/` from
-`proteina_complexa.sif`**, with exactly one edit.
+The image is target-agnostic. It owns Proteina-Complexa's reusable Hydra config
+tree, dependencies, model weights, and executables. The launcher adds exactly
+two read-only runtime binds:
 
-## Why it is vendored
+- the requested target PDB at `/mnt/bindocracy_target.pdb`;
+- one small target registry at the in-image `targets_dict.yaml` location.
 
-Proteina-Complexa resolves its target from `configs/targets/targets_dict.yaml`,
-and the copy inside the image is read-only. `run_step` invokes Hydra with
-`--config-path <parent of the pipeline yaml>`, so a host-side copy composes
-correctly and `complexa target list` sees our dictionary too. There is no
-override that adds a target without a writable config tree.
-
-Regenerate it with:
+The default registry is [`target_registry.yaml`](target_registry.yaml), which
+describes the DIO3 smoke target. A different target requires no image rebuild:
 
 ```bash
-singularity exec /n/holylfs06/.../images/proteina_complexa.sif \
-    cp -r /opt/proteina-complexa/configs <here>/configs
-chmod -R u+w <here>/configs
+PROTEINA_TARGET_NAME=my_target \
+PROTEINA_TARGET_PDB=/path/to/my_target.pdb \
+PROTEINA_TARGET_REGISTRY=/path/to/my_target_registry.yaml \
+sbatch run_proteina_complexa.sbatch
 ```
 
-## The one edit
+The registry key must match `PROTEINA_TARGET_NAME`, and its `target_path` must
+be `/mnt/bindocracy_target.pdb`. Binder length can be changed independently
+with `PROTEINA_BINDER_MIN` and `PROTEINA_BINDER_MAX`.
 
-`configs/targets/targets_dict.yaml` gains a `dio3_cut` entry at the end. Three
-things about it are deliberate:
-
-- **`target_path` is absolute.** It takes priority over the
-  `$DATA_PATH/target_data/<source>/<filename>.pdb` fallback, and that fallback
-  cannot be steered here anyway: `SINGULARITYENV_COMPLEXA_DATA_PATH` never
-  reaches `DATA_PATH`, because Singularity injects user environment *after*
-  `%environment` runs. An absolute path sidesteps the whole problem.
-- **`target_input: "A1-201"` is an explicit range.** The docs say a bare chain
-  id `A` works; `AtomSelectionStack.from_contig` uses the regex
-  `([A-Za-z]+)(\d+)-(\d+)` and raises `ValueError` on it.
-- **`hotspot_residues: []`** means unconstrained placement, matching the rest of
-  the benchmark.
-
-Everything else in the tree is upstream and unmodified. Note that the shipped
-benchmark targets (`02_PDL1` and friends) keep **relative** paths like
-`./assets/target_data/...` and therefore only resolve when the working directory
-is `/opt/proteina-complexa`; that does not affect `dio3_cut`.
+This keeps tool-owned defaults in the SIF and target/campaign state in the
+harness, without restoring the former 80-file config bind.

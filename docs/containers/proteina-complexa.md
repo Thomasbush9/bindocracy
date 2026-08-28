@@ -42,16 +42,24 @@ run, then inspect `status` before scaling.
 
 ## Custom target data
 
-If the tool expects targets at `/data`, bind a host target directory there:
+Keep targets out of the image. Bind the requested PDB and one target registry;
+the rest of the Hydra tree remains embedded:
 
 ```bash
-export SINGULARITYENV_COMPLEXA_DATA_PATH=/data
+TARGET_PDB=/absolute/path/to/my_target.pdb
+TARGET_REGISTRY=/absolute/path/to/target_registry.yaml
 
 singularity run --cleanenv --nv \
-  --bind /absolute/path/to/targets:/data \
+  --bind "$TARGET_PDB:/mnt/bindocracy_target.pdb:ro" \
+  --bind "$TARGET_REGISTRY:/opt/proteina-complexa/configs/targets/targets_dict.yaml:ro" \
   "$SIF" design /opt/proteina-complexa/configs/search_binder_local_pipeline.yaml \
   ++run_name=my_run ++generation.task_name=my_target
 ```
+
+The registry's `my_target.target_path` must be
+`/mnt/bindocracy_target.pdb`. The maintained launcher implements this exact
+two-bind contract and accepts target-specific paths through environment
+variables; it does not bind or copy the complete config directory.
 
 Complexa, AF2, ESM2, RF3, ProteinMPNN, LigandMPNN, Foldseek, and supporting
 pipeline assets are embedded. Outputs and runtime caches remain writable host

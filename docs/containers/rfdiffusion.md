@@ -18,11 +18,11 @@ and use the installed image and definition as separate artifacts. Do not assume
 `arch_list` stops at sm_86 with no PTX to JIT forward from, so every CUDA op
 fails with `no kernel image is available for execution on the device` — verified
 down to a bare host-to-device tensor copy by
-`bindocracy/launching_scripts/rfdiffusion/diagnose_h100.sbatch`. Submit it to
-A100 (sm_80) until the image is rebuilt:
+`bindocracy/launching_scripts/rfdiffusion/diagnose_h100.sbatch`. The launcher
+defaults to A100 (sm_80) until the image is rebuilt:
 
 ```bash
-sbatch --partition=kempner --gres=gpu:nvidia_a100-sxm4-40gb:1 run_rfdiffusion.sbatch
+sbatch run_rfdiffusion.sbatch
 ```
 
 **Checkpoints ARE embedded — the section below is wrong.** All nine ship at

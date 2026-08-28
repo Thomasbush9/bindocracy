@@ -1,7 +1,7 @@
 # launching_scripts
 
-Reference launchers for every binder-design tool in the suite, as used for the
-alpha benchmark described in [`docs/benchmark-alpha.md`](../docs/benchmark-alpha.md).
+Reference launchers for every binder-design tool exercised in the alpha
+benchmark.
 
 Each subdirectory is one tool and contains the configs it consumes plus one
 `run_<tool>.sbatch`. The scripts are meant to be read as much as run: the
@@ -71,7 +71,7 @@ previous DIO3 campaigns (`hotspots: ""` in both
 `mosaic_setup/mosaic/pipelines/presets/*_dio3.yaml`) and letting each generator
 choose its own surface. Genie 3 is the sole exception — it has no hotspot-free
 binder mode — and uses `A110,A112,A131`, the solvent-exposed rim of the
-catalytic pocket. See `docs/benchmark-alpha.md` for how those were chosen and
+catalytic pocket. The archived alpha benchmark records how those were chosen and
 why Genie 3's designs are therefore not strictly comparable.
 
 ## Conventions worth keeping
@@ -97,5 +97,6 @@ with `jobstats`, `sacct` and a one-line TSV summary. `common/gpu_trace.sh` is
 sourced by each sbatch and samples `nvidia-smi` every 15 s, because `jobstats`
 reports a single memory maximum and its utilisation sampler is too coarse for
 short jobs — it reported "GPU utilization 0% <-- GPU was not used" for a job
-whose GPU memory peaked at 76 GB. Read `docs/benchmark-alpha.md` before trusting
-any GPU-memory figure: the JAX-based tools preallocate.
+whose GPU memory peaked at 76 GB. Read
+[`docs/harness-design.md`](../docs/harness-design.md) before trusting any
+GPU-memory figure: the JAX-based tools preallocate.

@@ -1,8 +1,8 @@
 # Known issues and traps
 
-Everything here was hit or verified during the alpha benchmark
-(see [`benchmark-alpha.md`](benchmark-alpha.md)). Ordered by how much damage it
-can do, not by which tool it belongs to.
+Everything here was hit or verified during the archived alpha benchmark.
+Issues are ordered by how much damage they can do, not by which tool they
+belong to.
 
 The dangerous ones are at the top because they **do not raise**. A tool that
 crashes costs an hour; a tool that silently designs against the wrong model,
@@ -309,7 +309,7 @@ Read this before comparing any two tools' output counts.
 | Proteina-Complexa | `nsamples × nrepeat_per_sample × replicas` generated, then filtered to `filter_samples_limit` | `dedup_sequence: true` drops identical sequences before top-N, so you can finish with fewer than 40. |
 | Protein-Hunter | 40 trajectories × `num_cycles` sequences | ProteinMPNN emits exactly **one** sequence per cycle (`batch_size` hardcoded to 1). A 20%-alanine cap silently excludes designs from `best_*` and writes their `best_iptm` as `NaN`. |
 | Genie 3 | `n_sample: 40` **per problem** | With one problem that is the total. Binder length comes from the problem JSON, not the YAML. |
-| RFdiffusion | `inference.num_designs=40` backbones | Backbones only, poly-glycine — no sequences. `inference.cautious=True` (default) skips designs whose PDB already exists, so a rerun silently no-ops. |
+| RFdiffusion | `inference.num_designs=40` backbones | Backbones only, poly-glycine — no sequences. Upstream `inference.cautious=True` skips existing PDBs; the launcher explicitly sets it to `False`, so a fixed-prefix rerun overwrites them. |
 | Caliby | `num_seqs_per_pdb × n_structures` | Sequences live only in `seq_des_outputs.csv`; despite the `out_pdb` column name the files are `.cif`. |
 | Mosaic | `--n-designs 40` | Straightforward — one sequence per design, appended as it finishes. |
 
@@ -353,9 +353,8 @@ Options, best first:
 1. **Rebuild the image** against a torch/DGL build with sm_90 support. The
    adjacent `RFDiffusion/rfdiff.def` already describes a newer variant; it was
    never built, and the weights question it raises is moot (see §5.1).
-2. **Run RFdiffusion on A100** and everything else on H100. One line in
-   `run_rfdiffusion.sbatch`. Outside this benchmark's stated `kempner_h100`-only
-   policy, so it needs a decision rather than a default.
+2. **Run RFdiffusion on A100** and everything else on H100. This is now the
+   explicit partition/GRES default in `run_rfdiffusion.sbatch`.
 3. Drop RFdiffusion. Genie 3 and Proteina-Complexa both cover backbone diffusion
    and both run natively on H100.
 

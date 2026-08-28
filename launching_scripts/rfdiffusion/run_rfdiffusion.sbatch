@@ -25,7 +25,7 @@
 #   trained with 80-100% of hotspots masked, so the all-masked case is
 #   in-distribution. The cost is no epitope control.
 #
-# THIS IMAGE CANNOT RUN ON H100 — SUBMIT IT TO A100
+# THIS IMAGE CANNOT RUN ON H100 — A100 IS THE LAUNCHER DEFAULT
 #   Measured, not predicted. On kempner_h100 the run dies with
 #       RuntimeError: CUDA error: no kernel image is available for execution
 #   and torch reports
@@ -34,15 +34,10 @@
 #   forward to sm_90. The image carries torch 1.12.1+cu116 / DGL 1.0.2+cu116 /
 #   Python 3.9, and CUDA 11.6 predates Hopper entirely.
 #
-#   The SBATCH lines below therefore describe the H100 default used by the rest
-#   of the suite, and are OVERRIDDEN on the command line for this one tool:
-#
-#       sbatch --partition=kempner --gres=gpu:nvidia_a100-sxm4-40gb:1 \
-#              --time=06:00:00 run_rfdiffusion.sbatch
-#
-#   sm_80 is covered by the shipped cubins, and 40 GB is ample for a 281-residue
-#   complex. The proper fix is to rebuild the image against a torch/DGL with
-#   sm_90 support; see docs/known-issues.md §4.
+#   This launcher's partition and GRES select the measured working A100
+#   allocation directly. sm_80 is covered by the shipped cubins, and 40 GB is
+#   ample for a 281-residue complex. The proper fix is to rebuild the image
+#   against a torch/DGL with sm_90 support; see docs/known-issues.md §4.
 #
 #   Run diagnose_h100.sbatch to re-check after any image rebuild.
 #
@@ -50,9 +45,9 @@
 #     cd .../launching_scripts/rfdiffusion && sbatch run_rfdiffusion.sbatch
 #
 #SBATCH --job-name=bd-rfdiffusion
-#SBATCH --partition=kempner_h100
+#SBATCH --partition=kempner
 #SBATCH --account=kempner_bsabatini_lab
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:nvidia_a100-sxm4-40gb:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=04:00:00
@@ -97,6 +92,7 @@ singularity run --cleanenv --nv \
     inference.input_pdb="$TARGET_PDB" \
     inference.output_prefix="$OUT/designs/dio3_cut" \
     inference.num_designs="$NUM_DESIGNS" \
+    inference.cautious=False \
     inference.model_directory_path=/app/RFdiffusion/models \
     inference.ckpt_override_path=/app/RFdiffusion/models/Complex_base_ckpt.pt \
     inference.schedule_directory_path="$OUT/schedules" \

@@ -25,10 +25,12 @@ wanted:
 | a **problem-set directory** (JSON + per-chain PDB/FASTA/MSA trees) | Genie 3 |
 | an **entry appended to a Hydra target registry** | Proteina-Complexa |
 
-Two of those cannot be produced by a format conversion at all. Genie 3 needs a
+Two of those cannot be produced by a format conversion alone. Genie 3 needs a
 problem set whose official builder calls the ColabFold server and crashes
-offline; Proteina-Complexa needs a target registered inside a config tree that
-lives read-only inside the image and has to be copied out first.
+offline; Proteina-Complexa also needs a small Hydra target registry. The
+harness binds that registry over the single in-image registry file alongside
+the target PDB; the remaining tool-owned config tree stays read-only in the
+image.
 
 **Requirement.** One `Target` object, built once from sequence + MSA, that can
 *materialise* each of these representations on demand and cache them. Folding the
@@ -249,7 +251,7 @@ Proteina-Complexa is fast and only 13% utilised.
 
 ### Measured, 2026-08-27 — the sweep
 
-Raw data in `outputs/_shared/batch_sweep.json`; figure 5 in `docs/figures/`.
+Raw data and the rendered figure are retained with the archived alpha benchmark.
 Sampled at 2 s rather than the usual 15 s, because a two-minute job's peak is
 invisible at 15 s.
 
@@ -352,9 +354,11 @@ always the same as peak utilisation.
   walltime or say plainly that the job will not start today.
 - **Resume-safety varies and should be declared.** FreeBindCraft skips designs
   whose PDB already exists (so a walltime kill costs only a resubmit — but a
-  *completed* run re-submitted exits immediately); RFdiffusion's
-  `inference.cautious=True` silently no-ops a rerun; Protein-Hunter has no seed
-  at all, so its runs are **not reproducible and cannot be split across jobs**.
+  *completed* run re-submitted exits immediately); RFdiffusion defaults to
+  `inference.cautious=True`, but its launcher now overrides that to `False` so
+  a fixed-prefix rerun overwrites instead of silently no-oping; Protein-Hunter
+  has no seed at all, so its runs are **not reproducible and cannot be split
+  across jobs**.
 
 ---
 
@@ -390,7 +394,7 @@ The benchmark deliberately did not answer these, and the harness design should
 not pretend otherwise:
 
 - **No cross-tool quality comparison exists.** Every score in
-  `benchmark-alpha.md` comes from a different scorer, mostly the same model that
+  the archived alpha benchmark comes from a different scorer, mostly the same model that
   produced the design. A common scorer over all ~350 designs is the next step.
 - **The epitope question is open.** Eight tools ran hotspot-free and each chose
   its own surface; they are very unlikely to agree. Genie 3, the one tool given

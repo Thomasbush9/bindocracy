@@ -1,0 +1,9 @@
+target_dict_cfg:
+  dio3_cut:
+    source: bindocracy
+    target_filename: dio3_cut
+    target_path: /mnt/bindocracy_target.pdb
+    target_input: "A1-201"
+    hotspot_residues: []
+    binder_length: [70, 110]
+    pdb_id: null

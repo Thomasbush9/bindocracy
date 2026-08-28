@@ -14,17 +14,15 @@ use the login node only to edit inputs, inspect help, and submit jobs.
 - **[What the alpha run says about building the harness](docs/harness-design.md)**
   — the actual conclusion: nine requirements the library has to absorb, each one
   traced to something that went wrong
-- **[Alpha benchmark: nine tools, one target, 40 binders each](docs/benchmark-alpha.md)**
-  — measured runtimes, resource requests, and what each tool actually outputs
-  ([figures](docs/figures/))
 - **[Known issues and traps](docs/known-issues.md)** — read before configuring
   anything; several tools produce confident, well-formed output when misconfigured
+- **[Campaign database and output-adapter contract](docs/database.md)** — the
+  single-target schema, empty-database command, and normalized parser interface
 - **[launching_scripts/](launching_scripts/)** — ready-to-run, heavily commented
   `sbatch` launchers and configs, one directory per tool
 - [Running containers on the cluster](docs/running-containers.md)
 - [Weights and offline-readiness report](docs/weights.md)
 - [Container catalog](docs/containers/README.md)
-- [The brief this work came from](docs/initial_prompt.md)
 
 ## Container guides
 

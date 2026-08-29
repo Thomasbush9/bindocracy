@@ -11,16 +11,15 @@ import typer
 from pydantic import ValidationError
 
 from bindocracy import __version__
-from bindocracy.adapters import UnknownToolError, collect_run
 from bindocracy.config import (
     ConfigLoadError,
     ConfigNotFoundError,
     ConfigPreflightError,
-    load_mosaic_configs,
     recover_config_yaml,
 )
 from bindocracy.runs import ingest_bundle, write_collected
 from bindocracy.store import CampaignStore, IngestConflictError, create_database
+from bindocracy.tools import UnknownToolError, collect_run, load_configs
 
 app = typer.Typer(
     add_completion=False,
@@ -68,7 +67,7 @@ def load_mosaic_config(
 ) -> None:
     """Validate general and Mosaic configs and add only their config rows."""
     try:
-        loaded = load_mosaic_configs(general, model)
+        loaded = load_configs(general, model)
     except (ConfigLoadError, ConfigPreflightError, ValidationError) as error:
         typer.echo(f"Configuration error:\n{error}", err=True)
         raise typer.Exit(code=2) from error

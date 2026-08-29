@@ -14,11 +14,11 @@ import duckdb
 import pytest
 from conftest import design_line, write_boltzgen_task, write_task
 
-from bindocracy.adapters import collect_run
 from bindocracy.runs import ingest_bundle, write_collected
 from bindocracy.store import create_database
 from bindocracy.tools import (
     UnknownToolError,
+    collect_run,
     load_configs,
     plan,
     plugin_for,

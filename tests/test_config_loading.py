@@ -8,20 +8,16 @@ import yaml
 from conftest import write_configs
 from pydantic import ValidationError
 
-from bindocracy.config import (
-    MosaicConfig,
-    config_yaml_from_db,
-    load_mosaic_configs,
-    load_yaml,
-    recover_config_yaml,
-)
+from bindocracy.config import config_yaml_from_db, load_yaml, recover_config_yaml
 from bindocracy.store import CampaignStore
+from bindocracy.tools import load_configs
+from bindocracy.tools.mosaic.config import MosaicConfig
 
 
 def test_load_mosaic_configs_returns_typed_models(tmp_path: Path) -> None:
     general_path, model_path = write_configs(tmp_path)
 
-    loaded = load_mosaic_configs(general_path, model_path)
+    loaded = load_configs(general_path, model_path)
 
     assert loaded.general.target.sequence_fasta == tmp_path / "target.fasta"
     assert loaded.model.sampling.jobs == 2
@@ -56,13 +52,13 @@ def test_a_recovered_config_can_be_re_run(tmp_path: Path) -> None:
     ID would silently fork the lineage of every design it produced.
     """
     general_path, model_path = write_configs(tmp_path)
-    original = load_mosaic_configs(general_path, model_path)
+    original = load_configs(general_path, model_path)
     record = original.to_record()
     database = tmp_path / "campaign.duckdb"
     with CampaignStore.create(database) as store:
         store.add_configs([record])
 
-    recovered = load_mosaic_configs(
+    recovered = load_configs(
         recover_config_yaml(database, record.general_config_id, tmp_path / "again_g.yaml"),
         recover_config_yaml(database, record.model_config_id, tmp_path / "again_m.yaml"),
     )
@@ -83,7 +79,7 @@ def test_a_recovered_walltime_is_not_read_as_a_number(tmp_path: Path) -> None:
     raw = yaml.safe_load(model_path.read_text())
     raw["resources"]["walltime"] = "12:00:00"
     model_path.write_text(yaml.safe_dump(raw))
-    record = load_mosaic_configs(general_path, model_path).to_record()
+    record = load_configs(general_path, model_path).to_record()
     database = tmp_path / "campaign.duckdb"
     with CampaignStore.create(database) as store:
         store.add_configs([record])
@@ -111,7 +107,7 @@ def test_a_stale_schema_version_is_named_in_the_error(tmp_path: Path) -> None:
 
 def test_config_load_populates_only_configs_and_is_idempotent(tmp_path: Path) -> None:
     general_path, model_path = write_configs(tmp_path)
-    loaded = load_mosaic_configs(general_path, model_path)
+    loaded = load_configs(general_path, model_path)
     record = loaded.to_record()
     database = tmp_path / "campaign.duckdb"
 
@@ -135,7 +131,7 @@ def test_config_load_populates_only_configs_and_is_idempotent(tmp_path: Path) ->
 
 def test_recover_general_and_model_yaml(tmp_path: Path) -> None:
     general_path, model_path = write_configs(tmp_path)
-    loaded = load_mosaic_configs(general_path, model_path)
+    loaded = load_configs(general_path, model_path)
     record = loaded.to_record()
     assert record.general_config_id is not None
     assert record.model_config_id is not None

@@ -6,18 +6,16 @@ import duckdb
 import pytest
 from conftest import design_line, write_task
 
-from bindocracy.adapters import collect_run
-from bindocracy.adapters.mosaic import METRIC_NAME
-from bindocracy.config import load_mosaic_configs
 from bindocracy.runs import ingest_bundle, read_collected, write_collected
 from bindocracy.store import CampaignStore, IngestConflictError, create_database
-from bindocracy.tools import plan
+from bindocracy.tools import collect_run, load_configs, plan
+from bindocracy.tools.mosaic.adapter import METRIC_NAME
 
 
 @pytest.fixture
 def staged(configs, tmp_path: Path) -> tuple[Path, Path]:
     """A collected two-task run and an initialized empty database."""
-    manifest = plan(load_mosaic_configs(*configs), tmp_path / "run")
+    manifest = plan(load_configs(*configs), tmp_path / "run")
     for task_id in (0, 1):
         write_task(manifest.directory, task_id,
                    [design_line(task_id, index) for index in range(4)], status={})

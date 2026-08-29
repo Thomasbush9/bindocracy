@@ -12,13 +12,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from bindocracy.adapters.boltzgen import METRICS_FILE, BoltzGenOutputAdapter
 from bindocracy.config.load import LoadedConfigs
-from bindocracy.config.models import BoltzGenConfig, GeneralConfig
-from bindocracy.config.preflight import BoltzGenPreflight, preflight_boltzgen
-from bindocracy.runs.launch import LaunchSpec, boltzgen_launch_spec, boltzgen_resources
+from bindocracy.config.models import GeneralConfig
+from bindocracy.runs.launch import LaunchSpec
 from bindocracy.runs.manifest import RunManifest, ToolPlan
 from bindocracy.tools.base import ToolPlugin
+from bindocracy.tools.boltzgen.adapter import METRICS_FILE, BoltzGenOutputAdapter
+from bindocracy.tools.boltzgen.config import BoltzGenConfig
+from bindocracy.tools.boltzgen.launch import boltzgen_launch_spec, boltzgen_resources
+from bindocracy.tools.boltzgen.preflight import BoltzGenPreflight, preflight_boltzgen
 
 
 class BoltzGenPlugin(ToolPlugin):

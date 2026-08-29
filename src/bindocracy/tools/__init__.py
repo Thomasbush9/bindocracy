@@ -10,6 +10,7 @@ from bindocracy.tools.mosaic import MosaicPlugin
 from bindocracy.tools.registry import (
     DuplicateRunNameError,
     UnknownToolError,
+    collect_run,
     index_configs,
     launch_spec,
     load_configs,
@@ -30,6 +31,7 @@ __all__ = [
     "MosaicPlugin",
     "ToolPlugin",
     "UnknownToolError",
+    "collect_run",
     "index_configs",
     "launch_spec",
     "load_configs",

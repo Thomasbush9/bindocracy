@@ -15,9 +15,8 @@ import pytest
 import yaml
 from conftest import write_boltzgen_task
 
-from bindocracy.adapters import collect_run
-from bindocracy.adapters.boltzgen import BoltzGenOutputAdapter
-from bindocracy.tools import load_configs, plan
+from bindocracy.tools import collect_run, load_configs, plan
+from bindocracy.tools.boltzgen.adapter import BoltzGenOutputAdapter
 
 
 def planned(boltzgen_configs, run_dir: Path):

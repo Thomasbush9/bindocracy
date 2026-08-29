@@ -15,8 +15,8 @@ import yaml
 from conftest import write_boltzgen_configs
 
 from bindocracy.config import ConfigPreflightError
-from bindocracy.runs import boltzgen_launch_spec
 from bindocracy.tools import load_configs, plan
+from bindocracy.tools.boltzgen.launch import boltzgen_launch_spec
 
 
 @pytest.fixture

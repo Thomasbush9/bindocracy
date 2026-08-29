@@ -5,14 +5,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from bindocracy.config import load_mosaic_configs
-from bindocracy.runs import mosaic_launch_spec
-from bindocracy.tools import plan
+from bindocracy.tools import load_configs, plan
+from bindocracy.tools.mosaic.launch import mosaic_launch_spec
 
 
 @pytest.fixture
 def planned(configs, tmp_path: Path):
-    loaded = load_mosaic_configs(*configs)
+    loaded = load_configs(*configs)
     return loaded, plan(loaded, tmp_path / "run")
 
 
@@ -43,7 +42,7 @@ def test_a_shortened_schedule_reaches_the_driver(configs, tmp_path: Path) -> Non
     raw = yaml.safe_load(model_path.read_text())
     raw["sampling"]["optimizer"] = {"soft_steps": 10, "sharpen_steps": 5, "final_steps": 2}
     model_path.write_text(yaml.safe_dump(raw, sort_keys=False))
-    loaded = load_mosaic_configs(general_path, model_path)
+    loaded = load_configs(general_path, model_path)
 
     argv = mosaic_launch_spec(loaded, plan(loaded, tmp_path / "run"), 0).argv
 

@@ -7,13 +7,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from bindocracy.adapters.mosaic import MosaicOutputAdapter
 from bindocracy.config.load import LoadedConfigs
-from bindocracy.config.models import GeneralConfig, MosaicConfig
-from bindocracy.config.preflight import MosaicPreflight, preflight_mosaic
-from bindocracy.runs.launch import LaunchSpec, mosaic_launch_spec, mosaic_resources
+from bindocracy.config.models import GeneralConfig
+from bindocracy.runs.launch import LaunchSpec
 from bindocracy.runs.manifest import DESIGNS_FILE, RunManifest, ToolPlan
 from bindocracy.tools.base import ToolPlugin
+from bindocracy.tools.mosaic.adapter import MosaicOutputAdapter
+from bindocracy.tools.mosaic.config import MosaicConfig
+from bindocracy.tools.mosaic.launch import mosaic_launch_spec, mosaic_resources
+from bindocracy.tools.mosaic.preflight import MosaicPreflight, preflight_mosaic
 
 
 class MosaicPlugin(ToolPlugin):

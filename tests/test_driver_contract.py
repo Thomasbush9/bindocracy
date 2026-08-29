@@ -12,11 +12,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bindocracy.adapters.mosaic import MosaicOutputAdapter
-from bindocracy.config import load_mosaic_configs
 from bindocracy.config.preflight import read_single_fasta
-from bindocracy.runs import mosaic_launch_spec
-from bindocracy.tools import plan
+from bindocracy.tools import load_configs, plan
+from bindocracy.tools.mosaic.adapter import MosaicOutputAdapter
+from bindocracy.tools.mosaic.launch import mosaic_launch_spec
 
 
 def parse(driver, argv: tuple[str, ...], monkeypatch):
@@ -28,7 +27,7 @@ def parse(driver, argv: tuple[str, ...], monkeypatch):
 def test_the_driver_accepts_exactly_what_the_connector_launches(
     driver, configs, tmp_path: Path, monkeypatch
 ) -> None:
-    loaded = load_mosaic_configs(*configs)
+    loaded = load_configs(*configs)
     manifest = plan(loaded, tmp_path / "run")
     spec = mosaic_launch_spec(loaded, manifest, 1)
 
@@ -50,7 +49,7 @@ def test_the_driver_writes_into_the_directory_the_adapter_reads(
     driver, configs, tmp_path: Path, monkeypatch
 ) -> None:
     """--save-dir and the manifest's task directory must be the same place."""
-    loaded = load_mosaic_configs(*configs)
+    loaded = load_configs(*configs)
     manifest = plan(loaded, tmp_path / "run")
     spec = mosaic_launch_spec(loaded, manifest, 0)
     parsed = parse(driver, spec.argv, monkeypatch)
@@ -69,7 +68,7 @@ def test_a_status_file_the_driver_wrote_is_read_back_by_the_adapter(
     driver, configs, tmp_path: Path
 ) -> None:
     """The driver's writer and the adapter's reader, with no fixture between."""
-    loaded = load_mosaic_configs(*configs)
+    loaded = load_configs(*configs)
     manifest = plan(loaded, tmp_path / "run", name="run")
     task_dir = manifest.path("tasks/0000")
 
@@ -126,7 +125,7 @@ def test_the_driver_names_designs_the_way_the_adapter_expects(
     driver, configs, tmp_path: Path
 ) -> None:
     """The native_id scheme is a contract between two files that never meet."""
-    loaded = load_mosaic_configs(*configs)
+    loaded = load_configs(*configs)
     manifest = plan(loaded, tmp_path / "run")
     task_dir = manifest.path("tasks/0001")
 

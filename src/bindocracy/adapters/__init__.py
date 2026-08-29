@@ -1,22 +1,8 @@
-"""Tool-specific rendering and output normalization."""
+"""The contract every tool's output adapter implements.
+
+Adapters themselves live with their tool, in tools/<tool>/adapter.py.
+"""
 
 from bindocracy.adapters.base import CollectionError, OutputAdapter
-from bindocracy.adapters.registry import (
-    UnknownToolError,
-    adapter_for,
-    collect_run,
-    register,
-    registered_tools,
-    unregister,
-)
 
-__all__ = [
-    "CollectionError",
-    "OutputAdapter",
-    "UnknownToolError",
-    "adapter_for",
-    "collect_run",
-    "register",
-    "registered_tools",
-    "unregister",
-]
+__all__ = ["CollectionError", "OutputAdapter"]

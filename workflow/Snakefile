@@ -21,9 +21,8 @@
 
 from pathlib import Path
 
-from bindocracy.adapters import collect_run
 from bindocracy.runs import RunManifest, ingest_bundle, run_task, write_collected
-from bindocracy.tools import index_configs, launch_spec, plan, plugin_for, resources
+from bindocracy.tools import collect_run, index_configs, launch_spec, plan, plugin_for, resources
 from bindocracy.runs.manifest import write_json_atomic
 
 GENERAL = Path(config["general_config"])

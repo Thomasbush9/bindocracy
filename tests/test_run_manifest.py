@@ -5,13 +5,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from bindocracy.config import GeneralConfig, MosaicConfig, load_mosaic_configs
+from bindocracy.config import GeneralConfig
 from bindocracy.runs import ManifestError, RunManifest
-from bindocracy.tools import plan
+from bindocracy.tools import load_configs, plan
+from bindocracy.tools.mosaic.config import MosaicConfig
 
 
 def test_plan_creates_the_run_layout(configs, tmp_path: Path) -> None:
-    loaded = load_mosaic_configs(*configs)
+    loaded = load_configs(*configs)
 
     manifest = plan(loaded, tmp_path / "run", name="config_01")
 
@@ -32,7 +33,7 @@ def test_only_the_executed_driver_is_archived(configs, tmp_path: Path) -> None:
     The driver is different in kind: it is executed, and its content is in no
     other store.
     """
-    loaded = load_mosaic_configs(*configs)
+    loaded = load_configs(*configs)
 
     manifest = plan(loaded, tmp_path / "run")
 
@@ -44,7 +45,7 @@ def test_only_the_executed_driver_is_archived(configs, tmp_path: Path) -> None:
 
 def test_the_manifest_carries_the_whole_config(configs, tmp_path: Path) -> None:
     """A run is replayable from run.json alone, with no file on the share."""
-    loaded = load_mosaic_configs(*configs)
+    loaded = load_configs(*configs)
 
     manifest = plan(loaded, tmp_path / "run")
 
@@ -54,7 +55,7 @@ def test_the_manifest_carries_the_whole_config(configs, tmp_path: Path) -> None:
 
 
 def test_archived_driver_is_a_copy_not_a_reference(configs, tmp_path: Path) -> None:
-    loaded = load_mosaic_configs(*configs)
+    loaded = load_configs(*configs)
     manifest = plan(loaded, tmp_path / "run")
     archived = manifest.path(manifest.provenance["driver"].path)
     original = manifest.provenance["driver"].source_uri
@@ -66,10 +67,10 @@ def test_archived_driver_is_a_copy_not_a_reference(configs, tmp_path: Path) -> N
 
 
 def test_replanning_reuses_the_run_id_and_inputs(configs, tmp_path: Path) -> None:
-    loaded = load_mosaic_configs(*configs)
+    loaded = load_configs(*configs)
     first = plan(loaded, tmp_path / "run")
 
-    second = plan(load_mosaic_configs(*configs), tmp_path / "run")
+    second = plan(load_configs(*configs), tmp_path / "run")
 
     assert second.run_id == first.run_id
     assert second.provenance == first.provenance
@@ -79,7 +80,7 @@ def test_replanning_reuses_the_run_id_and_inputs(configs, tmp_path: Path) -> Non
 def test_replanning_a_different_config_in_the_same_directory_fails(
     configs, tmp_path: Path
 ) -> None:
-    plan(load_mosaic_configs(*configs), tmp_path / "run")
+    plan(load_configs(*configs), tmp_path / "run")
 
     general_path, model_path = configs
     raw = yaml.safe_load(model_path.read_text())
@@ -87,11 +88,11 @@ def test_replanning_a_different_config_in_the_same_directory_fails(
     model_path.write_text(yaml.safe_dump(raw, sort_keys=False))
 
     with pytest.raises(ManifestError, match="was planned for model_config_id"):
-        plan(load_mosaic_configs(general_path, model_path), tmp_path / "run")
+        plan(load_configs(general_path, model_path), tmp_path / "run")
 
 
 def test_the_same_config_planned_twice_is_two_runs(configs, tmp_path: Path) -> None:
-    loaded = load_mosaic_configs(*configs)
+    loaded = load_configs(*configs)
 
     first = plan(loaded, tmp_path / "run-a")
     second = plan(loaded, tmp_path / "run-b")
@@ -101,6 +102,6 @@ def test_the_same_config_planned_twice_is_two_runs(configs, tmp_path: Path) -> N
 
 
 def test_manifest_round_trips_through_json(configs, tmp_path: Path) -> None:
-    manifest = plan(load_mosaic_configs(*configs), tmp_path / "run")
+    manifest = plan(load_configs(*configs), tmp_path / "run")
 
     assert RunManifest.read(manifest.directory / "run.json") == manifest

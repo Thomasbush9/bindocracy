@@ -16,8 +16,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel
 
-from bindocracy.config.models import GeneralConfig, MosaicConfig, ToolConfig
-from bindocracy.config.preflight import preflight_mosaic
+from bindocracy.config.models import GeneralConfig, ToolConfig
 from bindocracy.store.records import ConfigRecord
 
 
@@ -107,8 +106,3 @@ def load_pair(
         model=model,
         preflight=preflight(general, model),
     )
-
-
-def load_mosaic_configs(general_path: str | Path, model_path: str | Path) -> LoadedConfigs:
-    """Load one general + Mosaic config pair."""
-    return load_pair(general_path, model_path, MosaicConfig, preflight_mosaic)

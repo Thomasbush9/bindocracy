@@ -11,10 +11,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
-from bindocracy.adapters.registry import register as register_adapter
 from bindocracy.config.load import LoadedConfigs, read_tool_name
 from bindocracy.runs.launch import LaunchSpec
 from bindocracy.runs.manifest import RunManifest, plan_run
+from bindocracy.store.records import CollectedRun
 from bindocracy.tools.base import ToolPlugin
 
 
@@ -31,7 +31,6 @@ def register(plugin_type: type[ToolPlugin]) -> type[ToolPlugin]:
     if not plugin.tool:
         raise ValueError(f"{plugin_type.__name__} must define a tool name")
     _PLUGINS[plugin.tool] = plugin
-    register_adapter(plugin.adapter_type)
     return plugin_type
 
 
@@ -60,6 +59,13 @@ def plan(loaded: LoadedConfigs, run_dir: str | Path, *, name: str | None = None)
     """Plan a run for whichever tool the loaded config names."""
     plugin = plugin_for(loaded.tool)
     return plan_run(loaded, plugin.tool_plan(loaded), run_dir, name=name)
+
+
+def collect_run(manifest_path: str | Path) -> CollectedRun:
+    """Collect a run with the adapter belonging to the tool that produced it."""
+    manifest = RunManifest.read(manifest_path)
+    adapter = plugin_for(manifest.tool).adapter()
+    return adapter.collect(manifest.directory, manifest.to_run_record())
 
 
 def launch_spec(loaded: LoadedConfigs, manifest: RunManifest, task_id: int) -> LaunchSpec:

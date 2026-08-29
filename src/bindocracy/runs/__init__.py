@@ -1,13 +1,7 @@
-"""Run identity: plan a run, launch its tasks, stage its collected output."""
+"""Generic run machinery: manifests, launch specs, execution, staging."""
 
 from bindocracy.runs.ingest import ingest_bundle
-from bindocracy.runs.launch import (
-    LaunchSpec,
-    boltzgen_launch_spec,
-    boltzgen_resources,
-    mosaic_launch_spec,
-    mosaic_resources,
-)
+from bindocracy.runs.launch import LaunchSpec, task_of
 from bindocracy.runs.manifest import (
     MANIFEST_NAME,
     ManifestError,
@@ -24,14 +18,11 @@ __all__ = [
     "ManifestError",
     "RunManifest",
     "ToolPlan",
-    "boltzgen_launch_spec",
-    "boltzgen_resources",
     "ingest_bundle",
-    "mosaic_launch_spec",
-    "mosaic_resources",
     "plan_run",
     "read_collected",
     "run_task",
+    "task_of",
     "write_collected",
     "write_task_status",
 ]

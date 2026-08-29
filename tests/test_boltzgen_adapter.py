@@ -12,6 +12,7 @@ import csv
 from pathlib import Path
 
 import pytest
+import yaml
 from conftest import write_boltzgen_task
 
 from bindocracy.adapters import collect_run
@@ -33,9 +34,10 @@ def test_designs_and_native_scores_are_read(boltzgen_configs, tmp_path: Path) ->
 
     collected = collect(manifest)
 
+    # Qualified by task: BoltzGen's own ids restart at 0 in every task.
     assert [d.native_id for d in collected.designs] == [
-        "dio3_cut_binder_14", "dio3_cut_binder_18",
-        "dio3_cut_binder_33", "dio3_cut_binder_39",
+        "task-0000-dio3_cut_binder_14", "task-0000-dio3_cut_binder_18",
+        "task-0000-dio3_cut_binder_33", "task-0000-dio3_cut_binder_39",
     ]
     first = collected.designs[0]
     assert first.length == 90
@@ -71,10 +73,10 @@ def test_a_design_that_failed_the_filters_is_kept_and_marked(
 
     by_id = {d.native_id: d for d in collect(manifest).designs}
 
-    assert by_id["dio3_cut_binder_14"].status == "produced"
-    assert by_id["dio3_cut_binder_39"].status == "partial"
-    assert by_id["dio3_cut_binder_39"].metadata["pass_filters"] is False
-    assert by_id["dio3_cut_binder_14"].metadata["final_rank"] == 1
+    assert by_id["task-0000-dio3_cut_binder_14"].status == "produced"
+    assert by_id["task-0000-dio3_cut_binder_39"].status == "partial"
+    assert by_id["task-0000-dio3_cut_binder_39"].metadata["pass_filters"] is False
+    assert by_id["task-0000-dio3_cut_binder_14"].metadata["final_rank"] == 1
 
 
 def test_designs_are_complexes_not_bare_sequences(boltzgen_configs, tmp_path: Path) -> None:
@@ -180,3 +182,26 @@ def test_a_task_with_no_status_file_still_collects(boltzgen_configs, tmp_path: P
     assert len(collected.designs) == 4
     assert collected.run.count_details["tasks"]["0000"]["status"] == "missing"
     assert collected.run.status == "partial"
+
+
+def test_two_tasks_do_not_collide_on_native_ids(boltzgen_configs, tmp_path: Path) -> None:
+    """BoltzGen numbers designs per task, so task 1 repeats task 0's ids.
+
+    Mosaic embeds the task in its native_id; BoltzGen's comes from the CSV and
+    restarts at 0 every task. Without qualification the second task's designs
+    are all rejected as duplicates, and a two-task run silently loses half its
+    output.
+    """
+    general_path, model_path = boltzgen_configs
+    raw = yaml.safe_load(model_path.read_text())
+    raw["sampling"]["jobs"] = 2
+    model_path.write_text(yaml.safe_dump(raw))
+    manifest = plan(load_configs(general_path, model_path), tmp_path / "run")
+    for task_id in (0, 1):
+        write_boltzgen_task(manifest.directory, task_id, status={})
+
+    collected = collect(manifest)
+
+    assert len(collected.designs) == 8
+    assert len({d.native_id for d in collected.designs}) == 8
+    assert collected.run.count_details["tasks"]["0001"]["n_invalid"] == 0

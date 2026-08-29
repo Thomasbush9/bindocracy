@@ -41,6 +41,8 @@ from bindocracy.store.records import (
 METRICS_FILE = "final_ranked_designs/all_designs_metrics.csv"
 # BoltzGen names this directory for the budget -- final_40_designs at 40,
 # final_10_designs at 10 -- so it has to be found, not assumed.
+# Key the adapter adds to each parsed row; not a BoltzGen column.
+NATIVE_ID = "_native_id"
 RANKED_DIR = "final_ranked_designs"
 STRUCTURE_GLOB = "final_*_designs"
 
@@ -161,9 +163,16 @@ def _read_metrics(
 
     rows = []
     for row in raw_rows:
-        native_id = (row.get("id") or "").strip()
+        row_id = (row.get("id") or "").strip()
         sequence = (row.get("designed_sequence") or "").strip().upper()
-        if not native_id or native_id in seen:
+        if not row_id:
+            counts["n_invalid"] += 1
+            continue
+        # BoltzGen numbers designs from 0 within each task, so two tasks of one
+        # run produce the same ids. Qualify them the way Mosaic's driver
+        # already does, or the second task is rejected as duplicates.
+        native_id = f"task-{task.task_id:04d}-{row_id}"
+        if native_id in seen:
             counts["n_invalid"] += 1
             continue
         # X is a legal letter but an unknown residue, so a sequence carrying
@@ -173,12 +182,12 @@ def _read_metrics(
             counts["n_invalid"] += 1
             continue
         seen.add(native_id)
-        rows.append(row)
+        rows.append({**row, NATIVE_ID: native_id})
     return rows, counts
 
 
 def _design_record(run_id: str, row: dict[str, str], fallback: datetime) -> DesignRecord:
-    native_id = row["id"].strip()
+    native_id = row[NATIVE_ID]
     sequence = row["designed_sequence"].strip().upper()
     return DesignRecord(
         design_id=stable_id("design", run_id, native_id),

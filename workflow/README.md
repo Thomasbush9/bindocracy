@@ -5,20 +5,22 @@ resources, and expected outputs; Snakemake's Slurm executor plugin submits it an
 tracks state, retries, and logs. Nothing here calls `sbatch`.
 
 ```text
-prepare_mosaic_run --> mosaic_generate[task=0..N] --> collect_mosaic
-                                                          |
-                                                          v
-                                   generation_complete <-- ingest_mosaic
+prepare_run --> generate[task=0..N] --> collect --> ingest --> generation_complete
 ```
+
+No rule names a tool. A model config declares its own `tool:`, and that tool's
+plugin supplies the task count, the command, the resources, and the adapter.
 
 ## Files
 
 | File | Role |
 |---|---|
 | `Snakefile` | The rule graph |
-| `campaign.yaml` | Execution index: database, run root, and which configs to run |
-| `smoke.yaml` | The same, for a one-design Slurm smoke test |
+| `campaign.example.yaml` | Template execution index — copy it beside your campaign data |
 | `profiles/slurm/` | Executor settings; account and partition come from the configs |
+
+Real indices and real configs live outside the repository, beside the campaign
+data, because their absolute paths belong to one machine. See `examples/`.
 
 The workflow config is an index, not a configuration. The general and model YAML
 it points at are the durable scientific inputs, and they are what the database
@@ -27,23 +29,29 @@ stores.
 ## Run it
 
 ```bash
-# 1. Dry run: expect one mosaic_generate job per sampling.jobs, one ingestion.
-uv run snakemake --dry-run --configfile workflow/smoke.yaml
+# 1. Dry run: expect one generate job per task, one ingestion per run.
+uv run snakemake --dry-run --configfile /path/to/your-index.yaml
 
-# 2. One design on real Slurm.
-uv run snakemake --configfile workflow/smoke.yaml --profile workflow/profiles/slurm
+# 2. For real, through Slurm.
+uv run snakemake --configfile /path/to/your-index.yaml --profile workflow/profiles/slurm
+```
 
-# 3. The full campaign, once the smoke run is in the database.
-uv run snakemake --configfile workflow/campaign.yaml --profile workflow/profiles/slurm
+An index names its executions, so re-running a configuration means adding
+another entry with another name rather than copying the config file:
+
+```yaml
+runs:
+  - name: mosaic-run-12
+    config: /path/to/configs/mosaic/hallucinate.yaml
 ```
 
 ## What each run leaves behind
 
 ```text
-runs/<model>/
-|-- run.json          run identity, task plan, driver hash, and the whole
-|                     config pair as JSON — a run is replayable from this
-|                     alone, with no config file on the share
+runs/<name>/
+|-- run.json          run identity, task plan, archived-input hash, and the
+|                     whole config pair as JSON — a run is replayable from
+|                     this alone, with no config file on the share
 |-- provenance/       the exact driver that ran, archived and executed
 |-- tasks/0000/       designs.jsonl and status.json, written by the driver
 |-- logs/
@@ -60,5 +68,9 @@ Two properties are deliberate:
   reports its own outcome in `status.json`. A task killed by the walltime still
   contributes its completed designs, and the run is recorded as `partial`.
 
-To execute the same configuration a second time, use a new run directory: a
-`run_id` identifies an execution, not a configuration.
+- **A launch reads the manifest, never the live YAML.** Editing a config after
+  planning cannot change what an existing run executes; it re-runs
+  `prepare_run`, which either accepts the manifest or refuses it loudly.
+
+To execute the same configuration a second time, add another `runs:` entry with
+another name: a `run_id` identifies an execution, not a configuration.

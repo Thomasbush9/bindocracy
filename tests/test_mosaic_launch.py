@@ -5,8 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from bindocracy.tools import load_configs, plan
-from bindocracy.tools.mosaic.launch import mosaic_launch_spec
+from bindocracy.tools import launch_spec, load_configs, plan
 
 
 @pytest.fixture
@@ -18,7 +17,7 @@ def planned(configs, tmp_path: Path):
 def test_argv_passes_every_run_dependent_value(planned) -> None:
     loaded, manifest = planned
 
-    spec = mosaic_launch_spec(loaded, manifest, 1)
+    spec = launch_spec(manifest, 1)
 
     assert spec.argv[:2] == (str(loaded.model.runtime.exec_wrapper), "python")
     flags = dict(zip(spec.argv[3::2], spec.argv[4::2], strict=True))
@@ -44,7 +43,7 @@ def test_a_shortened_schedule_reaches_the_driver(configs, tmp_path: Path) -> Non
     model_path.write_text(yaml.safe_dump(raw, sort_keys=False))
     loaded = load_configs(general_path, model_path)
 
-    argv = mosaic_launch_spec(loaded, plan(loaded, tmp_path / "run"), 0).argv
+    argv = launch_spec(plan(loaded, tmp_path / "run"), 0).argv
 
     flags = dict(zip(argv[3::2], argv[4::2], strict=True))
     assert flags["--soft-steps"] == "10"
@@ -55,7 +54,7 @@ def test_a_shortened_schedule_reaches_the_driver(configs, tmp_path: Path) -> Non
 def test_it_runs_the_archived_driver_not_the_authored_one(planned) -> None:
     loaded, manifest = planned
 
-    driver = Path(mosaic_launch_spec(loaded, manifest, 0).argv[2])
+    driver = Path(launch_spec(manifest, 0).argv[2])
 
     assert driver == manifest.directory / "provenance" / "hallucinate_binders.py"
     assert driver != loaded.model.driver.script
@@ -64,7 +63,7 @@ def test_it_runs_the_archived_driver_not_the_authored_one(planned) -> None:
 def test_environment_carries_what_the_wrapper_reads(planned) -> None:
     loaded, manifest = planned
 
-    env = mosaic_launch_spec(loaded, manifest, 0).env
+    env = launch_spec(manifest, 0).env
 
     assert env["MOSAIC_SIF"] == str(loaded.model.runtime.container)
     assert env["MOSAIC_WEIGHTS"] == str(loaded.model.runtime.weights)
@@ -73,9 +72,9 @@ def test_environment_carries_what_the_wrapper_reads(planned) -> None:
 
 
 def test_resources_come_from_the_validated_configs(planned) -> None:
-    loaded, manifest = planned
+    _, manifest = planned
 
-    resources = mosaic_launch_spec(loaded, manifest, 0).resources
+    resources = launch_spec(manifest, 0).resources
 
     assert resources == {
         "slurm_account": "test-account",
@@ -88,9 +87,9 @@ def test_resources_come_from_the_validated_configs(planned) -> None:
 
 
 def test_expected_outputs_and_log_are_inside_the_run(planned) -> None:
-    loaded, manifest = planned
+    _, manifest = planned
 
-    spec = mosaic_launch_spec(loaded, manifest, 0)
+    spec = launch_spec(manifest, 0)
 
     assert spec.outputs == (
         manifest.directory / "tasks" / "0000" / "designs.jsonl",
@@ -100,16 +99,16 @@ def test_expected_outputs_and_log_are_inside_the_run(planned) -> None:
 
 
 def test_command_is_shell_safe(planned) -> None:
-    loaded, manifest = planned
+    _, manifest = planned
 
-    command = mosaic_launch_spec(loaded, manifest, 0).command
+    command = launch_spec(manifest, 0).command
 
     assert command.startswith("env MOSAIC_SCRATCH=")
     assert ";" not in command and "&&" not in command
 
 
 def test_unknown_task_is_an_error(planned) -> None:
-    loaded, manifest = planned
+    _, manifest = planned
 
     with pytest.raises(KeyError, match="no task 9"):
-        mosaic_launch_spec(loaded, manifest, 9)
+        launch_spec(manifest, 9)

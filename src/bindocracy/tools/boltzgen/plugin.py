@@ -14,12 +14,12 @@ from typing import Any
 
 from bindocracy.config.load import LoadedConfigs
 from bindocracy.config.models import GeneralConfig
-from bindocracy.runs.launch import LaunchSpec
+from bindocracy.runs.launch import LaunchSpec, slurm_resources
 from bindocracy.runs.manifest import RunManifest, ToolPlan
 from bindocracy.tools.base import ToolPlugin
 from bindocracy.tools.boltzgen.adapter import METRICS_FILE, BoltzGenOutputAdapter
 from bindocracy.tools.boltzgen.config import BoltzGenConfig
-from bindocracy.tools.boltzgen.launch import boltzgen_launch_spec, boltzgen_resources
+from bindocracy.tools.boltzgen.launch import boltzgen_launch_spec
 from bindocracy.tools.boltzgen.preflight import BoltzGenPreflight, preflight_boltzgen
 
 
@@ -52,10 +52,9 @@ class BoltzGenPlugin(ToolPlugin):
             },
         )
 
-    def launch_spec(
-        self, loaded: LoadedConfigs, manifest: RunManifest, task_id: int
-    ) -> LaunchSpec:
-        return boltzgen_launch_spec(loaded, manifest, task_id)
+    def launch_spec(self, manifest: RunManifest, task_id: int) -> LaunchSpec:
+        general, model = self.configs_of(manifest)
+        return boltzgen_launch_spec(general, model, manifest, task_id)
 
     def resources(self, loaded: LoadedConfigs) -> dict[str, Any]:
-        return boltzgen_resources(loaded)
+        return slurm_resources(loaded.general.cluster, loaded.model.resources)

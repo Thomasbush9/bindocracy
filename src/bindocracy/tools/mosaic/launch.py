@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from bindocracy.config.load import LoadedConfigs
-from bindocracy.runs.launch import LaunchSpec, task_of
+from bindocracy.config.models import GeneralConfig
+from bindocracy.runs.launch import LaunchSpec, slurm_resources, task_of
 from bindocracy.runs.manifest import RunManifest
+from bindocracy.tools.mosaic.config import MosaicConfig
 
 
 def mosaic_launch_spec(
-    loaded: LoadedConfigs, manifest: RunManifest, task_id: int
+    general: GeneralConfig, mosaic: MosaicConfig, manifest: RunManifest, task_id: int
 ) -> LaunchSpec:
     """Everything needed to run one Mosaic task of a planned run."""
     task = task_of(manifest, task_id)
-    mosaic = loaded.model
     run_dir = manifest.directory
     # The archived driver, not the authored one: the working tree may have
     # moved on since this run was planned.
@@ -24,8 +22,8 @@ def mosaic_launch_spec(
         str(mosaic.runtime.exec_wrapper),
         "python",
         str(driver),
-        "--target-fasta", str(loaded.general.target.sequence_fasta),
-        "--target-msa", str(loaded.general.target.msa),
+        "--target-fasta", str(general.target.sequence_fasta),
+        "--target-msa", str(general.target.msa),
         "--binder-length", str(mosaic.sampling.binder_length),
         "--task-id", str(task.task_id),
         "--seed-base", str(mosaic.sampling.seed_base),
@@ -38,16 +36,16 @@ def mosaic_launch_spec(
     )
     return LaunchSpec(
         argv=argv,
-        env=_environment(loaded),
-        resources=mosaic_resources(loaded),
+        env=_environment(mosaic),
+        resources=slurm_resources(general.cluster, mosaic.resources),
         log=run_dir / task.log,
         outputs=(run_dir / task.designs, run_dir / task.status),
     )
 
 
-def _environment(loaded: LoadedConfigs) -> dict[str, str]:
+def _environment(mosaic: MosaicConfig) -> dict[str, str]:
     """What mosaic-exec.sh reads, plus the two container fixes from env.sh."""
-    runtime = loaded.model.runtime
+    runtime = mosaic.runtime
     return {
         "MOSAIC_SIF": str(runtime.container),
         "MOSAIC_WEIGHTS": str(runtime.weights),
@@ -59,24 +57,3 @@ def _environment(loaded: LoadedConfigs) -> dict[str, str]:
         "SINGULARITYENV_SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
         "SINGULARITYENV_CURL_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
     }
-
-
-def mosaic_resources(loaded: LoadedConfigs) -> dict[str, Any]:
-    """Snakemake Slurm-executor resource names.
-
-    Separate from `mosaic_launch_spec` because Snakemake needs a rule's
-    resources while it builds the DAG, before any run manifest exists.
-    """
-    resources = loaded.model.resources
-    cluster = loaded.general.cluster
-    return {
-        "slurm_account": cluster.account,
-        "slurm_partition": cluster.default_partition,
-        # The plugin owns --gres and rejects it in slurm_extra.
-        "gres": f"gpu:{resources.gpus}",
-        "cpus_per_task": resources.cpus,
-        "mem_mb": resources.memory_gb * 1024,
-        "runtime": resources.walltime_seconds // 60,
-    }
-
-

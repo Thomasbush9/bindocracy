@@ -11,41 +11,54 @@
 # plugin for that tool supplies the task count, the command, the resources, and
 # the adapter. Adding a tool changes this file not at all.
 #
-# The workflow config is an execution index; the scientific inputs stay in the
-# general and model YAML it points at. Run:
+# The index names executions rather than deriving them from filenames:
 #
-#   uv run snakemake --configfile workflow/campaign.yaml --profile workflow/profiles/slurm
+#   runs:
+#     - name: mosaic-run-12
+#       config: /path/to/mosaic.yaml
 #
-# One run directory per model config, named after that config's file stem. To
-# execute the same configuration a second time, give it a new run directory.
+# Run:
+#   uv run snakemake --configfile <index>.yaml --profile workflow/profiles/slurm
 
 from pathlib import Path
 
 from bindocracy.runs import RunManifest, ingest_bundle, run_task, write_collected
-from bindocracy.tools import collect_run, index_configs, launch_spec, plan, plugin_for, resources
+from bindocracy.runs.index import read_workflow_index
 from bindocracy.runs.manifest import write_json_atomic
+from bindocracy.tools import collect_run, launch_spec, load_configs, plan, plugin_for, resources
 
-GENERAL = Path(config["general_config"])
-RUN_ROOT = Path(config["run_root"])
-DATABASE = Path(config["database"])
+INDEX = read_workflow_index(config)
+RUN_ROOT = INDEX.run_root
+DATABASE = INDEX.database
 
 # Validated at DAG time, so a bad config fails in a second rather than in the
 # queue. This is also where the task count comes from, which is why no
 # checkpoint is needed to know the shape of the fan-out.
-# `models` maps a tool name to its config files. The tool key is only for the
-# author's benefit -- dispatch uses the `tool:` field inside each config.
-LOADED = index_configs(
-    GENERAL, [path for paths in config["models"].values() for path in paths]
-)
+LOADED = {
+    request.name: load_configs(INDEX.general_config, request.config)
+    for request in INDEX.runs
+}
 TASKS = {
-    model: [f"{task_id:04d}" for task_id in range(plugin_for(loaded.tool).tool_plan(loaded).jobs)]
-    for model, loaded in LOADED.items()
+    name: [f"{task_id:04d}" for task_id in range(plugin_for(loaded.tool).tool_plan(loaded).jobs)]
+    for name, loaded in LOADED.items()
 }
 
 
-def slurm(name):
+def slurm(field):
     """One launch resource, resolved at DAG time from the configs alone."""
-    return lambda wildcards: resources(LOADED[wildcards.model])[name]
+    return lambda wildcards: resources(LOADED[wildcards.run])[field]
+
+
+def config_inputs(wildcards):
+    """The authored YAML this run was planned from.
+
+    Declared so that editing a config re-runs prepare_run, where reuse
+    validation either accepts the manifest or refuses it loudly. Without this,
+    a changed config could sit behind an untouched run.json while the launch
+    used different values.
+    """
+    loaded = LOADED[wildcards.run]
+    return [str(loaded.general_path), str(loaded.model_path)]
 
 
 # Everything except the GPU work runs on the submitting host.
@@ -54,27 +67,27 @@ localrules: all, prepare_run, collect, ingest, generation_complete
 
 rule all:
     input:
-        expand(str(RUN_ROOT / "{model}" / "generation.done"), model=list(LOADED)),
+        expand(str(RUN_ROOT / "{run}" / "generation.done"), run=list(LOADED)),
 
 
 rule prepare_run:
     """Create or reuse the run identity, directory, and archived inputs."""
+    input:
+        config_inputs,
     output:
-        RUN_ROOT / "{model}" / "run.json",
+        RUN_ROOT / "{run}" / "run.json",
     run:
-        plan(
-            LOADED[wildcards.model], RUN_ROOT / wildcards.model, name=wildcards.model
-        )
+        plan(LOADED[wildcards.run], RUN_ROOT / wildcards.run, name=wildcards.run)
 
 
 rule generate:
     """One GPU task, however this tool runs one."""
     input:
-        RUN_ROOT / "{model}" / "run.json",
+        RUN_ROOT / "{run}" / "run.json",
     output:
-        RUN_ROOT / "{model}" / "tasks" / "{task}" / "status.json",
+        RUN_ROOT / "{run}" / "tasks" / "{task}" / "status.json",
     log:
-        RUN_ROOT / "{model}" / "logs" / "task-{task}.log",
+        RUN_ROOT / "{run}" / "logs" / "task-{task}.log",
     resources:
         slurm_account=slurm("slurm_account"),
         slurm_partition=slurm("slurm_partition"),
@@ -83,24 +96,23 @@ rule generate:
         mem_mb=slurm("mem_mb"),
         runtime=slurm("runtime"),
     run:
-        spec = launch_spec(
-            LOADED[wildcards.model], RunManifest.read(input[0]), int(wildcards.task)
-        )
-        # run_task writes status.json unless the tool wrote its own, so a tool
-        # that only exits (BoltzGen) still produces the file collection needs.
+        # The manifest, not the live YAML: a planned run launches what it was
+        # planned with. run_task writes status.json unless the tool wrote its
+        # own, so a tool that only exits still produces what collection needs.
+        spec = launch_spec(RunManifest.read(input[0]), int(wildcards.task))
         run_task(spec.argv, spec.env, log[0], output[0], int(wildcards.task))
 
 
 rule collect:
     """Parse every planned task, keeping whatever partial work exists."""
     input:
-        manifest=RUN_ROOT / "{model}" / "run.json",
+        manifest=RUN_ROOT / "{run}" / "run.json",
         tasks=lambda wildcards: expand(
-            str(RUN_ROOT / wildcards.model / "tasks" / "{task}" / "status.json"),
-            task=TASKS[wildcards.model],
+            str(RUN_ROOT / wildcards.run / "tasks" / "{task}" / "status.json"),
+            task=TASKS[wildcards.run],
         ),
     output:
-        RUN_ROOT / "{model}" / "collected.json",
+        RUN_ROOT / "{run}" / "collected.json",
     run:
         write_collected(collect_run(input.manifest), output[0])
 
@@ -108,9 +120,9 @@ rule collect:
 rule ingest:
     """The only DuckDB writer. db_writer serializes it across tools."""
     input:
-        RUN_ROOT / "{model}" / "collected.json",
+        RUN_ROOT / "{run}" / "collected.json",
     output:
-        RUN_ROOT / "{model}" / "ingested.json",
+        RUN_ROOT / "{run}" / "ingested.json",
     resources:
         db_writer=1,
     run:
@@ -120,6 +132,6 @@ rule ingest:
 
 rule generation_complete:
     input:
-        RUN_ROOT / "{model}" / "ingested.json",
+        RUN_ROOT / "{run}" / "ingested.json",
     output:
-        touch(RUN_ROOT / "{model}" / "generation.done"),
+        touch(RUN_ROOT / "{run}" / "generation.done"),

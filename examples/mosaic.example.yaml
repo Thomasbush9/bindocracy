@@ -1,0 +1,38 @@
+# TEMPLATE. Real configs live outside the repository, beside the campaign
+# data, because their absolute paths belong to one machine. Copy, edit, and
+# point a workflow index at your copy.
+
+schema_version: 2
+name: mosaic-hallucinate-boltz-run11
+tool: mosaic
+
+driver:
+  script: /absolute/path/to/binder_design/bindocracy/launching_scripts/mosaic/hallucinate_binders.py
+  archive: true
+
+# Ten designs across TWO Slurm tasks -- the fan-out path, which every run so
+# far has left untested. The optimiser is at the lab's benchmarked
+# 100/50/15 schedule, so these are real designs, not the shortened caricatures
+# of runs/first_run: ~7 min each plus ~1 min of model build.
+sampling:
+  binder_length: 70
+  jobs: 2
+  designs_per_job: 5
+  max_runtime_hours: 1.5
+  seed_base: 2000
+  optimizer:
+    soft_steps: 100
+    sharpen_steps: 50
+    final_steps: 15
+
+runtime:
+  container: /absolute/path/to/binder_design/images/mosaic.sif
+  weights: /absolute/path/to/binder_design/mosaic_setup/weights
+  exec_wrapper: /absolute/path/to/binder_design/mosaic_setup/mosaic/singularity/mosaic-exec.sh
+  scratch: /n/netscratch/bsabatini_lab/Everyone/tbush/bindocracy/mosaic
+
+resources:
+  gpus: 1
+  cpus: 8
+  memory_gb: 64
+  walltime: "02:00:00"

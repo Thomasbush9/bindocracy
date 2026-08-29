@@ -1,0 +1,29 @@
+# BoltzGen design spec — bound into the container and read by its runscript.
+# The harness copies this file into the run and passes the copy; it never
+# parses or rewrites it, so every key BoltzGen understands stays available.
+#
+# Entity 1 is what gets designed. `sequence: 70..90` is an inclusive LENGTH
+# RANGE resampled per design, not a sequence. The separator must be `..`;
+# `70-90` is malformed. A bare integer would pin the length.
+#
+# Entity 2 is the target, read from the predicted CIF so this spec cannot drift
+# out of sync with the structure. Preflight asserts this is the campaign's
+# target.structure_cif.
+#
+# To aim at an epitope, add to the `file` entity (1-based label_seq_id, NOT
+# author numbering) — left off here to match the rest of the campaign:
+#     binding_types:
+#       - chain:
+#           id: A
+#           binding: 95..110,143
+
+entities:
+  - protein:
+      id: B
+      sequence: 70..90
+
+  - file:
+      path: /absolute/path/to/binder_design/outputs/_shared/dio3_cut.cif
+      include:
+        - chain:
+            id: A

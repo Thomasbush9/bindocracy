@@ -8,7 +8,6 @@ by the tool that produced it.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from pathlib import Path
 
 from bindocracy.config.load import LoadedConfigs, read_tool_name
@@ -68,39 +67,10 @@ def collect_run(manifest_path: str | Path) -> CollectedRun:
     return adapter.collect(manifest.directory, manifest.to_run_record())
 
 
-def launch_spec(loaded: LoadedConfigs, manifest: RunManifest, task_id: int) -> LaunchSpec:
-    return plugin_for(manifest.tool).launch_spec(loaded, manifest, task_id)
+def launch_spec(manifest: RunManifest, task_id: int) -> LaunchSpec:
+    """Build one task's command from the planned run, not from live YAML."""
+    return plugin_for(manifest.tool).launch_spec(manifest, task_id)
 
 
 def resources(loaded: LoadedConfigs) -> dict:
     return plugin_for(loaded.tool).resources(loaded)
-
-
-class DuplicateRunNameError(ValueError):
-    """Two model configs would claim the same run directory."""
-
-
-def index_configs(
-    general_path: str | Path, model_paths: Iterable[str | Path]
-) -> dict[str, LoadedConfigs]:
-    """Load every model config in a workflow, keyed by its run-directory name.
-
-    The name is the config's file stem, which is also the run directory. Two
-    configs with the same stem -- easily done across tools, `mosaic/smoke.yaml`
-    and `boltzgen/smoke.yaml` -- would otherwise share a run directory and the
-    second would be silently dropped from the workflow.
-    """
-    loaded: dict[str, LoadedConfigs] = {}
-    sources: dict[str, Path] = {}
-    for model_path in model_paths:
-        path = Path(model_path)
-        name = path.stem
-        if name in sources:
-            raise DuplicateRunNameError(
-                f"two model configs are both named {name!r} and would share one "
-                f"run directory:\n  {sources[name]}\n  {path}\n"
-                "Rename one; the file stem is the run directory name."
-            )
-        sources[name] = path
-        loaded[name] = load_configs(general_path, path)
-    return loaded

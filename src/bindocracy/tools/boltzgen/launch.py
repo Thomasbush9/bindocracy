@@ -6,16 +6,14 @@ the archived design spec directly.
 
 from __future__ import annotations
 
-from typing import Any
-
-from bindocracy.config.load import LoadedConfigs
-from bindocracy.runs.launch import LaunchSpec, task_of
+from bindocracy.config.models import GeneralConfig
+from bindocracy.runs.launch import LaunchSpec, slurm_resources, task_of
 from bindocracy.runs.manifest import RunManifest
-from bindocracy.tools.mosaic.launch import mosaic_resources
+from bindocracy.tools.boltzgen.config import BoltzGenConfig
 
 
 def boltzgen_launch_spec(
-    loaded: LoadedConfigs, manifest: RunManifest, task_id: int
+    general: GeneralConfig, model: BoltzGenConfig, manifest: RunManifest, task_id: int
 ) -> LaunchSpec:
     """One BoltzGen task: `singularity run <sif> run <spec> --output <dir>`.
 
@@ -24,7 +22,6 @@ def boltzgen_launch_spec(
     and archived, exactly where Mosaic archives its driver.
     """
     task = task_of(manifest, task_id)
-    model = loaded.model
     run_dir = manifest.directory
     spec = run_dir / manifest.provenance["spec"].path
     sampling = model.sampling
@@ -45,15 +42,15 @@ def boltzgen_launch_spec(
 
     return LaunchSpec(
         argv=tuple(argv),
-        env=_boltzgen_environment(loaded, manifest, task_id),
-        resources=boltzgen_resources(loaded),
+        env=_boltzgen_environment(model, manifest, task_id),
+        resources=slurm_resources(general.cluster, model.resources),
         log=run_dir / task.log,
         outputs=(run_dir / task.designs,),
     )
 
 
 def _boltzgen_environment(
-    loaded: LoadedConfigs, manifest: RunManifest, task_id: int
+    model: BoltzGenConfig, manifest: RunManifest, task_id: int
 ) -> dict[str, str]:
     """TMPDIR must be node-local, and the container needs its own CA bundle.
 
@@ -64,7 +61,7 @@ def _boltzgen_environment(
     See docs/known-issues.md sections 2.1 and 2.5.
     """
     node_tmp = (
-        loaded.model.runtime.node_tmp_root
+        model.runtime.node_tmp_root
         / f"bindocracy-boltzgen-{manifest.run_id[:8]}-{task_id:04d}"
     )
     return {
@@ -74,8 +71,3 @@ def _boltzgen_environment(
         "SINGULARITYENV_SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
         "SINGULARITYENV_CURL_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
     }
-
-
-def boltzgen_resources(loaded: LoadedConfigs) -> dict[str, Any]:
-    """Same Slurm shape as Mosaic; the numbers come from this tool's config."""
-    return mosaic_resources(loaded)

@@ -32,6 +32,18 @@ class ToolPlugin(ABC):
     def adapter(self) -> OutputAdapter:
         return self.adapter_type()
 
+    def configs_of(self, manifest: RunManifest) -> tuple[GeneralConfig, Any]:
+        """Rebuild this run's configs from the manifest, never from live YAML.
+
+        The manifest carries both documents whole. Reading them back is what
+        makes a launch depend on the run that was planned rather than on
+        whatever the authored file happens to say now.
+        """
+        return (
+            GeneralConfig.model_validate(manifest.config.general_config_json),
+            self.config_type.model_validate(manifest.config.model_config_json),
+        )
+
     @abstractmethod
     def preflight(self, general: GeneralConfig, model: Any) -> Any:
         """Check what this tool needs from the environment before any GPU work."""
@@ -41,10 +53,12 @@ class ToolPlugin(ABC):
         """Task count, per-task output name, and the inputs worth archiving."""
 
     @abstractmethod
-    def launch_spec(
-        self, loaded: LoadedConfigs, manifest: RunManifest, task_id: int
-    ) -> LaunchSpec:
-        """The argv, environment, resources, and expected outputs of one task."""
+    def launch_spec(self, manifest: RunManifest, task_id: int) -> LaunchSpec:
+        """The argv, environment, resources, and expected outputs of one task.
+
+        Takes the manifest alone: a planned run must launch what it was planned
+        with, even if the authored YAML has changed since.
+        """
 
     @abstractmethod
     def resources(self, loaded: LoadedConfigs) -> dict[str, Any]:

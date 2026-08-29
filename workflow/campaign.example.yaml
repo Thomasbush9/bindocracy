@@ -1,0 +1,20 @@
+# Template execution index. Copy this beside your campaign data -- real indices
+# carry absolute paths to one machine and do not belong in the repository.
+#
+#   uv run snakemake --configfile <your-index>.yaml --profile workflow/profiles/slurm
+
+database: /absolute/path/to/campaign.duckdb
+run_root: /absolute/path/to/runs
+
+general_config: /absolute/path/to/configs/general_config.yaml
+
+# One entry per execution. `name` is the run directory and the run's name in
+# the database; `config` is the model YAML, whose own `tool:` field selects the
+# plugin. The same config may appear twice under two names: a run identifies an
+# execution, not a configuration.
+runs:
+  - name: mosaic-run-01
+    config: /absolute/path/to/configs/mosaic/hallucinate.yaml
+
+  - name: boltzgen-run-01
+    config: /absolute/path/to/configs/boltzgen/binder.yaml

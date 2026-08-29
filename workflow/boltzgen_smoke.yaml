@@ -1,9 +1,0 @@
-# A BoltzGen smoke run, into the same database as the Mosaic runs.
-database: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/campaign.duckdb
-run_root: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/runs
-
-general_config: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/configs/general_config.yaml
-
-models:
-  boltzgen:
-    - /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/configs/boltzgen/boltzgen_smoke.yaml

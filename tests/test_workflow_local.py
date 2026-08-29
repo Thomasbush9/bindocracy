@@ -6,7 +6,6 @@ fan-out, paths, staging, and the single-writer ingestion boundary.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -37,9 +36,6 @@ def snakemake(workdir: Path, config_file: Path, *extra: str) -> subprocess.Compl
 def campaign(configs, tmp_path: Path) -> tuple[Path, Path, Path]:
     """A workflow config pointing at the fixture configs, plus its run root."""
     general_path, model_path = configs
-    named = tmp_path / "config_01.yaml"
-    shutil.move(model_path, named)
-
     database = tmp_path / "campaign.duckdb"
     run_root = tmp_path / "runs"
     config_file = tmp_path / "campaign.yaml"
@@ -47,7 +43,7 @@ def campaign(configs, tmp_path: Path) -> tuple[Path, Path, Path]:
         "database": str(database),
         "run_root": str(run_root),
         "general_config": str(general_path),
-        "models": {"mosaic": [str(named)]},
+        "runs": [{"name": "config_01", "config": str(model_path)}],
     }, sort_keys=False))
     return config_file, database, run_root
 

@@ -15,8 +15,7 @@ import yaml
 from conftest import write_boltzgen_configs
 
 from bindocracy.config import ConfigPreflightError
-from bindocracy.tools import load_configs, plan
-from bindocracy.tools.boltzgen.launch import boltzgen_launch_spec
+from bindocracy.tools import launch_spec, load_configs, plan
 
 
 @pytest.fixture
@@ -28,7 +27,7 @@ def planned(boltzgen_configs, tmp_path: Path):
 def test_the_spec_is_archived_and_bound_not_the_authored_one(planned) -> None:
     loaded, manifest = planned
 
-    spec = Path(boltzgen_launch_spec(loaded, manifest, 0).argv[6])
+    spec = Path(launch_spec(manifest, 0).argv[6])
 
     assert list(manifest.provenance) == ["spec"]
     assert spec == manifest.path("provenance/binder_spec.yaml")
@@ -39,7 +38,7 @@ def test_the_spec_is_archived_and_bound_not_the_authored_one(planned) -> None:
 def test_argv_is_a_singularity_run_with_the_configured_counts(planned) -> None:
     loaded, manifest = planned
 
-    argv = boltzgen_launch_spec(loaded, manifest, 0).argv
+    argv = launch_spec(manifest, 0).argv
 
     assert argv[:5] == ("singularity", "run", "--cleanenv", "--nv",
                         str(loaded.model.runtime.container))
@@ -60,7 +59,7 @@ def test_diffusion_batch_size_is_passed_when_set(boltzgen_configs, tmp_path: Pat
     model_path.write_text(yaml.safe_dump(raw))
     loaded = load_configs(general_path, model_path)
 
-    argv = boltzgen_launch_spec(loaded, plan(loaded, tmp_path / "run"), 0).argv
+    argv = launch_spec(plan(loaded, tmp_path / "run"), 0).argv
 
     assert "--diffusion_batch_size" in argv
     assert argv[argv.index("--diffusion_batch_size") + 1] == "10"
@@ -70,21 +69,21 @@ def test_tmpdir_is_node_local_and_unique_per_task(planned) -> None:
     """Lustre TMPDIR kills any Triton-JIT tool with Errno 39."""
     loaded, manifest = planned
 
-    first = boltzgen_launch_spec(loaded, manifest, 0).env["TMPDIR"]
+    first = launch_spec(manifest, 0).env["TMPDIR"]
 
     assert first.startswith(str(loaded.model.runtime.node_tmp_root))
     assert manifest.run_id[:8] in first
     assert first.endswith("0000")
-    env = boltzgen_launch_spec(loaded, manifest, 0).env
+    env = launch_spec(manifest, 0).env
     assert env["SINGULARITYENV_TMPDIR"] == first
     assert env["SINGULARITYENV_BOLTZGEN_RUNTIME_CACHE"].startswith(first)
     assert env["SINGULARITYENV_SSL_CERT_FILE"].endswith("ca-certificates.crt")
 
 
 def test_the_expected_output_is_the_metrics_table(planned) -> None:
-    loaded, manifest = planned
+    _, manifest = planned
 
-    spec = boltzgen_launch_spec(loaded, manifest, 0)
+    spec = launch_spec(manifest, 0)
 
     assert spec.outputs == (
         manifest.path("tasks/0000/final_ranked_designs/all_designs_metrics.csv"),

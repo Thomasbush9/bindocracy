@@ -8,10 +8,8 @@ from bindocracy.tools.base import ToolPlugin
 from bindocracy.tools.boltzgen import BoltzGenPlugin
 from bindocracy.tools.mosaic import MosaicPlugin
 from bindocracy.tools.registry import (
-    DuplicateRunNameError,
     UnknownToolError,
     collect_run,
-    index_configs,
     launch_spec,
     load_configs,
     plan,
@@ -27,12 +25,10 @@ register(BoltzGenPlugin)
 
 __all__ = [
     "BoltzGenPlugin",
-    "DuplicateRunNameError",
     "MosaicPlugin",
     "ToolPlugin",
     "UnknownToolError",
     "collect_run",
-    "index_configs",
     "launch_spec",
     "load_configs",
     "plan",

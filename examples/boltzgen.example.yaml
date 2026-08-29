@@ -1,0 +1,33 @@
+# TEMPLATE. Real configs live outside the repository, beside the campaign
+# data, because their absolute paths belong to one machine. Copy, edit, and
+# point a workflow index at your copy.
+
+schema_version: 1
+name: boltzgen-binder-run11
+tool: boltzgen
+
+spec:
+  template: /absolute/path/to/binder_design/configs/boltzgen/binder_spec_run10.yaml
+
+# Ten backbones generated, ten kept. Equal counts with filtering off make this
+# comparable to Mosaic's ten; the tool's own quality filters still run and mark
+# a subset as passing, which is what n_passed records.
+sampling:
+  jobs: 2
+  num_designs: 5
+  budget: 5
+  protocol: protein-anything
+  filter_biased: false
+  # Explicit: it would otherwise default to 1 below 100 designs and leave the
+  # GPU half idle (measured 54% in the benchmark).
+  diffusion_batch_size: 1
+
+runtime:
+  container: /absolute/path/to/binder_design/images/boltzgen.sif
+  node_tmp_root: /tmp
+
+resources:
+  gpus: 1
+  cpus: 8
+  memory_gb: 96
+  walltime: "02:00:00"

@@ -117,31 +117,28 @@ def test_two_tools_land_in_one_database_without_colliding(
     con.close()
 
 
-def test_two_configs_with_the_same_stem_are_refused(
-    configs, boltzgen_configs, tmp_path: Path
+def test_launch_reads_the_manifest_not_the_live_config(
+    configs, tmp_path: Path, monkeypatch
 ) -> None:
-    """The run directory is the file stem, so a collision must not be silent."""
-    from bindocracy.tools import DuplicateRunNameError, index_configs
+    """A planned run must launch what it was planned with.
 
-    general_path, mosaic_path = configs
-    _, boltzgen_path = boltzgen_configs
-    clash = tmp_path / "sub"
-    clash.mkdir()
-    twin = clash / mosaic_path.name
-    twin.write_text(boltzgen_path.read_text())
+    Editing the authored YAML after planning used to change the command while
+    run.json stayed put, so the job ran with values no record described.
+    """
+    import yaml as _yaml
 
-    with pytest.raises(DuplicateRunNameError, match="would share one run directory"):
-        index_configs(general_path, [mosaic_path, twin])
+    from bindocracy.tools import launch_spec
 
+    general_path, model_path = configs
+    manifest = plan(load_configs(general_path, model_path), tmp_path / "run")
+    before = launch_spec(manifest, 0).argv
 
-def test_index_configs_keys_runs_by_file_stem(configs, boltzgen_configs) -> None:
-    general_path, mosaic_path = configs
-    _, boltzgen_path = boltzgen_configs
+    raw = _yaml.safe_load(model_path.read_text())
+    raw["sampling"]["binder_length"] = 999
+    raw["sampling"]["optimizer"] = {"soft_steps": 7}
+    model_path.write_text(_yaml.safe_dump(raw))
 
-    from bindocracy.tools import index_configs
-
-    indexed = index_configs(general_path, [mosaic_path, boltzgen_path])
-
-    assert set(indexed) == {"mosaic", "boltzgen"}
-    assert indexed["mosaic"].tool == "mosaic"
-    assert indexed["boltzgen"].tool == "boltzgen"
+    assert launch_spec(manifest, 0).argv == before
+    flags = dict(zip(before[3::2], before[4::2], strict=True))
+    assert flags["--binder-length"] == "70"
+    assert flags["--soft-steps"] == "100"

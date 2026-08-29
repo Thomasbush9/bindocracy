@@ -13,9 +13,8 @@ import json
 from pathlib import Path
 
 from bindocracy.config.preflight import read_single_fasta
-from bindocracy.tools import load_configs, plan
+from bindocracy.tools import launch_spec, load_configs, plan
 from bindocracy.tools.mosaic.adapter import MosaicOutputAdapter
-from bindocracy.tools.mosaic.launch import mosaic_launch_spec
 
 
 def parse(driver, argv: tuple[str, ...], monkeypatch):
@@ -29,7 +28,7 @@ def test_the_driver_accepts_exactly_what_the_connector_launches(
 ) -> None:
     loaded = load_configs(*configs)
     manifest = plan(loaded, tmp_path / "run")
-    spec = mosaic_launch_spec(loaded, manifest, 1)
+    spec = launch_spec(manifest, 1)
 
     # argparse exits non-zero on an unknown or missing flag, so this failing
     # means the connector would have launched a job that dies immediately.
@@ -51,7 +50,7 @@ def test_the_driver_writes_into_the_directory_the_adapter_reads(
     """--save-dir and the manifest's task directory must be the same place."""
     loaded = load_configs(*configs)
     manifest = plan(loaded, tmp_path / "run")
-    spec = mosaic_launch_spec(loaded, manifest, 0)
+    spec = launch_spec(manifest, 0)
     parsed = parse(driver, spec.argv, monkeypatch)
 
     save_dir = Path(parsed.save_dir)

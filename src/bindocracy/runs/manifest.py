@@ -219,10 +219,7 @@ def plan_run(
     # below and stored in the database, so copying their YAML would be a third
     # copy that nothing reads, and would make a file on a shared filesystem
     # load-bearing again.
-    provenance = {
-        label: _archive(source, directory, source.name)
-        for label, source in tool_plan.archives.items()
-    }
+    provenance = _archive_all(tool_plan.archives, directory)
 
     inputs = {label: digest_of(path) for label, path in tool_plan.inputs.items()}
 
@@ -281,6 +278,26 @@ def _reuse(manifest_path: Path, loaded: LoadedConfigs) -> RunManifest:
             + "\nThe archive is what the run executes, so it cannot be edited."
         )
     return manifest
+
+
+def _archive_all(sources: dict[str, Path], directory: Path) -> dict[str, ArchivedFile]:
+    """Archive every consumed input, refusing to let one overwrite another.
+
+    Filenames come from the sources, and two inputs can share one. Silently
+    copying the second over the first would leave a run executing a file it did
+    not record.
+    """
+    claimed: dict[str, str] = {}
+    archived: dict[str, ArchivedFile] = {}
+    for label, source in sources.items():
+        if source.name in claimed:
+            raise ManifestError(
+                f"cannot archive {label} and {claimed[source.name]}: both are named "
+                f"{source.name!r} and would overwrite each other in provenance/"
+            )
+        claimed[source.name] = label
+        archived[label] = _archive(source, directory, source.name)
+    return archived
 
 
 def _archive(source: Path, directory: Path, filename: str) -> ArchivedFile:

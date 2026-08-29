@@ -20,6 +20,10 @@ class MosaicPreflight:
 
 def preflight_mosaic(general: GeneralConfig, mosaic: MosaicConfig) -> MosaicPreflight:
     """Check paths needed to run one Mosaic configuration."""
+    if general.target.msa is None:
+        raise ConfigPreflightError(
+            "Mosaic folds the target from sequence and needs target.msa, which is not set"
+        )
     required_files = {
         "target FASTA": general.target.sequence_fasta,
         "target MSA": general.target.msa,

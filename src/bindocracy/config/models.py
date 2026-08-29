@@ -44,20 +44,22 @@ class CampaignConfig(ConfigModel):
 class TargetConfig(ConfigModel):
     name: str = Field(min_length=1)
     sequence_fasta: Path
-    msa: Path
     chain_id: str = Field(pattern=r"^[A-Za-z0-9]$")
     hotspots: tuple[str, ...] = ()
-    # Optional here because the target is shared and not every tool needs it:
-    # Mosaic folds the target from sequence, BoltzGen requires geometry. Each
-    # tool's preflight asserts the representation it actually consumes.
+    # Representations beyond the sequence are optional here, because the target
+    # is shared and no tool wants all of them: Mosaic folds from sequence and
+    # needs the MSA, BoltzGen needs geometry and never opens either. Each
+    # tool's preflight asserts what it actually consumes.
+    msa: Path | None = None
     structure_cif: Path | None = None
 
 
 class ClusterConfig(ConfigModel):
+    # Concurrency is Snakemake's `--jobs`, set in the profile; a second knob
+    # here was never read and could only disagree with it.
     executor: Literal["slurm"]
     account: str = Field(min_length=1)
     default_partition: str = Field(min_length=1)
-    max_concurrent_jobs: int = Field(gt=0)
 
 
 class GeneralConfig(ConfigModel):

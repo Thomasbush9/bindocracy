@@ -509,7 +509,7 @@ absolute path verified to exist on disk. Note two of them
 already had uncommitted local edits; the path fix was applied on top and does
 not touch anything else in them.
 
-`launching_scripts/mosaic/hallucinate_binders.py` remains a parameterised copy
+`drivers/mosaic/hallucinate_binders.py` remains a parameterised copy
 rather than a call into the repo, since the upstream script still hard-codes the
 target sequence and MSA path.
 

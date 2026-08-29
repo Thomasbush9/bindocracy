@@ -18,11 +18,18 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from bindocracy.adapters.base import CollectionError, OutputAdapter
+from bindocracy.adapters.common import (
+    artifact,
+    provenance_artifacts,
+    read_manifest,
+    run_window,
+    unique_by_uri,
+)
 from bindocracy.runs.manifest import RunManifest, TaskPlan
 from bindocracy.runs.status import read_task_status
 from bindocracy.store.records import (
@@ -39,15 +46,13 @@ from bindocracy.store.records import (
 
 METRIC_NAME = "mosaic_ranking_loss"
 _SEQUENCE = re.compile(r"[A-Z]+")
-_MEDIA_TYPES = {".jsonl": "application/x-ndjson", ".json": "application/json",
-                ".log": "text/plain", ".py": "text/x-python"}
 
 
 class MosaicOutputAdapter(OutputAdapter):
     tool = "mosaic"
 
     def collect(self, run_dir: Path, run: RunRecord) -> CollectedRun:
-        manifest = _read_manifest(run_dir)
+        manifest = read_manifest(run_dir)
         if manifest.run_id != run.run_id:
             raise CollectionError(
                 f"run {run.run_id} does not match manifest run {manifest.run_id}"
@@ -76,9 +81,12 @@ class MosaicOutputAdapter(OutputAdapter):
                 metrics.append(_metric_record(run.run_id, design, record))
             artifacts.extend(_task_artifacts(run_dir, run.run_id, task))
 
-        artifacts.extend(_provenance_artifacts(run_dir, run.run_id, manifest))
+        artifacts.extend(provenance_artifacts(run_dir, run.run_id, manifest, {"driver": "driver_script", "general": "general_config",
+     "model": "model_config"}))
         status_value = _run_status(manifest, per_task, len(designs))
-        started, finished = _run_window(run_dir, manifest)
+        started, finished = run_window(
+            [read_task_status(run_dir / task.status) for task in manifest.tasks]
+        )
 
         collected_run = run.model_copy(update={
             "status": status_value,
@@ -93,12 +101,12 @@ class MosaicOutputAdapter(OutputAdapter):
             run=collected_run,
             designs=tuple(designs),
             metrics=tuple(metrics),
-            artifacts=tuple(_unique_by_uri(artifacts)),
+            artifacts=tuple(unique_by_uri(artifacts)),
         )
 
     def succeeded(self, run_dir: Path) -> bool:
         """True when every planned task reported success and wrote designs."""
-        manifest = _read_manifest(run_dir)
+        manifest = read_manifest(run_dir)
         for task in manifest.tasks:
             status = read_task_status(run_dir / task.status)
             if status is None or status.status != "succeeded":
@@ -107,13 +115,6 @@ class MosaicOutputAdapter(OutputAdapter):
             if len(records) < task.n_requested:
                 return False
         return True
-
-
-def _read_manifest(run_dir: Path) -> RunManifest:
-    manifest_path = run_dir / "run.json"
-    if not manifest_path.is_file():
-        raise CollectionError(f"missing run manifest: {manifest_path}")
-    return RunManifest.read(manifest_path)
 
 
 def _read_designs(
@@ -206,48 +207,10 @@ def _task_artifacts(run_dir: Path, run_id: str, task: TaskPlan) -> list[Artifact
     wanted = [("native_designs", task.designs), ("task_status", task.status),
               ("log", task.log)]
     return [
-        artifact
+        record
         for kind, relative in wanted
-        if (artifact := _artifact(run_dir, run_id, relative, kind)) is not None
+        if (record := artifact(run_dir, run_id, relative, kind)) is not None
     ]
-
-
-def _provenance_artifacts(
-    run_dir: Path, run_id: str, manifest: RunManifest
-) -> list[ArtifactRecord]:
-    # `general` and `model` only appear in runs planned before the configs
-    # stopped being archived; they are still collected so those runs reparse.
-    kinds = {"driver": "driver_script", "general": "general_config",
-             "model": "model_config"}
-    return [
-        artifact
-        for key, archived in manifest.provenance.items()
-        if (artifact := _artifact(
-            run_dir, run_id, archived.path, kinds.get(key, key))) is not None
-    ]
-
-
-def _artifact(run_dir: Path, run_id: str, relative: str, kind: str) -> ArtifactRecord | None:
-    path = run_dir / relative
-    if not path.is_file():
-        return None
-    stat = path.stat()
-    return ArtifactRecord(
-        artifact_id=stable_id("artifact", run_id, relative),
-        run_id=run_id,
-        kind=kind,
-        uri=relative,
-        media_type=_MEDIA_TYPES.get(path.suffix),
-        size_bytes=stat.st_size,
-        created_at=datetime.fromtimestamp(stat.st_mtime, UTC),
-    )
-
-
-def _unique_by_uri(artifacts: list[ArtifactRecord]) -> list[ArtifactRecord]:
-    by_uri: dict[str, ArtifactRecord] = {}
-    for artifact in artifacts:
-        by_uri.setdefault(artifact.uri, artifact)
-    return list(by_uri.values())
 
 
 def _run_status(manifest: RunManifest, per_task: dict[str, Any], produced: int) -> RunStatus:
@@ -257,19 +220,6 @@ def _run_status(manifest: RunManifest, per_task: dict[str, Any], produced: int) 
     if complete and produced == manifest.designs_per_task * len(manifest.tasks):
         return RunStatus.SUCCEEDED
     return RunStatus.PARTIAL
-
-
-def _run_window(run_dir: Path, manifest: RunManifest) -> tuple[datetime | None, datetime | None]:
-    starts, finishes = [], []
-    for task in manifest.tasks:
-        status = read_task_status(run_dir / task.status)
-        if status is None:
-            continue
-        starts.append(status.started_at)
-        finishes.append(status.finished_at)
-    starts = [value for value in starts if value is not None]
-    finishes = [value for value in finishes if value is not None]
-    return (min(starts) if starts else None, max(finishes) if finishes else None)
 
 
 def _timestamp(value: Any) -> datetime | None:

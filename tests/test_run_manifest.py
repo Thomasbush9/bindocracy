@@ -105,3 +105,28 @@ def test_manifest_round_trips_through_json(configs, tmp_path: Path) -> None:
     manifest = plan(load_configs(*configs), tmp_path / "run")
 
     assert RunManifest.read(manifest.directory / "run.json") == manifest
+
+
+def test_two_archives_with_one_filename_are_refused(configs, tmp_path: Path) -> None:
+    """Archive names come from the sources, and two sources can share one.
+
+    Copying the second over the first would leave the run executing a file it
+    did not record.
+    """
+    from bindocracy.runs import ToolPlan, plan_run
+
+    loaded = load_configs(*configs)
+    a = tmp_path / "one" / "driver.py"
+    b = tmp_path / "two" / "driver.py"
+    for path in (a, b):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("print('x')\n")
+
+    with pytest.raises(ManifestError, match="would overwrite each other"):
+        plan_run(
+            loaded,
+            ToolPlan(jobs=1, designs_per_task=1, designs_file="designs.jsonl",
+                     archives={"driver": a, "helper": b},
+                     container=loaded.model.runtime.container, workflow={}),
+            tmp_path / "run",
+        )

@@ -12,7 +12,7 @@ target:
   sequence_fasta: /absolute/path/to/binder_design/mosaic_setup/dio3_cut/dio3_cut.fasta
   msa: /absolute/path/to/binder_design/mosaic_setup/dio3_cut/msa_out/sequences/dio3_cut/msa/DIO3.a3m
   chain_id: A
-  # Produced by launching_scripts/00_target/. Mosaic folds the target from
+  # Produced by legacy/00_target/. Mosaic folds the target from
   # sequence and ignores this; BoltzGen requires the geometry.
   structure_cif: /absolute/path/to/binder_design/outputs/_shared/dio3_cut.cif
   hotspots: []
@@ -21,4 +21,3 @@ cluster:
   executor: slurm
   account: kempner_bsabatini_lab
   default_partition: kempner_h100
-  max_concurrent_jobs: 10

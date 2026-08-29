@@ -7,8 +7,7 @@ name: mosaic-hallucinate-boltz-run11
 tool: mosaic
 
 driver:
-  script: /absolute/path/to/binder_design/bindocracy/launching_scripts/mosaic/hallucinate_binders.py
-  archive: true
+  script: /absolute/path/to/binder_design/bindocracy/drivers/mosaic/hallucinate_binders.py
 
 # Ten designs across TWO Slurm tasks -- the fan-out path, which every run so
 # far has left untested. The optimiser is at the lab's benchmarked

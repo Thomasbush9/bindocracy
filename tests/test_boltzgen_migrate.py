@@ -17,12 +17,12 @@ import pytest
 
 from bindocracy.store import CampaignStore, create_database
 from bindocracy.store.records import (
+    CollectedRun,
     ConfigRecord,
     DesignRecord,
     MetricRecord,
     RunRecord,
 )
-from bindocracy.store.records import CollectedRun
 from bindocracy.tools.boltzgen.migrate import backfill_boltzgen_decisions, task_of_native_id
 
 

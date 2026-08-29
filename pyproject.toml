@@ -15,38 +15,30 @@ dependencies = [
     "snakemake-executor-plugin-slurm>=2.8",
 
     # --- data ------------------------------------------------------------
-    # DuckDB is the store: it reads the tools' heterogeneous CSVs in place,
-    # so the ingest step is SQL rather than nine bespoke parsers. pyarrow
-    # gives Parquet, so the unified design table is one file instead of nine.
     "duckdb>=1.5",
-    "pandas>=2.2",
-    "pyarrow>=17",
-
-    # Terminal SQL IDE with the DuckDB adapter built in. Chosen over the
-    # `duckdb -ui` browser app because it needs no port forwarding from the
-    # login node -- see docs/env-setup.md.
-    "harlequin>=2.10",
-
-    # --- structure and sequence I/O --------------------------------------
-    # Reads mmCIF as well as PDB. This matters: BoltzGen writes CIF only, and
-    # Caliby's `out_pdb` column holds .cif paths, so neither is reachable with
-    # the hand-rolled PDB parser in launching_scripts/common/seq_qc.py.
-    "biotite>=1.7",
 
     # --- configuration ---------------------------------------------------
-    # pyyaml parses the per-tool configs; pydantic validates them at submit
-    # time, so a mistyped key fails in a second instead of 40 minutes into a
-    # GPU job. jinja2 renders one target spec into each tool's own config and
-    # sbatch dialect (snakemake depends on it anyway).
+    # pyyaml parses the configs; pydantic validates them at submit time, so a
+    # mistyped key fails in a second instead of 40 minutes into a GPU job.
     "pyyaml>=6.0",
     "pydantic>=2.9",
-    "jinja2>=3.1",
 
-    # --- CLI and reporting -----------------------------------------------
+    # --- CLI -------------------------------------------------------------
     "typer>=0.15",
-    "rich>=13.9",
-    "matplotlib>=3.9",
 ]
+
+# Nothing below is imported by the library. They are here because a person
+# wants them, or because a feature that needs them is not written yet; keeping
+# them out of the default install makes `uv sync` faster and cannot break it.
+[project.optional-dependencies]
+# Terminal SQL IDE with a DuckDB adapter, for reading a campaign database on a
+# login node without forwarding a port. See docs/env-setup.md.
+inspect = ["harlequin>=2.10"]
+# For the reporting and structure work that does not exist yet: pandas and
+# pyarrow for a unified design table, biotite for mmCIF (BoltzGen writes CIF
+# only), matplotlib for figures.
+reporting = ["pandas>=2.2", "pyarrow>=17", "matplotlib>=3.9"]
+structures = ["biotite>=1.7"]
 
 [project.scripts]
 bindocracy = "bindocracy.cli:app"

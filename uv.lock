@@ -51,19 +51,25 @@ name = "bindocracy"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "biotite" },
     { name = "duckdb" },
-    { name = "harlequin" },
-    { name = "jinja2" },
-    { name = "matplotlib" },
-    { name = "pandas" },
-    { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pyyaml" },
-    { name = "rich" },
     { name = "snakemake" },
     { name = "snakemake-executor-plugin-slurm" },
     { name = "typer" },
+]
+
+[package.optional-dependencies]
+inspect = [
+    { name = "harlequin" },
+]
+reporting = [
+    { name = "matplotlib" },
+    { name = "pandas" },
+    { name = "pyarrow" },
+]
+structures = [
+    { name = "biotite" },
 ]
 
 [package.dev-dependencies]
@@ -74,20 +80,19 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "biotite", specifier = ">=1.7" },
+    { name = "biotite", marker = "extra == 'structures'", specifier = ">=1.7" },
     { name = "duckdb", specifier = ">=1.5" },
-    { name = "harlequin", specifier = ">=2.10" },
-    { name = "jinja2", specifier = ">=3.1" },
-    { name = "matplotlib", specifier = ">=3.9" },
-    { name = "pandas", specifier = ">=2.2" },
-    { name = "pyarrow", specifier = ">=17" },
+    { name = "harlequin", marker = "extra == 'inspect'", specifier = ">=2.10" },
+    { name = "matplotlib", marker = "extra == 'reporting'", specifier = ">=3.9" },
+    { name = "pandas", marker = "extra == 'reporting'", specifier = ">=2.2" },
+    { name = "pyarrow", marker = "extra == 'reporting'", specifier = ">=17" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "rich", specifier = ">=13.9" },
     { name = "snakemake", specifier = ">=9.26" },
     { name = "snakemake-executor-plugin-slurm", specifier = ">=2.8" },
     { name = "typer", specifier = ">=0.15" },
 ]
+provides-extras = ["inspect", "reporting", "structures"]
 
 [package.metadata.requires-dev]
 dev = [

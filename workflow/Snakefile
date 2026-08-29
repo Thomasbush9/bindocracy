@@ -22,10 +22,9 @@
 
 from pathlib import Path
 
-from bindocracy.runs import RunManifest, ingest_bundle, run_task, write_collected
 from bindocracy.runs.index import read_workflow_index
-from bindocracy.runs.manifest import write_json_atomic
-from bindocracy.tools import collect_run, launch_spec, load_configs, plan, plugin_for, resources
+from bindocracy.runs.steps import collect_step, generate_step, ingest_step, prepare_step
+from bindocracy.tools import load_configs, plugin_for, resources
 
 INDEX = read_workflow_index(config)
 RUN_ROOT = INDEX.run_root
@@ -76,8 +75,10 @@ rule prepare_run:
         config_inputs,
     output:
         RUN_ROOT / "{run}" / "run.json",
+    log:
+        RUN_ROOT / "{run}" / "logs" / "prepare.log",
     run:
-        plan(LOADED[wildcards.run], RUN_ROOT / wildcards.run, name=wildcards.run)
+        prepare_step(LOADED[wildcards.run], RUN_ROOT / wildcards.run, wildcards.run, log[0])
 
 
 rule generate:
@@ -96,14 +97,7 @@ rule generate:
         mem_mb=slurm("mem_mb"),
         runtime=slurm("runtime"),
     run:
-        # The manifest, not the live YAML: a planned run launches what it was
-        # planned with, and refuses to start if a recorded input changed since.
-        # run_task writes status.json unless the tool wrote its own, so a tool
-        # that only exits still produces what collection needs.
-        manifest = RunManifest.read(input[0])
-        manifest.verify_inputs()
-        spec = launch_spec(manifest, int(wildcards.task))
-        run_task(spec.argv, spec.env, log[0], output[0], int(wildcards.task))
+        generate_step(input[0], int(wildcards.task), log[0], output[0])
 
 
 rule collect:
@@ -116,8 +110,10 @@ rule collect:
         ),
     output:
         RUN_ROOT / "{run}" / "collected.json",
+    log:
+        RUN_ROOT / "{run}" / "logs" / "collect.log",
     run:
-        write_collected(collect_run(input.manifest), output[0])
+        collect_step(input.manifest, output[0], log[0])
 
 
 rule ingest:
@@ -126,11 +122,12 @@ rule ingest:
         RUN_ROOT / "{run}" / "collected.json",
     output:
         RUN_ROOT / "{run}" / "ingested.json",
+    log:
+        RUN_ROOT / "{run}" / "logs" / "ingest.log",
     resources:
         db_writer=1,
     run:
-        inserted = ingest_bundle(DATABASE, input[0])
-        write_json_atomic(output[0], {"database": str(DATABASE), "inserted": inserted})
+        ingest_step(DATABASE, input[0], output[0], log[0])
 
 
 rule generation_complete:

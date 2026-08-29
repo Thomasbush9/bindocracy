@@ -21,11 +21,18 @@ from __future__ import annotations
 import csv
 import math
 import re
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from bindocracy.adapters.base import CollectionError, OutputAdapter
+from bindocracy.adapters.common import (
+    artifact,
+    provenance_artifacts,
+    read_manifest,
+    run_window,
+    unique_by_uri,
+)
 from bindocracy.runs.manifest import RunManifest, TaskPlan
 from bindocracy.runs.status import read_task_status
 from bindocracy.store.records import (
@@ -66,15 +73,13 @@ FILTER_NAME = "boltzgen_pass_filters"
 RANK_NAME = "boltzgen_final_rank"
 
 _SEQUENCE = re.compile(r"[A-Z]+")
-_MEDIA_TYPES = {".csv": "text/csv", ".json": "application/json",
-                ".log": "text/plain", ".yaml": "application/yaml", ".cif": "chemical/x-cif"}
 
 
 class BoltzGenOutputAdapter(OutputAdapter):
     tool = "boltzgen"
 
     def collect(self, run_dir: Path, run: RunRecord) -> CollectedRun:
-        manifest = _read_manifest(run_dir)
+        manifest = read_manifest(run_dir)
         if manifest.run_id != run.run_id:
             raise CollectionError(
                 f"run {run.run_id} does not match manifest run {manifest.run_id}"
@@ -112,8 +117,10 @@ class BoltzGenOutputAdapter(OutputAdapter):
                 artifacts.extend(_structure_artifacts(run_dir, run.run_id, task, design, row))
             artifacts.extend(_task_artifacts(run_dir, run.run_id, task))
 
-        artifacts.extend(_provenance_artifacts(run_dir, run.run_id, manifest))
-        started, finished = _run_window(run_dir, manifest)
+        artifacts.extend(provenance_artifacts(run_dir, run.run_id, manifest, {"spec": "design_spec", "driver": "driver_script"}))
+        started, finished = run_window(
+            [read_task_status(run_dir / task.status) for task in manifest.tasks]
+        )
 
         collected_run = run.model_copy(update={
             "status": _run_status(manifest, per_task, len(designs)),
@@ -130,23 +137,16 @@ class BoltzGenOutputAdapter(OutputAdapter):
             designs=tuple(designs),
             metrics=tuple(metrics),
             decisions=tuple(decisions),
-            artifacts=tuple(_unique_by_uri(artifacts)),
+            artifacts=tuple(unique_by_uri(artifacts)),
         )
 
     def succeeded(self, run_dir: Path) -> bool:
-        manifest = _read_manifest(run_dir)
+        manifest = read_manifest(run_dir)
         for task in manifest.tasks:
             rows, _ = _read_metrics(run_dir / task.designs, task, set())
             if not rows:
                 return False
         return True
-
-
-def _read_manifest(run_dir: Path) -> RunManifest:
-    manifest_path = run_dir / "run.json"
-    if not manifest_path.is_file():
-        raise CollectionError(f"missing run manifest: {manifest_path}")
-    return RunManifest.read(manifest_path)
 
 
 def _read_metrics(
@@ -285,10 +285,9 @@ def _structure_artifacts(
     if not file_name or rank is None or structures is None:
         return []
     relative = f"{task.directory}/{RANKED_DIR}/{structures.name}/rank{int(rank):02d}_{file_name}"
-    artifact = _artifact(run_dir, run_id, relative, "design_complex")
-    if artifact is None:
-        return []
-    return [artifact.model_copy(update={"design_id": design.design_id})]
+    record = artifact(run_dir, run_id, relative, "design_complex",
+                      design_id=design.design_id)
+    return [record] if record is not None else []
 
 
 def _structure_dir(run_dir: Path, task: TaskPlan) -> Path | None:
@@ -302,45 +301,10 @@ def _task_artifacts(run_dir: Path, run_id: str, task: TaskPlan) -> list[Artifact
     wanted = [("native_design_table", task.designs), ("task_status", task.status),
               ("log", task.log)]
     return [
-        artifact
+        record
         for kind, relative in wanted
-        if (artifact := _artifact(run_dir, run_id, relative, kind)) is not None
+        if (record := artifact(run_dir, run_id, relative, kind)) is not None
     ]
-
-
-def _provenance_artifacts(
-    run_dir: Path, run_id: str, manifest: RunManifest
-) -> list[ArtifactRecord]:
-    kinds = {"spec": "design_spec", "driver": "driver_script"}
-    return [
-        artifact
-        for key, archived in manifest.provenance.items()
-        if (artifact := _artifact(
-            run_dir, run_id, archived.path, kinds.get(key, key))) is not None
-    ]
-
-
-def _artifact(run_dir: Path, run_id: str, relative: str, kind: str) -> ArtifactRecord | None:
-    path = run_dir / relative
-    if not path.is_file():
-        return None
-    stat = path.stat()
-    return ArtifactRecord(
-        artifact_id=stable_id("artifact", run_id, relative),
-        run_id=run_id,
-        kind=kind,
-        uri=relative,
-        media_type=_MEDIA_TYPES.get(path.suffix),
-        size_bytes=stat.st_size,
-        created_at=datetime.fromtimestamp(stat.st_mtime, UTC),
-    )
-
-
-def _unique_by_uri(artifacts: list[ArtifactRecord]) -> list[ArtifactRecord]:
-    by_uri: dict[str, ArtifactRecord] = {}
-    for artifact in artifacts:
-        by_uri.setdefault(artifact.uri, artifact)
-    return list(by_uri.values())
 
 
 def _run_status(manifest: RunManifest, per_task: dict[str, Any], produced: int) -> RunStatus:
@@ -350,19 +314,6 @@ def _run_status(manifest: RunManifest, per_task: dict[str, Any], produced: int) 
     # BoltzGen filters its own pool, so producing fewer than requested is
     # normal rather than partial; an incomplete task is what makes it partial.
     return RunStatus.SUCCEEDED if complete else RunStatus.PARTIAL
-
-
-def _run_window(run_dir: Path, manifest: RunManifest) -> tuple[datetime | None, datetime | None]:
-    starts, finishes = [], []
-    for task in manifest.tasks:
-        status = read_task_status(run_dir / task.status)
-        if status is None:
-            continue
-        starts.append(status.started_at)
-        finishes.append(status.finished_at)
-    starts = [value for value in starts if value is not None]
-    finishes = [value for value in finishes if value is not None]
-    return (min(starts) if starts else None, max(finishes) if finishes else None)
 
 
 def _number(value: Any) -> float | None:

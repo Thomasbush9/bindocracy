@@ -223,3 +223,19 @@ def test_verify_inputs_names_what_changed(configs, tmp_path: Path) -> None:
         manifest.verify_inputs()
 
     assert "target_fasta" in str(raised.value)
+
+
+def test_artifacts_carry_their_checksums(configs, tmp_path: Path) -> None:
+    """The manifest hashed archived inputs; the artifacts table did not.
+
+    A relocated archive is only auditable if the checksum travels with the row.
+    """
+    manifest = plan(load_configs(*configs), tmp_path / "run")
+    write_task(manifest.directory, 0, [design_line(0, 0)], status={})
+    write_task(manifest.directory, 1, [design_line(1, 0)], status={})
+
+    artifacts = collect_run(manifest.directory / "run.json").artifacts
+
+    assert artifacts
+    assert all(a.sha256 is not None and a.sha256.startswith("sha256:") for a in artifacts)
+    assert all(a.size_bytes is not None for a in artifacts)

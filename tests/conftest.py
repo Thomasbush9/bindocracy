@@ -95,7 +95,6 @@ def write_configs(root: Path, *, driver_source: str | None = None, **mosaic_over
             "executor": "slurm",
             "account": "test-account",
             "default_partition": "test-gpu",
-            "max_concurrent_jobs": 2,
         },
     }, sort_keys=False))
 
@@ -103,7 +102,7 @@ def write_configs(root: Path, *, driver_source: str | None = None, **mosaic_over
         "schema_version": 2,
         "name": "mosaic-test",
         "tool": "mosaic",
-        "driver": {"script": str(driver), "archive": True},
+        "driver": {"script": str(driver)},
         "sampling": {
             "binder_length": 70,
             "jobs": 2,
@@ -134,7 +133,7 @@ def configs(tmp_path: Path) -> tuple[Path, Path]:
 
 DRIVER_PATH = (
     Path(__file__).resolve().parents[1]
-    / "launching_scripts" / "mosaic" / "hallucinate_binders.py"
+    / "drivers" / "mosaic" / "hallucinate_binders.py"
 )
 
 # The driver runs inside mosaic.sif and imports jax and mosaic at module scope;
@@ -260,7 +259,6 @@ def write_boltzgen_configs(root: Path, **overrides) -> tuple[Path, Path]:
             "executor": "slurm",
             "account": "test-account",
             "default_partition": "test-gpu",
-            "max_concurrent_jobs": 2,
         },
     }, sort_keys=False))
 

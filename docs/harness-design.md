@@ -244,6 +244,26 @@ suite, extra CPUs often buy more than a bigger GPU.
   optimisation steps or a cheaper loss.
 - **RFdiffusion: 78%**, one denoising trajectory per design.
 
+**Measured, 2026-08-28 — the step lever is real and nearly linear.** The first
+harness run (5 designs, 70 aa binder, `runs/first_run`) cut the APGM schedule
+from 100/50/15 to 10/10/10 and measured 352 s, 97, 97, 76, 75. Excluding the
+first design, which pays JIT compilation as before, that is **86 s per design at
+30 steps against ~415 s at 165**. Mosaic's own log reports `time: 2.37` per
+step, which resolves the cost into
+
+```text
+per design ≈ 26 s (ranking re-fold) + 2.37 s × optimisation steps
+```
+
+So the schedule is a genuine, nearly linear lever, and the re-fold — 3 recycles
+by 6 samples, the expensive prediction that produces the reported score — is
+only a ~26 s floor. Two warnings for anyone using this to size a run. The
+constant is a two-point fit and the 75–97 s spread across four designs is real
+variance, so treat it as a slope with a floor rather than a precise formula.
+And **cheap steps are not cheap designs**: 30 steps buys a 4.8× speedup and
+sequences that are correspondingly under-optimised. The lever exists for smoke
+tests and cost curves, not for producing binders.
+
 The distinction matters more than the raw number: "slow" and "wasting the GPU"
 are different diagnoses with different fixes, and the harness should record
 utilisation precisely so they are not confused. Mosaic is slow and efficient;

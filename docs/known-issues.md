@@ -116,17 +116,47 @@ The interface scores are the only hint, and only in aggregate: the new run's
 `design_to_target_iptm` averages 0.138 and its `design_to_target_ipsae` is 0.0
 for every row — the "binder" is not binding.
 
-**What is not yet known:** why this run collapsed to 100% when the benchmark
-was ~32%. The new run differs in `--num_designs` (10 vs 40), `--budget`, and an
-explicit `--diffusion_batch_size 10`. A first reading of the uniform 76 aa
-length blamed batch size for collapsing the `70..90` range; that was wrong —
-76 aa is simply ubiquitin's length, and the benchmark contains ubiquitins at
-several lengths. The cause is untested.
+A third run at `--diffusion_batch_size 1` (`runs/boltzgen_run11`, 10 designs)
+returned 7 ubiquitins including one exact match, so the behaviour is **not**
+caused by batch size — it is present at every setting measured, and 7/10
+against 12/38 is well within what 10 samples can do. What makes a given run
+land at 32% or 70% or 100% is still unknown.
+
+See §1.4c for the separate, and genuinely batch-driven, length effect.
 
 **Status.** Noted, not acted on. `runs/boltzgen_run10` is a harness test, and
 its rows are in the database as ordinary designs. This matters when the
 archived benchmark is used as a scientific result, not when it is used to
 exercise the pipeline.
+
+### 1.4c `--diffusion_batch_size` also decides how many binder LENGTHS a run can contain
+
+Separate from §1.4b, and real. A `sequence: 70..90` range in the design spec is
+resampled **once per diffusion batch**, not once per design, so the batch size
+caps the number of distinct lengths a run can produce at
+`ceil(num_designs / diffusion_batch_size)`.
+
+Same target, container, and protocol:
+
+| Run | `--diffusion_batch_size` | designs | distinct lengths |
+|---|---|---|---|
+| `runs/boltzgen_run10` | 10 | 10 | **1** (76 only) |
+| `runs/boltzgen_run11` | 1 | 10 | **6** (74–90) |
+| archived benchmark | 1 *(implicit)* | 40 | **19** (70–90) |
+
+The trap is that raising the batch is exactly what the GPU-utilisation advice
+in `harness-design.md` §9 recommends, and it silently narrows the design space
+at the same time.
+
+**Fix:** keep the batch well below the design count whenever the spec uses a
+length range. Pin the length to a bare integer instead if uniformity is wanted.
+
+*History, because the reasoning went wrong twice.* The uniform 76 aa of
+`run10` was first blamed on this effect, then the whole claim was retracted on
+finding that all ten designs were ubiquitin and ubiquitin is 76 aa. The
+retraction over-corrected: `run11` shows the length coupling is real and the
+ubiquitin contamination is a separate problem that happens to sit at the same
+length. Two independent effects, and each was briefly mistaken for the other.
 
 ### 1.5 PXDesign silently reverts its own sampling schedule
 

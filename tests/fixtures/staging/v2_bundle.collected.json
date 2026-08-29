@@ -1,0 +1,181 @@
+{
+  "run": {
+    "run_id": "eb31461c-3df9-4b9c-8582-296f4b63a293",
+    "parent_run_id": null,
+    "name": "first_run",
+    "tool": "mosaic",
+    "kind": "generate",
+    "model_config_id": "cadcbcb0-35d4-5adc-9fee-225de449687a",
+    "status": "succeeded",
+    "n_requested": 5,
+    "n_attempted": 5,
+    "n_produced": 5,
+    "n_passed": null,
+    "count_details": {
+      "tasks": {
+        "0000": {
+          "status": "succeeded",
+          "n_produced": 5,
+          "n_truncated": 0,
+          "n_invalid": 0
+        }
+      }
+    },
+    "container_digest": null,
+    "code_revision": "d23ef242999133a5da59a3342ce632f968143d89",
+    "workflow_metadata": {
+      "engine": "snakemake",
+      "target_length": 201,
+      "binder_length": 70,
+      "seed_base": 0
+    },
+    "resources": {
+      "gpus": 1,
+      "cpus": 8,
+      "memory_gb": 64,
+      "walltime": "02:00:00"
+    },
+    "output_uri": "/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/runs/first_run",
+    "error": null,
+    "created_at": "2026-08-28T23:48:16.812476Z",
+    "started_at": "2026-08-28T23:50:44.921486Z",
+    "finished_at": "2026-08-29T00:02:54.260945Z"
+  },
+  "designs": [
+    {
+      "design_id": "9a9a0899-b13e-54d8-b315-babe4e747986",
+      "run_id": "eb31461c-3df9-4b9c-8582-296f4b63a293",
+      "parent_design_id": null,
+      "native_id": "task-0000-design-000000",
+      "candidate_type": "sequence",
+      "sequence": "FEKAEGYMWELLAFVEKFYSPEVAEKARELVEEAKEEAGSDYSKEEAFKKFDEAYEEILKAVEEYQAHAL",
+      "sequence_hash": "sha256:4580e53ba461c86465cffa0d1aa82c91e706594e421d1be4af5a567e89a7b3fe",
+      "length": 70,
+      "seed": 0,
+      "status": "produced",
+      "metadata": {
+        "seconds": 352.4
+      },
+      "created_at": "2026-08-28T23:57:09.340997Z"
+    },
+    {
+      "design_id": "f952fc00-95b0-5764-aa87-4c551a2636de",
+      "run_id": "eb31461c-3df9-4b9c-8582-296f4b63a293",
+      "parent_design_id": null,
+      "native_id": "task-0000-design-000001",
+      "candidate_type": "sequence",
+      "sequence": "SYLEEKVEELDELFEELLAWAEKNPEKYRAFMRELLKEYGRSHWWRFWWRNWGEYEELFELLLIFYLGLP",
+      "sequence_hash": "sha256:62949c240b0385124438e0b238fbfccaab04dc6c14a1a5fc03d84ca1e87471e3",
+      "length": 70,
+      "seed": 1,
+      "status": "produced",
+      "metadata": {
+        "seconds": 96.5
+      },
+      "created_at": "2026-08-28T23:58:45.866720Z"
+    }
+  ],
+  "artifacts": [
+    {
+      "artifact_id": "952d21bc-2b1c-560a-9867-f0acc046b310",
+      "run_id": "eb31461c-3df9-4b9c-8582-296f4b63a293",
+      "design_id": null,
+      "kind": "native_designs",
+      "uri": "tasks/0000/designs.jsonl",
+      "media_type": "application/x-ndjson",
+      "sha256": null,
+      "size_bytes": 1220,
+      "metadata": null,
+      "created_at": "2026-08-29T00:02:54Z"
+    },
+    {
+      "artifact_id": "aeab9871-ac0e-5453-b59c-26dd71c7d8d2",
+      "run_id": "eb31461c-3df9-4b9c-8582-296f4b63a293",
+      "design_id": null,
+      "kind": "task_status",
+      "uri": "tasks/0000/status.json",
+      "media_type": "application/json",
+      "sha256": null,
+      "size_bytes": 239,
+      "metadata": null,
+      "created_at": "2026-08-29T00:03:59Z"
+    },
+    {
+      "artifact_id": "eb22896e-3f6b-5ed8-a725-3cef5629399e",
+      "run_id": "eb31461c-3df9-4b9c-8582-296f4b63a293",
+      "design_id": null,
+      "kind": "log",
+      "uri": "logs/task-0000.log",
+      "media_type": "text/plain",
+      "sha256": null,
+      "size_bytes": 123941,
+      "metadata": null,
+      "created_at": "2026-08-29T00:02:54Z"
+    },
+    {
+      "artifact_id": "846f7204-f3cc-5eec-a071-46134a966430",
+      "run_id": "eb31461c-3df9-4b9c-8582-296f4b63a293",
+      "design_id": null,
+      "kind": "general_config",
+      "uri": "provenance/general.yaml",
+      "media_type": null,
+      "sha256": null,
+      "size_bytes": 473,
+      "metadata": null,
+      "created_at": "2026-08-28T23:48:16Z"
+    },
+    {
+      "artifact_id": "d92a18a2-7128-568f-9a0a-138f9103697c",
+      "run_id": "eb31461c-3df9-4b9c-8582-296f4b63a293",
+      "design_id": null,
+      "kind": "model_config",
+      "uri": "provenance/mosaic.yaml",
+      "media_type": null,
+      "sha256": null,
+      "size_bytes": 1144,
+      "metadata": null,
+      "created_at": "2026-08-28T23:48:16Z"
+    },
+    {
+      "artifact_id": "591cd652-592f-5060-abb4-f5d2741c57e4",
+      "run_id": "eb31461c-3df9-4b9c-8582-296f4b63a293",
+      "design_id": null,
+      "kind": "driver_script",
+      "uri": "provenance/hallucinate_binders.py",
+      "media_type": "text/x-python",
+      "sha256": null,
+      "size_bytes": 10268,
+      "metadata": null,
+      "created_at": "2026-08-28T23:48:16Z"
+    }
+  ],
+  "metrics": [
+    {
+      "metric_id": "59fd7b38-ebd8-5c15-8828-47545f47c1b5",
+      "run_id": "eb31461c-3df9-4b9c-8582-296f4b63a293",
+      "design_id": "9a9a0899-b13e-54d8-b315-babe4e747986",
+      "name": "mosaic_ranking_loss",
+      "value": -1.6927708387374878,
+      "unit": null,
+      "direction": "min",
+      "replicate": 0,
+      "status": "ok",
+      "details": null,
+      "measured_at": "2026-08-28T23:57:09.340997Z"
+    },
+    {
+      "metric_id": "92ac877e-bed3-5d2d-b26f-b3c0cb056664",
+      "run_id": "eb31461c-3df9-4b9c-8582-296f4b63a293",
+      "design_id": "f952fc00-95b0-5764-aa87-4c551a2636de",
+      "name": "mosaic_ranking_loss",
+      "value": -1.4454549551010132,
+      "unit": null,
+      "direction": "min",
+      "replicate": 0,
+      "status": "ok",
+      "details": null,
+      "measured_at": "2026-08-28T23:58:45.866720Z"
+    }
+  ],
+  "decisions": []
+}

@@ -34,6 +34,13 @@ class MosaicPlugin(ToolPlugin):
             designs_file=DESIGNS_FILE,
             # The driver is executed, and its content is in no other store.
             archives={"driver": loaded.model.driver.script},
+            # Mosaic folds the target from sequence, so it reads the FASTA and
+            # the MSA and never touches a structure.
+            inputs={
+                "target_fasta": loaded.general.target.sequence_fasta,
+                "target_msa": loaded.general.target.msa,
+                "exec_wrapper": loaded.model.runtime.exec_wrapper,
+            },
             container=loaded.model.runtime.container,
             workflow={
                 "target_length": loaded.preflight.target_length,

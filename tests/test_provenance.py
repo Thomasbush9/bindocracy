@@ -20,20 +20,20 @@ from conftest import (
 )
 
 from bindocracy.runs import ManifestError, ingest_bundle, write_collected
-from bindocracy.runs.inputs import InputDigest, digest_of
+from bindocracy.runs.inputs import digest_of
 from bindocracy.store import CampaignStore, TargetMismatchError, create_database
 from bindocracy.tools import collect_run, load_configs, plan
 
 # ---- digests --------------------------------------------------------------
 
-def test_a_small_input_is_hashed(tmp_path: Path) -> None:
+def test_a_referenced_input_is_hashed(tmp_path: Path) -> None:
     path = tmp_path / "target.fasta"
     path.write_text(">t\nACDEFG\n")
 
     digest = digest_of(path)
 
-    assert digest.kind == "sha256"
     assert digest.sha256.startswith("sha256:")
+    assert digest.size_bytes == path.stat().st_size
     assert digest.matches(path)
 
 
@@ -48,34 +48,13 @@ def test_editing_a_file_in_place_changes_its_digest(tmp_path: Path) -> None:
     assert not before.matches(path)
 
 
-def test_a_large_input_is_fingerprinted_and_says_so(tmp_path: Path, monkeypatch) -> None:
-    """Hashing a 17 GB container on every plan is disproportionate.
-
-    The record must not pretend a fingerprint is a digest.
-    """
-    monkeypatch.setattr("bindocracy.runs.inputs.MAX_HASH_BYTES", 8)
-    path = tmp_path / "big.sif"
-    path.write_bytes(b"x" * 64)
-
-    digest = digest_of(path)
-
-    assert digest.kind == "fingerprint"
-    assert digest.sha256 is None
-    assert digest.mtime_ns is not None
-    assert digest.size_bytes == 64
-
-
-def test_a_digest_cannot_claim_a_hash_it_does_not_have() -> None:
-    with pytest.raises(ValueError, match="needs a hash"):
-        InputDigest(uri="x", kind="sha256", size_bytes=1)
-
-
 # ---- the manifest ---------------------------------------------------------
 
 def test_a_run_records_every_input_it_consumed(configs, tmp_path: Path) -> None:
+    """The plugin declares them, because only it knows what it reads."""
     manifest = plan(load_configs(*configs), tmp_path / "run")
 
-    assert set(manifest.inputs) >= {"target_fasta", "target_msa", "container"}
+    assert set(manifest.inputs) == {"target_fasta", "target_msa", "exec_wrapper"}
     assert all(d.size_bytes > 0 for d in manifest.inputs.values())
     assert manifest.target.name == "test-target"
     assert manifest.target.length == 6
@@ -89,8 +68,8 @@ def test_a_boltzgen_run_records_the_spec_contents_not_just_its_path(
     manifest = plan(load_configs(*boltzgen_configs), tmp_path / "run")
 
     assert manifest.workflow["spec"]["entities"][0]["protein"]["sequence"] == "70..90"
-    assert "spec_structure_0" in manifest.inputs
-    assert "target_structure" in manifest.inputs
+    # BoltzGen reads geometry, never the FASTA or the MSA.
+    assert set(manifest.inputs) == {"spec_structure_0"}
 
 
 def test_reuse_refuses_an_archive_that_was_edited(configs, tmp_path: Path) -> None:
@@ -162,3 +141,38 @@ def test_ingesting_another_target_into_a_campaign_is_refused(
     con = duckdb.connect(str(database), read_only=True)
     assert con.execute("SELECT count(*) FROM runs").fetchone() == (1,)
     con.close()
+
+
+# ---- enforcement ----------------------------------------------------------
+
+def test_a_launch_refuses_an_input_that_changed_since_planning(
+    configs, tmp_path: Path
+) -> None:
+    """Recording a digest is only worth anything if something checks it."""
+    general_path, model_path = configs
+    manifest = plan(load_configs(general_path, model_path), tmp_path / "run")
+    manifest.verify_inputs()  # clean to begin with
+
+    (tmp_path / "target.a3m").write_text(">target\nWWWWWW\n")
+
+    with pytest.raises(ManifestError, match="no longer match what it"):
+        manifest.verify_inputs()
+
+
+def test_a_launch_refuses_an_edited_archive(configs, tmp_path: Path) -> None:
+    manifest = plan(load_configs(*configs), tmp_path / "run")
+
+    manifest.path(manifest.provenance["driver"].path).write_text("# edited\n")
+
+    with pytest.raises(ManifestError, match="no longer match what it"):
+        manifest.verify_inputs()
+
+
+def test_verify_inputs_names_what_changed(configs, tmp_path: Path) -> None:
+    manifest = plan(load_configs(*configs), tmp_path / "run")
+    (tmp_path / "target.fasta").write_text(">target\nWWWWWW\n")
+
+    with pytest.raises(ManifestError) as raised:
+        manifest.verify_inputs()
+
+    assert "target_fasta" in str(raised.value)

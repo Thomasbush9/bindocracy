@@ -43,9 +43,8 @@ class BoltzGenPlugin(ToolPlugin):
             # The spec is bound into the container and consumed by the run, so
             # it is archived for the same reason Mosaic's driver is.
             archives={"spec": loaded.model.spec.template},
-            # The spec is a referenced input whose contents matter; the config
-            # only names its path. Digest every structure it pulls geometry
-            # from, so replacing one in place is visible in the run record.
+            # BoltzGen consumes geometry and never an MSA, so it declares the
+            # structures its spec pulls from and not the campaign FASTA.
             inputs={
                 f"spec_structure_{index}": path
                 for index, path in enumerate(loaded.preflight.spec_files)

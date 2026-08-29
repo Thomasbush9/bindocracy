@@ -246,9 +246,13 @@ def apply(con) -> None:
         _check_version(con)
         for name in TABLE_ORDER:
             con.execute(TABLES[name])
+        # Migrations before indexes, not after. A migration that rebuilds a
+        # table drops its indexes with it, and creating them first meant a
+        # freshly migrated database ran unindexed until the next time it was
+        # opened -- which is exactly when nobody is looking.
+        _migrate(con)
         for ddl in INDEXES:
             con.execute(ddl)
-        _migrate(con)
         for ddl in VIEWS.values():
             con.execute(ddl)
         _stamp(con)

@@ -97,9 +97,12 @@ rule generate:
         runtime=slurm("runtime"),
     run:
         # The manifest, not the live YAML: a planned run launches what it was
-        # planned with. run_task writes status.json unless the tool wrote its
-        # own, so a tool that only exits still produces what collection needs.
-        spec = launch_spec(RunManifest.read(input[0]), int(wildcards.task))
+        # planned with, and refuses to start if a recorded input changed since.
+        # run_task writes status.json unless the tool wrote its own, so a tool
+        # that only exits still produces what collection needs.
+        manifest = RunManifest.read(input[0])
+        manifest.verify_inputs()
+        spec = launch_spec(manifest, int(wildcards.task))
         run_task(spec.argv, spec.env, log[0], output[0], int(wildcards.task))
 
 

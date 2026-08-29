@@ -269,3 +269,31 @@ def test_a_v2_database_migrates_to_v3_without_losing_rows(tmp_path: Path) -> Non
 def test_a_design_still_rejects_length_without_sequence(database: Path) -> None:
     with pytest.raises(ValueError, match="length requires sequence"):
         DesignRecord(run_id="r", native_id="n", candidate_type="sequence", length=5)
+
+
+def test_indexes_survive_a_single_migration(tmp_path: Path) -> None:
+    """A rebuilt table drops its indexes with it.
+
+    Creating indexes before migrating meant a freshly migrated database ran
+    unindexed until it happened to be opened again -- and it looked healthy
+    on the second open, which is why nothing noticed.
+    """
+    database = tmp_path / "campaign.duckdb"
+    config = config_record("mosaic", "m1")
+    with CampaignStore(database) as store:
+        store.ingest(bundle(config, run_id="run-1", sequences=("ACDEFG",)), configs=[config])
+
+    con = duckdb.connect(str(database))
+    expected = {r[0] for r in con.execute(
+        "SELECT index_name FROM duckdb_indexes()").fetchall()}
+    con.execute("UPDATE _meta SET value = '2' WHERE key = 'schema_version'")
+    con.execute("ALTER TABLE designs ADD COLUMN sequence_hash VARCHAR")
+    con.close()
+
+    with CampaignStore(database):  # exactly one migration, then stop
+        pass
+
+    con = duckdb.connect(str(database), read_only=True)
+    after = {r[0] for r in con.execute("SELECT index_name FROM duckdb_indexes()").fetchall()}
+    con.close()
+    assert after == expected

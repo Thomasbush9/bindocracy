@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from bindocracy.runs.manifest import MANIFEST_NAME, RunManifest
-from bindocracy.runs.staging import read_collected
+from bindocracy.runs.staging import read_collected, staged_digest
 from bindocracy.store import CampaignStore
 
 
@@ -23,8 +23,15 @@ def ingest_bundle(database: str | Path, collected_path: str | Path) -> bool:
             f"bundle {collected_path} claims run {collected.run.run_id}, but its "
             f"manifest describes run {manifest.run_id}"
         )
+    target = (
+        (manifest.target.name, manifest.target.sequence_sha256)
+        if manifest.target is not None
+        else None
+    )
     with CampaignStore(database) as store:
-        # One database, one target. Checked before anything is written.
-        if manifest.target is not None:
-            store.assert_target(manifest.target.name, manifest.target.sequence_sha256)
-        return store.ingest(collected, configs=[manifest.config])
+        return store.ingest(
+            collected,
+            configs=[manifest.config],
+            digest=staged_digest(collected_path),
+            target=target,
+        )

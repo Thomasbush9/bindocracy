@@ -56,8 +56,10 @@ class ToolPlan:
     # for a tool that produces exactly what it is asked for (Mosaic); larger
     # for one that generates a pool and keeps a budget (BoltzGen).
     generated_per_task: int | None = None
-    # Files this tool reads that the general config does not name, keyed by a
-    # label. Digested so the run records the bytes it consumed.
+    # Every file this tool reads, keyed by a label. The plugin declares them,
+    # because only it knows what it consumes: Mosaic reads the FASTA and the
+    # MSA, BoltzGen reads the structure and ignores both. Digested so the run
+    # records the bytes it used, and verified before the tool starts.
     inputs: dict[str, Path] = field(default_factory=dict)
 
 
@@ -130,6 +132,32 @@ class RunManifest(ManifestModel):
     def read(cls, manifest_path: str | Path) -> Self:
         return cls.model_validate_json(Path(manifest_path).read_text())
 
+    def verify_inputs(self) -> None:
+        """Refuse to launch if a recorded input has changed since planning.
+
+        Recording a digest is only worth anything if something checks it. The
+        files here sit on a shared lab filesystem and are edited in place: a
+        replaced FASTA, MSA, structure, spec, or wrapper would otherwise let a
+        run consume bytes its own manifest does not describe.
+        """
+        changed = [
+            f"{label}: {digest.uri}"
+            for label, digest in self.inputs.items()
+            if not digest.matches(digest.uri)
+        ]
+        archived = [
+            f"{label}: {archive.path}"
+            for label, archive in self.provenance.items()
+            if sha256_file(self.path(archive.path)) != archive.sha256
+        ]
+        if changed or archived:
+            raise ManifestError(
+                f"run {self.run_id} cannot launch: inputs no longer match what it "
+                "was planned with.\n"
+                + "\n".join(f"  changed  {item}" for item in changed)
+                + "\n".join(f"  archived {item}" for item in archived)
+            )
+
     def to_run_record(self) -> RunRecord:
         """The run row this manifest describes, before any output is parsed."""
         return RunRecord(
@@ -196,15 +224,7 @@ def plan_run(
         for label, source in tool_plan.archives.items()
     }
 
-    target = loaded.general.target
-    inputs = {
-        "target_fasta": digest_of(target.sequence_fasta),
-        "target_msa": digest_of(target.msa),
-        "container": digest_of(tool_plan.container),
-        **{label: digest_of(path) for label, path in tool_plan.inputs.items()},
-    }
-    if target.structure_cif is not None:
-        inputs["target_structure"] = digest_of(target.structure_cif)
+    inputs = {label: digest_of(path) for label, path in tool_plan.inputs.items()}
 
     manifest = RunManifest(
         run_id=new_id(),
@@ -223,7 +243,9 @@ def plan_run(
         container_digest=None,
         code_revision=_code_revision(),
         workflow={"engine": "snakemake", **tool_plan.workflow},
-        target=TargetDigest.of(target.name, loaded.preflight.target_sequence),
+        target=TargetDigest.of(
+            loaded.general.target.name, loaded.preflight.target_sequence
+        ),
         inputs=inputs,
         config=config,
     )

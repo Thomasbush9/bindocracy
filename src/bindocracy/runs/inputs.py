@@ -1,28 +1,22 @@
-"""Identify the files a run actually consumed, not just where they were.
+"""Identify the small files a run actually consumed, not just where they were.
 
-Config IDs hash the configuration document, which contains *paths*. Replacing
-a target FASTA or a design spec at the same path therefore leaves every ID
-unchanged while the science changes underneath. Recording a digest per
-referenced input closes that at the run level: the manifest says which bytes
-this run consumed.
+Config IDs hash the configuration document, which contains *paths*. Replacing a
+target FASTA or a design spec at the same path therefore leaves every ID
+unchanged while the science changes underneath. A digest per referenced input
+closes that: the manifest says which bytes this run consumed, and the launch
+refuses to start if they have changed since.
 
-Large files get a fingerprint rather than a digest. Hashing the 17 GB BoltzGen
-image costs about half a minute on a login node, every time a run is planned,
-and a size-and-mtime pair identifies a rebuilt image in practice. The record
-says which kind it holds, so nobody mistakes one for the other.
+Containers are deliberately not digested. They are gigabytes, the image path
+and its checksum belong to the image catalogue rather than to every run, and
+hashing one on every plan would buy a number nobody reads.
 """
 
 from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, model_validator
-
-# Above this, fingerprint instead of hashing. Containers are gigabytes; every
-# other input here — a FASTA, an MSA, a driver, a spec — is far below it.
-MAX_HASH_BYTES = 256 * 1024 * 1024
+from pydantic import BaseModel, ConfigDict
 
 
 class InputDigest(BaseModel):
@@ -31,18 +25,8 @@ class InputDigest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     uri: str
-    kind: Literal["sha256", "fingerprint"]
+    sha256: str
     size_bytes: int
-    sha256: str | None = None
-    mtime_ns: int | None = None
-
-    @model_validator(mode="after")
-    def kind_matches_content(self) -> Self:
-        if self.kind == "sha256" and self.sha256 is None:
-            raise ValueError("a sha256 digest needs a hash")
-        if self.kind == "fingerprint" and self.mtime_ns is None:
-            raise ValueError("a fingerprint needs an mtime")
-        return self
 
     def matches(self, path: str | Path) -> bool:
         """Whether the file at `path` is still what this digest recorded."""
@@ -53,26 +37,16 @@ class InputDigest(BaseModel):
 
 
 def digest_of(path: str | Path, *, uri: str | None = None) -> InputDigest:
-    """Hash a file, or fingerprint it if hashing would be disproportionate."""
+    """Hash one referenced input."""
     file_path = Path(path)
-    stat = file_path.stat()
-    if stat.st_size > MAX_HASH_BYTES:
-        return InputDigest(
-            uri=uri if uri is not None else str(file_path.resolve()),
-            kind="fingerprint",
-            size_bytes=stat.st_size,
-            mtime_ns=stat.st_mtime_ns,
-        )
-
     digest = hashlib.sha256()
     with file_path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return InputDigest(
         uri=uri if uri is not None else str(file_path.resolve()),
-        kind="sha256",
-        size_bytes=stat.st_size,
         sha256=f"sha256:{digest.hexdigest()}",
+        size_bytes=file_path.stat().st_size,
     )
 
 
@@ -90,7 +64,7 @@ class TargetDigest(BaseModel):
     sequence_sha256: str
 
     @classmethod
-    def of(cls, name: str, sequence: str) -> Self:
+    def of(cls, name: str, sequence: str) -> TargetDigest:
         return cls(
             name=name,
             length=len(sequence),

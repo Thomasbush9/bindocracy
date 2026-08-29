@@ -230,6 +230,8 @@ class CampaignStore:
         collected: CollectedRun,
         *,
         configs: Iterable[ConfigRecord] = (),
+        digest: str | None = None,
+        target: tuple[str, str] | None = None,
     ) -> bool:
         """Atomically ingest one normalized adapter result and its configs.
 
@@ -238,7 +240,7 @@ class CampaignStore:
         changed bundle for a known run raises before writing anything. Neither
         path can ever create a second copy of the run under new IDs.
         """
-        digest = collected.content_hash()
+        digest = digest if digest is not None else collected.content_hash()
         stored = self.connection.execute(
             "SELECT workflow_metadata->>'bundle_sha256' FROM runs WHERE run_id = ?",
             [collected.run.run_id],
@@ -262,6 +264,10 @@ class CampaignStore:
         con = self.connection
         con.execute("BEGIN TRANSACTION")
         try:
+            # Inside the transaction: a failed ingestion must not leave the
+            # database stamped with a target whose run never landed.
+            if target is not None:
+                self.assert_target(*target)
             self._insert("configs", new_configs)
             self._insert("runs", [run])
             self._insert("designs", collected.designs)

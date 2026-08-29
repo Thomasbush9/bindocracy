@@ -115,6 +115,17 @@ class ExampleAdapter(OutputAdapter):
         return CollectedRun(run=run, designs=tuple(designs), artifacts=(artifact,))
 ```
 
+Adding a tool is that class plus one line in `adapters/registry.py`:
+
+```python
+register(ExampleAdapter)
+```
+
+Removing a tool is deleting both. Adapters never import the registry and never
+learn about each other, so neither operation can disturb another tool — that
+property is enforced by `tests/test_adapter_registry.py`, which defines a whole
+second tool inside the test and drives it through the same collection path.
+
 The adapter should preserve tool-native identifiers and scores, distinguish
 padded/failed rows from produced designs, identify binder chains explicitly, and
 emit paths relative to the campaign or run directory. `DesignRecord` normalizes
@@ -143,11 +154,15 @@ The two steps are separate commands, so a parser problem never leaves a
 half-written database:
 
 ```bash
-uv run bindocracy collect mosaic runs/<model>/run.json \
+uv run bindocracy collect runs/<model>/run.json \
   --output runs/<model>/collected.json
 
 uv run bindocracy ingest campaign.duckdb runs/<model>/collected.json
 ```
+
+`collect` takes no tool name: it reads the `tool` recorded in the manifest and
+dispatches through `bindocracy.adapters.registry`, so a run can only ever be
+parsed by the adapter belonging to the tool that produced it.
 
 `collect` reads files only. `ingest` deserializes and revalidates the bundle
 before opening DuckDB, and takes the config pair from the run manifest that was

@@ -11,7 +11,7 @@ import typer
 from pydantic import ValidationError
 
 from bindocracy import __version__
-from bindocracy.adapters.mosaic import collect_mosaic_run
+from bindocracy.adapters import UnknownToolError, collect_run
 from bindocracy.config import (
     ConfigLoadError,
     ConfigNotFoundError,
@@ -28,8 +28,6 @@ app = typer.Typer(
 )
 config_app = typer.Typer(help="Validate and load campaign configuration.")
 app.add_typer(config_app, name="config")
-collect_app = typer.Typer(help="Parse a finished run directory into a staging bundle.")
-app.add_typer(collect_app, name="collect")
 
 
 @app.callback()
@@ -107,13 +105,21 @@ def export_config(
     typer.echo(output_path)
 
 
-@collect_app.command("mosaic")
-def collect_mosaic(
+@app.command()
+def collect(
     manifest: Annotated[Path, typer.Argument(help="runs/<run>/run.json")],
     output: Annotated[Path, typer.Option("--output", help="Staging bundle to write.")],
 ) -> None:
-    """Parse one Mosaic run directory into a validated staging bundle."""
-    collected = collect_mosaic_run(manifest)
+    """Parse one run directory into a validated staging bundle.
+
+    The tool comes from the manifest, so a run can only be parsed by the
+    adapter for the tool that produced it.
+    """
+    try:
+        collected = collect_run(manifest)
+    except UnknownToolError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=2) from error
     write_collected(collected, output)
     run = collected.run
     typer.echo(f"run: {run.run_id} [{run.status}]")

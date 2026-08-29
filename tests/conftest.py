@@ -126,6 +126,53 @@ def configs(tmp_path: Path) -> tuple[Path, Path]:
     return write_configs(tmp_path)
 
 
+DRIVER_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "launching_scripts" / "mosaic" / "hallucinate_binders.py"
+)
+
+# The driver runs inside mosaic.sif and imports jax and mosaic at module scope;
+# neither exists here. Stubbing them exposes the driver's real CLI surface and
+# its file-writing helpers to tests, which is the only way to check that what
+# the connector launches is what the driver actually accepts.
+_CONTAINER_MODULES = [
+    "jax", "jax.numpy", "mosaic", "mosaic.common", "mosaic.losses",
+    "mosaic.losses.structure_prediction", "mosaic.losses.protein_mpnn",
+    "mosaic.losses.transformations", "mosaic.models", "mosaic.models.boltz2",
+    "mosaic.optimizers", "mosaic.proteinmpnn", "mosaic.proteinmpnn.mpnn",
+    "mosaic.structure_prediction",
+]
+
+
+@pytest.fixture
+def driver():
+    """Import hallucinate_binders.py with its container-only imports stubbed."""
+    import importlib.util
+    import sys
+    import types
+
+    saved = {name: sys.modules.get(name) for name in _CONTAINER_MODULES}
+    for name in _CONTAINER_MODULES:
+        module = types.ModuleType(name)
+        module.__getattr__ = lambda attribute: object()
+        sys.modules[name] = module
+    for name in _CONTAINER_MODULES:  # `import a.b as x` needs b on a
+        if "." in name:
+            parent, _, child = name.rpartition(".")
+            setattr(sys.modules[parent], child, sys.modules[name])
+    try:
+        spec = importlib.util.spec_from_file_location("hallucinate_binders", DRIVER_PATH)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        yield module
+    finally:
+        for name, previous in saved.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+
+
 def design_line(task_id: int, index: int, sequence: str = "ACDEFG", **overrides) -> str:
     """One valid designs.jsonl record, with fields overridable per test."""
     record = {

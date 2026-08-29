@@ -5,8 +5,9 @@ from pathlib import Path
 import pytest
 from conftest import design_line, write_task
 
+from bindocracy.adapters import collect_run
 from bindocracy.adapters.base import CollectionError
-from bindocracy.adapters.mosaic import METRIC_NAME, MosaicOutputAdapter, collect_mosaic_run
+from bindocracy.adapters.mosaic import METRIC_NAME, MosaicOutputAdapter
 from bindocracy.config import load_mosaic_configs
 from bindocracy.runs import plan_mosaic_run
 
@@ -187,8 +188,8 @@ def test_recollection_is_deterministic(configs, tmp_path: Path) -> None:
         write_task(manifest.directory, task_id,
                    [design_line(task_id, index) for index in range(2)], status={})
 
-    first = collect_mosaic_run(manifest.directory / "run.json")
-    second = collect_mosaic_run(manifest.directory / "run.json")
+    first = collect_run(manifest.directory / "run.json")
+    second = collect_run(manifest.directory / "run.json")
 
     assert first.content_hash() == second.content_hash()
 

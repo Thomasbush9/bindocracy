@@ -108,12 +108,6 @@ class MosaicOutputAdapter(OutputAdapter):
         return True
 
 
-def collect_mosaic_run(manifest_path: str | Path) -> CollectedRun:
-    """Collect the run described by one `run.json`."""
-    manifest = RunManifest.read(manifest_path)
-    return MosaicOutputAdapter().collect(manifest.directory, manifest.to_run_record())
-
-
 def _read_manifest(run_dir: Path) -> RunManifest:
     manifest_path = run_dir / "run.json"
     if not manifest_path.is_file():

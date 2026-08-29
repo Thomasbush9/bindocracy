@@ -19,7 +19,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from bindocracy.adapters.mosaic import collect_mosaic_run
+from bindocracy.adapters import collect_run
 from bindocracy.config import load_mosaic_configs
 from bindocracy.runs import (
     RunManifest,
@@ -112,7 +112,7 @@ rule collect_mosaic:
     output:
         RUN_ROOT / "{model}" / "collected.json",
     run:
-        write_collected(collect_mosaic_run(input.manifest), output[0])
+        write_collected(collect_run(input.manifest), output[0])
 
 
 rule ingest_mosaic:

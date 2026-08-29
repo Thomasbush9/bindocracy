@@ -6,7 +6,8 @@ import duckdb
 import pytest
 from conftest import design_line, write_task
 
-from bindocracy.adapters.mosaic import METRIC_NAME, collect_mosaic_run
+from bindocracy.adapters import collect_run
+from bindocracy.adapters.mosaic import METRIC_NAME
 from bindocracy.config import load_mosaic_configs
 from bindocracy.runs import ingest_bundle, plan_mosaic_run, read_collected, write_collected
 from bindocracy.store import CampaignStore, IngestConflictError, create_database
@@ -21,7 +22,7 @@ def staged(configs, tmp_path: Path) -> tuple[Path, Path]:
                    [design_line(task_id, index) for index in range(4)], status={})
 
     bundle = write_collected(
-        collect_mosaic_run(manifest.directory / "run.json"),
+        collect_run(manifest.directory / "run.json"),
         manifest.directory / "collected.json",
     )
     return create_database(tmp_path / "campaign.duckdb"), bundle

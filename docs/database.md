@@ -4,6 +4,11 @@ One DuckDB file represents one target campaign. The target sequence, hotspots,
 cluster settings, and campaign identity live in the general configuration rather
 than being repeated in every table row.
 
+That one-target assumption is now enforced rather than assumed: the first
+ingestion stamps the resolved target sequence into `_meta`, and a run against a
+different target is refused. The identity is the sequence, not the path it was
+read from, so replacing a FASTA in place is caught too.
+
 ## Tables
 
 | Table | One row represents |
@@ -116,21 +121,29 @@ class ExampleAdapter(OutputAdapter):
         return CollectedRun(run=run, designs=tuple(designs), artifacts=(artifact,))
 ```
 
-Adding a tool is that class plus one line in `adapters/registry.py`:
+That adapter lives in its tool's package, `tools/<tool>/adapter.py`, alongside
+the tool's config, preflight, launch, and plugin. Adding a tool is that package
+plus one line in `tools/__init__.py`:
 
 ```python
-register(ExampleAdapter)
+register(ExamplePlugin)
 ```
 
-Removing a tool is deleting both. Adapters never import the registry and never
-learn about each other, so neither operation can disturb another tool — that
-property is enforced by `tests/test_adapter_registry.py`, which defines a whole
-second tool inside the test and drives it through the same collection path.
+Removing a tool is deleting both. There is one registry, so a registration
+reaches the workflow and the CLI alike, and adapters never import it or learn
+about each other. `tests/test_tool_seam.py` enforces that by defining a whole
+second tool inside the test and driving it through the same collection path.
 
 The adapter should preserve tool-native identifiers and scores, distinguish
 padded/failed rows from produced designs, identify binder chains explicitly, and
 emit paths relative to the campaign or run directory. `DesignRecord` normalizes
-sequence case/whitespace and computes its length and SHA-256 hash.
+sequence case and whitespace and computes its length.
+
+Producing a candidate and judging it are different facts. A row a tool's own
+filters rejected is still `produced`; the verdict belongs in `decisions`, so a
+later filtering pass adds a verdict rather than contradicting this one. A rank
+needs the `scope_id` of the pool it was ranked within — BoltzGen ranks each
+task separately, so a two-task run legitimately holds two designs ranked first.
 
 Native model scores use the generation run's `run_id`. A later common-scoring
 pass creates an `evaluate` run and emits `MetricRecord` objects that reference
@@ -162,8 +175,8 @@ uv run bindocracy ingest campaign.duckdb runs/<model>/collected.json
 ```
 
 `collect` takes no tool name: it reads the `tool` recorded in the manifest and
-dispatches through `bindocracy.adapters.registry`, so a run can only ever be
-parsed by the adapter belonging to the tool that produced it.
+dispatches through `bindocracy.tools.registry`, so a run can only ever be parsed
+by the adapter belonging to the tool that produced it.
 
 `collect` reads files only. `ingest` deserializes and revalidates the bundle
 before opening DuckDB, and takes the config pair from the run manifest that was

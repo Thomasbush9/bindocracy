@@ -90,6 +90,44 @@ the full-target position, which the old one could not.
 This benchmark was unaffected either way — it ran hotspot-free and did not use
 the merge/optimize path.
 
+### 1.4b BoltzGen emits **human ubiquitin** instead of a designed binder
+
+The most serious silent failure found so far, and it is in the archived
+benchmark as well as in new runs. BoltzGen sometimes returns a natural protein,
+scored and ranked as though it were a design. Measured 2026-08-29 against
+DIO3-cut, `protein-anything`:
+
+| Run | designs | ≥80% identical to ubiquitin | max identity | mean `design_to_target_iptm` |
+|---|---|---|---|---|
+| archived benchmark | 38 | **12** | **100%** (exact) | 0.262 |
+| `runs/boltzgen_run10` | 10 | **10** | 97% | 0.138 |
+
+Human ubiquitin is `MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRT`
+`LSDYNIQKESTLHLVLRLRGG`, 76 aa. One benchmark row reproduces it exactly; the
+ten rows of the new run differ from it only in the last few residues.
+
+Nothing in the tool's own output marks these as suspect. They pass through
+inverse folding, refolding, scoring, and ranking like any other candidate, and
+`final_rank 1` in the new run is a ubiquitin. Roughly **a third of the archived
+BoltzGen benchmark is memorised natural protein**, which changes what that
+benchmark means.
+
+The interface scores are the only hint, and only in aggregate: the new run's
+`design_to_target_iptm` averages 0.138 and its `design_to_target_ipsae` is 0.0
+for every row — the "binder" is not binding.
+
+**What is not yet known:** why this run collapsed to 100% when the benchmark
+was ~32%. The new run differs in `--num_designs` (10 vs 40), `--budget`, and an
+explicit `--diffusion_batch_size 10`. A first reading of the uniform 76 aa
+length blamed batch size for collapsing the `70..90` range; that was wrong —
+76 aa is simply ubiquitin's length, and the benchmark contains ubiquitins at
+several lengths. The cause is untested.
+
+**Requirement for the harness.** A generated sequence must be checked against
+known natural proteins before it is treated as a design. No tool in this suite
+does that for itself, and the campaign database currently stores these ten rows
+as ordinary designs.
+
 ### 1.5 PXDesign silently reverts its own sampling schedule
 
 Upstream changed the default eta schedule to `piecewise_65 / 1.0 / 2.5`, and the

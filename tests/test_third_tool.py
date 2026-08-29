@@ -101,7 +101,7 @@ def test_a_foreign_tool_runs_end_to_end(toy_campaign, tmp_path: Path) -> None:
 
 
 def test_the_toy_tool_fans_out_like_any_other(toy_campaign, tmp_path: Path) -> None:
-    index, database, run_root = toy_campaign
+    index, _, run_root = toy_campaign
 
     assert run_workflow(tmp_path, index).returncode == 0
 

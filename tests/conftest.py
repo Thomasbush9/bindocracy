@@ -55,7 +55,13 @@ with open(os.path.join(save_dir, "status.json"), "w") as out:
 '''
 
 
-def write_configs(root: Path, **mosaic_overrides) -> tuple[Path, Path]:
+# A driver that starts, writes nothing, and exits non-zero -- an ordinary tool
+# failure, which must still reach the database rather than aborting the workflow.
+FAILING_DRIVER = "import sys\nsys.stderr.write('boom\\n')\nraise SystemExit(3)\n"
+
+
+def write_configs(root: Path, *, driver_source: str | None = None, **mosaic_overrides
+                  ) -> tuple[Path, Path]:
     """Write a valid general + Mosaic config pair and everything they reference."""
     fasta = root / "target.fasta"
     msa = root / "target.a3m"
@@ -69,7 +75,7 @@ def write_configs(root: Path, **mosaic_overrides) -> tuple[Path, Path]:
     scratch.parent.mkdir(parents=True, exist_ok=True)
     fasta.write_text(">target\nACDEFG\n")
     msa.write_text(">target\nACDEFG\n")
-    driver.write_text(FAKE_DRIVER)
+    driver.write_text(driver_source or FAKE_DRIVER)
     container.write_bytes(b"fixture")
     wrapper.write_text(FAKE_EXEC_WRAPPER)
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)

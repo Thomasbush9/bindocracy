@@ -24,6 +24,7 @@ from typing import Any
 
 from bindocracy.adapters.base import CollectionError, OutputAdapter
 from bindocracy.runs.manifest import RunManifest, TaskPlan
+from bindocracy.runs.status import read_task_status
 from bindocracy.store.records import (
     ArtifactRecord,
     CandidateType,
@@ -60,11 +61,11 @@ class MosaicOutputAdapter(OutputAdapter):
         attempted = 0
 
         for task in manifest.tasks:
-            status = _read_status(run_dir / task.status)
+            status = read_task_status(run_dir / task.status)
             records, rejected = _read_designs(run_dir / task.designs, task, seen)
-            attempted += status.get("n_attempted") or len(records)
+            attempted += status.n_attempted if status and status.n_attempted is not None else len(records)
             per_task[f"{task.task_id:04d}"] = {
-                "status": status.get("status", "missing"),
+                "status": status.status if status else "missing",
                 "n_produced": len(records),
                 **rejected,
             }
@@ -99,8 +100,8 @@ class MosaicOutputAdapter(OutputAdapter):
         """True when every planned task reported success and wrote designs."""
         manifest = _read_manifest(run_dir)
         for task in manifest.tasks:
-            status = _read_status(run_dir / task.status)
-            if status.get("status") != "succeeded":
+            status = read_task_status(run_dir / task.status)
+            if status is None or status.status != "succeeded":
                 return False
             records, _ = _read_designs(run_dir / task.designs, task, set())
             if len(records) < task.n_requested:
@@ -113,15 +114,6 @@ def _read_manifest(run_dir: Path) -> RunManifest:
     if not manifest_path.is_file():
         raise CollectionError(f"missing run manifest: {manifest_path}")
     return RunManifest.read(manifest_path)
-
-
-def _read_status(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    try:
-        return json.loads(path.read_text())
-    except json.JSONDecodeError as error:
-        raise CollectionError(f"invalid status file {path}: {error}") from error
 
 
 def _read_designs(
@@ -270,9 +262,11 @@ def _run_status(manifest: RunManifest, per_task: dict[str, Any], produced: int) 
 def _run_window(run_dir: Path, manifest: RunManifest) -> tuple[datetime | None, datetime | None]:
     starts, finishes = [], []
     for task in manifest.tasks:
-        status = _read_status(run_dir / task.status)
-        starts.append(_timestamp(status.get("started_at")))
-        finishes.append(_timestamp(status.get("finished_at")))
+        status = read_task_status(run_dir / task.status)
+        if status is None:
+            continue
+        starts.append(status.started_at)
+        finishes.append(status.finished_at)
     starts = [value for value in starts if value is not None]
     finishes = [value for value in finishes if value is not None]
     return (min(starts) if starts else None, max(finishes) if finishes else None)

@@ -6,6 +6,7 @@ fan-out, paths, staging, and the single-writer ingestion boundary.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -107,3 +108,46 @@ def test_rerunning_the_workflow_does_not_duplicate_the_run(campaign, tmp_path: P
     assert con.execute("SELECT run_id FROM runs").fetchone() == (run_id,)
     assert con.execute("SELECT count(*) FROM designs").fetchone() == (8,)
     con.close()
+
+
+def test_a_failing_tool_still_reaches_the_database(tmp_path: Path) -> None:
+    """An ordinary tool failure is campaign history, not a workflow abort.
+
+    The driver here exits 3 without writing anything. The workflow must still
+    complete: the harness records the failure, collection runs, and a `failed`
+    run with zero designs lands in the database. Before this, a non-zero exit
+    aborted the generate rule and collection never happened, so the failure
+    existed only in a log.
+    """
+    from conftest import FAILING_DRIVER, write_configs
+
+    general_path, model_path = write_configs(tmp_path, driver_source=FAILING_DRIVER)
+    database = tmp_path / "campaign.duckdb"
+    run_root = tmp_path / "runs"
+    config_file = tmp_path / "campaign.yaml"
+    config_file.write_text(yaml.safe_dump({
+        "database": str(database), "run_root": str(run_root),
+        "general_config": str(general_path),
+        "runs": [{"name": "doomed", "config": str(model_path)}],
+    }, sort_keys=False))
+
+    result = snakemake(tmp_path, config_file)
+
+    assert result.returncode == 0, result.stderr
+    assert (run_root / "doomed" / "generation.done").is_file()
+
+    con = duckdb.connect(str(database), read_only=True)
+    assert con.execute(
+        "SELECT status, n_produced FROM runs"
+    ).fetchone() == ("failed", 0)
+    assert con.execute("SELECT count(*) FROM designs").fetchone() == (0,)
+    # the failure itself is recorded, not just absent
+    details = con.execute("SELECT count_details FROM runs").fetchone()[0]
+    con.close()
+    assert '"failed"' in details
+
+    status = json.loads((run_root / "doomed" / "tasks" / "0000" / "status.json").read_text())
+    assert status["status"] == "failed"
+    assert status["exit_code"] == 3
+    assert status["written_by"] == "harness"
+    assert "boom" in (run_root / "doomed" / "logs" / "task-0000.log").read_text()

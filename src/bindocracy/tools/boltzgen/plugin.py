@@ -31,6 +31,22 @@ class BoltzGenPlugin(ToolPlugin):
     def preflight(self, general: GeneralConfig, model: BoltzGenConfig) -> BoltzGenPreflight:
         return preflight_boltzgen(general, model)
 
+    def resolve(self, loaded: LoadedConfigs) -> BoltzGenConfig:
+        """Fold the design spec into the config that gets stored.
+
+        BoltzGen's hyperparameters live in the spec -- what is designed, how
+        long, against which chain -- and the config only names its path. Left
+        alone, the configs table cannot answer what a run actually asked for,
+        and editing the spec in place changes the science without changing
+        model_config_id.
+        """
+        model = loaded.model
+        if model.spec.contents == loaded.preflight.spec:
+            return model
+        return model.model_copy(
+            update={"spec": model.spec.model_copy(update={"contents": loaded.preflight.spec})}
+        )
+
     def tool_plan(self, loaded: LoadedConfigs) -> ToolPlan:
         sampling = loaded.model.sampling
         return ToolPlan(
@@ -56,9 +72,6 @@ class BoltzGenPlugin(ToolPlugin):
                 "num_designs": sampling.num_designs,
                 "budget": sampling.budget,
                 "filter_biased": sampling.filter_biased,
-                # Parsed, not just referenced: model_config_json records the
-                # spec's path, and a path does not say what was designed.
-                "spec": loaded.preflight.spec,
             },
         )
 

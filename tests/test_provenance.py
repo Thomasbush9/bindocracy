@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 from conftest import (
     design_line,
     write_boltzgen_configs,
@@ -61,15 +62,61 @@ def test_a_run_records_every_input_it_consumed(configs, tmp_path: Path) -> None:
     assert manifest.target.sequence_sha256.startswith("sha256:")
 
 
-def test_a_boltzgen_run_records_the_spec_contents_not_just_its_path(
+def test_the_stored_config_holds_the_spec_not_a_path_to_it(
     boltzgen_configs, tmp_path: Path
 ) -> None:
-    """`model_config_json` names the spec file; a path does not say what was designed."""
-    manifest = plan(load_configs(*boltzgen_configs), tmp_path / "run")
+    """A path does not say what was designed.
 
-    assert manifest.workflow["spec"]["entities"][0]["protein"]["sequence"] == "70..90"
+    BoltzGen's hyperparameters live in its spec: the binder length range, the
+    chain, any epitope. If the configs table only names the file, it cannot
+    answer what a run asked for, and Harlequin sends the reader chasing another
+    file on a shared filesystem.
+    """
+    loaded = load_configs(*boltzgen_configs)
+    manifest = plan(loaded, tmp_path / "run")
+
+    spec = manifest.config.model_config_json["spec"]
+    assert spec["contents"]["entities"][0]["protein"]["sequence"] == "70..90"
     # BoltzGen reads geometry, never the FASTA or the MSA.
     assert set(manifest.inputs) == {"spec_structure_0"}
+
+
+def test_editing_the_spec_changes_the_model_config_id(
+    boltzgen_configs, tmp_path: Path
+) -> None:
+    """The point of folding it in: the ID follows the science, not the path."""
+    general_path, model_path = boltzgen_configs
+    before = load_configs(general_path, model_path).to_record().model_config_id
+
+    spec = yaml.safe_load((tmp_path / "binder_spec.yaml").read_text())
+    spec["entities"][0]["protein"]["sequence"] = "40..60"
+    (tmp_path / "binder_spec.yaml").write_text(yaml.safe_dump(spec))
+
+    after = load_configs(general_path, model_path).to_record().model_config_id
+
+    assert before != after
+
+
+def test_a_recovered_boltzgen_config_still_validates(
+    boltzgen_configs, tmp_path: Path
+) -> None:
+    """Folding content in must not break the export round trip."""
+    from bindocracy.config import recover_config_yaml
+    from bindocracy.store import CampaignStore
+
+    loaded = load_configs(*boltzgen_configs)
+    record = loaded.to_record()
+    database = tmp_path / "campaign.duckdb"
+    with CampaignStore.create(database) as store:
+        store.add_configs([record])
+
+    recovered = load_configs(
+        recover_config_yaml(database, record.general_config_id, tmp_path / "g.yaml"),
+        recover_config_yaml(database, record.model_config_id, tmp_path / "m.yaml"),
+    )
+
+    assert recovered.model == loaded.model
+    assert recovered.to_record().model_config_id == record.model_config_id
 
 
 def test_reuse_refuses_an_archive_that_was_edited(configs, tmp_path: Path) -> None:

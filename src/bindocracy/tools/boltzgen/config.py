@@ -20,6 +20,10 @@ class BoltzGenSpecConfig(ConfigModel):
     """
 
     template: Path
+    # Filled in from `template` when the config is loaded, so the stored JSON
+    # holds the specification itself rather than a path to it. Authors leave
+    # it out; a recovered config carries it and still validates.
+    contents: dict | None = None
 
 
 class BoltzGenSamplingConfig(ConfigModel):

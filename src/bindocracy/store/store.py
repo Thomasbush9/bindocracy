@@ -194,11 +194,20 @@ class CampaignStore:
             )
         return False
 
-    def add_configs(self, configs: Iterable[ConfigRecord]) -> tuple[str, ...]:
+    def add_configs(
+        self,
+        configs: Iterable[ConfigRecord],
+        *,
+        target: tuple[str, str] | None = None,
+    ) -> tuple[str, ...]:
         """Insert config pairs atomically, skipping IDs already present.
 
         This method intentionally touches only ``configs``. Re-loading identical
         YAML is safe because IDs are derived from canonical JSON content.
+
+        `target` is checked in the same transaction. Configs used to be able to
+        enter a campaign before any run did, so a pair naming a different
+        protein could sit in the table indefinitely without anything objecting.
         """
         records = list(configs)
         if not records:
@@ -208,6 +217,8 @@ class CampaignStore:
         con = self.connection
         con.execute("BEGIN TRANSACTION")
         try:
+            if target is not None:
+                self.assert_target(*target)
             for record in records:
                 if record.model_config_id is None:  # guarded by ConfigRecord validation
                     raise ValueError("ConfigRecord has no model_config_id")

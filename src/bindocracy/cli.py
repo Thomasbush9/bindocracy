@@ -18,7 +18,13 @@ from bindocracy.config import (
     recover_config_yaml,
 )
 from bindocracy.runs import ingest_bundle, write_collected
-from bindocracy.store import CampaignStore, IngestConflictError, create_database
+from bindocracy.runs.inputs import TargetDigest
+from bindocracy.store import (
+    CampaignStore,
+    IngestConflictError,
+    TargetMismatchError,
+    create_database,
+)
 from bindocracy.tools import UnknownToolError, collect_run, load_configs
 
 app = typer.Typer(
@@ -73,8 +79,15 @@ def load_config(
         raise typer.Exit(code=2) from error
 
     record = loaded.to_record()
-    with CampaignStore.create(database, exist_ok=True) as store:
-        inserted = set(store.add_configs([record]))
+    target = TargetDigest.of(loaded.general.target.name, loaded.preflight.target_sequence)
+    try:
+        with CampaignStore.create(database, exist_ok=True) as store:
+            inserted = set(store.add_configs(
+                [record], target=(target.name, target.sequence_sha256)
+            ))
+    except TargetMismatchError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=2) from error
 
     typer.echo(f"database: {database}")
     typer.echo(f"target: {loaded.general.target.name} ({loaded.preflight.target_length} aa)")

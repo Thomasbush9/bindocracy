@@ -10,6 +10,7 @@ Adding a tool is one module implementing this, plus one line in the registry.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,20 @@ class ToolPlugin(ABC):
 
     def load(self, general_path: str | Path, model_path: str | Path) -> LoadedConfigs:
         """Validate a general + model pair and run this tool's preflight."""
-        return load_pair(general_path, model_path, self.config_type, self.preflight)
+        loaded = load_pair(general_path, model_path, self.config_type, self.preflight)
+        resolved = self.resolve(loaded)
+        return loaded if resolved is loaded.model else replace(loaded, model=resolved)
+
+    def resolve(self, loaded: LoadedConfigs) -> Any:
+        """Fold externally referenced content into the config that gets stored.
+
+        A config that only *names* a file leaves the database insufficient: the
+        stored JSON says where the science was, not what it was, and editing
+        that file changes the run without changing model_config_id. A tool with
+        such a reference returns a config with the content folded in. The
+        default returns the config unchanged.
+        """
+        return loaded.model
 
     def adapter(self) -> OutputAdapter:
         return self.adapter_type()

@@ -32,16 +32,17 @@ bindocracy init-db runs/dio3-cut/campaign.duckdb
 The command refuses to overwrite an existing file. Use `--if-not-exists` when an
 idempotent workflow rule should accept a database that is already initialized.
 
-## Load the general and Mosaic configs
+## Load a general + model config pair
 
 ```bash
-bindocracy config load-mosaic runs/dio3-cut/campaign.duckdb \
+bindocracy config load runs/dio3-cut/campaign.duckdb \
   --general /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/configs/general_config.yaml \
-  --model /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/configs/mosaic/config_01.yaml
+  --model /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/configs/mosaic/hallucinate.yaml
 ```
 
-This command validates the YAML with Pydantic, checks the referenced target,
-script, container, and weights, and inserts one row containing both complete JSON
+The model config's own `tool:` field selects the plugin that validates it.
+The command checks the YAML with Pydantic, checks the referenced target,
+script or spec, container, and weights, and inserts one row containing both complete JSON
 documents. The stable `general_config_id` groups model configurations using the
 same general parameters; the stable `model_config_id` identifies the exact pair
 and is what a future run references. Source paths and hashes of the original YAML

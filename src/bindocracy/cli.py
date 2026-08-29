@@ -59,13 +59,13 @@ def init_db(
     typer.echo(database_path)
 
 
-@config_app.command("load-mosaic")
-def load_mosaic_config(
+@config_app.command("load")
+def load_config(
     database: Path,
     general: Annotated[Path, typer.Option("--general", help="General campaign YAML.")],
-    model: Annotated[Path, typer.Option("--model", help="Mosaic model YAML.")],
+    model: Annotated[Path, typer.Option("--model", help="Model YAML; its `tool:` picks the plugin.")],
 ) -> None:
-    """Validate general and Mosaic configs and add only their config rows."""
+    """Validate a general + model config pair and add only their config rows."""
     try:
         loaded = load_configs(general, model)
     except (ConfigLoadError, ConfigPreflightError, ValidationError) as error:

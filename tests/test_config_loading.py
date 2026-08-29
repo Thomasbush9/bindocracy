@@ -47,6 +47,52 @@ def test_unknown_mosaic_key_is_rejected(tmp_path: Path) -> None:
         load_yaml(model_path, MosaicConfig)
 
 
+def test_a_recovered_config_can_be_re_run(tmp_path: Path) -> None:
+    """Export is the replay path, so the round trip has to be lossless.
+
+    Configs are stored in the database rather than copied next to a run, which
+    is only safe if a stored config can be written back out and loaded again.
+    The config IDs must survive too: a recovered file that re-ran under a new
+    ID would silently fork the lineage of every design it produced.
+    """
+    general_path, model_path = write_configs(tmp_path)
+    original = load_mosaic_configs(general_path, model_path)
+    record = original.to_record()
+    database = tmp_path / "campaign.duckdb"
+    with CampaignStore.create(database) as store:
+        store.add_configs([record])
+
+    recovered = load_mosaic_configs(
+        recover_config_yaml(database, record.general_config_id, tmp_path / "again_g.yaml"),
+        recover_config_yaml(database, record.model_config_id, tmp_path / "again_m.yaml"),
+    )
+
+    assert recovered.general == original.general
+    assert recovered.mosaic == original.mosaic
+    assert recovered.to_record().model_config_id == record.model_config_id
+    assert recovered.to_record().general_config_id == record.general_config_id
+
+
+def test_a_recovered_walltime_is_not_read_as_a_number(tmp_path: Path) -> None:
+    """`12:00:00` is a sexagesimal integer in YAML 1.1 unless it is quoted.
+
+    Unquoted it loads as 43200, so an exported config would fail to re-load —
+    exactly the replay path this design depends on.
+    """
+    general_path, model_path = write_configs(tmp_path)
+    raw = yaml.safe_load(model_path.read_text())
+    raw["resources"]["walltime"] = "12:00:00"
+    model_path.write_text(yaml.safe_dump(raw))
+    record = load_mosaic_configs(general_path, model_path).to_record()
+    database = tmp_path / "campaign.duckdb"
+    with CampaignStore.create(database) as store:
+        store.add_configs([record])
+
+    recovered = recover_config_yaml(database, record.model_config_id, tmp_path / "again.yaml")
+
+    assert yaml.safe_load(recovered.read_text())["resources"]["walltime"] == "12:00:00"
+
+
 def test_a_stale_schema_version_is_named_in_the_error(tmp_path: Path) -> None:
     """A v1 document lacks required v2 fields; say so by version, not by field.
 

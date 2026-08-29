@@ -31,9 +31,6 @@ dependencies = [
 # wants them, or because a feature that needs them is not written yet; keeping
 # them out of the default install makes `uv sync` faster and cannot break it.
 [project.optional-dependencies]
-# Terminal SQL IDE with a DuckDB adapter, for reading a campaign database on a
-# login node without forwarding a port. See docs/env-setup.md.
-inspect = ["harlequin>=2.10"]
 # For the reporting and structure work that does not exist yet: pandas and
 # pyarrow for a unified design table, biotite for mmCIF (BoltzGen writes CIF
 # only), matplotlib for figures.
@@ -47,6 +44,12 @@ bindocracy = "bindocracy.cli:app"
 dev = [
     "pytest>=8.0",
     "ruff>=0.8",
+    # Terminal SQL IDE with a DuckDB adapter: the way a campaign database gets
+    # read on a login node, without forwarding a port for duckdb's browser UI.
+    # A working tool rather than a library requirement, but it belongs in the
+    # group `uv sync` installs by default -- an inspection tool nobody has is
+    # not an inspection tool. See docs/env-setup.md.
+    "harlequin>=2.10",
 ]
 
 [build-system]

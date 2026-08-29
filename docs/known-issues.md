@@ -123,10 +123,10 @@ length blamed batch size for collapsing the `70..90` range; that was wrong —
 76 aa is simply ubiquitin's length, and the benchmark contains ubiquitins at
 several lengths. The cause is untested.
 
-**Requirement for the harness.** A generated sequence must be checked against
-known natural proteins before it is treated as a design. No tool in this suite
-does that for itself, and the campaign database currently stores these ten rows
-as ordinary designs.
+**Status.** Noted, not acted on. `runs/boltzgen_run10` is a harness test, and
+its rows are in the database as ordinary designs. This matters when the
+archived benchmark is used as a scientific result, not when it is used to
+exercise the pipeline.
 
 ### 1.5 PXDesign silently reverts its own sampling schedule
 

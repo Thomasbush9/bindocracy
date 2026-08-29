@@ -19,12 +19,10 @@
 # One run directory per model config, named after that config's file stem. To
 # execute the same configuration a second time, give it a new run directory.
 
-import os
-import subprocess
 from pathlib import Path
 
 from bindocracy.adapters import collect_run
-from bindocracy.runs import RunManifest, ingest_bundle, write_collected
+from bindocracy.runs import RunManifest, ingest_bundle, run_task, write_collected
 from bindocracy.tools import index_configs, launch_spec, plan, plugin_for, resources
 from bindocracy.runs.manifest import write_json_atomic
 
@@ -89,14 +87,9 @@ rule generate:
         spec = launch_spec(
             LOADED[wildcards.model], RunManifest.read(input[0]), int(wildcards.task)
         )
-        with open(log[0], "w") as stream:
-            subprocess.run(
-                spec.argv,
-                env={**os.environ, **spec.env},
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-                check=True,
-            )
+        # run_task writes status.json unless the tool wrote its own, so a tool
+        # that only exits (BoltzGen) still produces the file collection needs.
+        run_task(spec.argv, spec.env, log[0], output[0], int(wildcards.task))
 
 
 rule collect:

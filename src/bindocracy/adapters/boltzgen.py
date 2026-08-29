@@ -39,7 +39,10 @@ from bindocracy.store.records import (
 )
 
 METRICS_FILE = "final_ranked_designs/all_designs_metrics.csv"
-STRUCTURE_DIR = "final_ranked_designs/final_40_designs"
+# BoltzGen names this directory for the budget -- final_40_designs at 40,
+# final_10_designs at 10 -- so it has to be found, not assumed.
+RANKED_DIR = "final_ranked_designs"
+STRUCTURE_GLOB = "final_*_designs"
 
 # Native scores worth promoting out of 237 columns, with the direction that
 # makes a value good. Anything absent from a row is simply not emitted.
@@ -220,13 +223,21 @@ def _structure_artifacts(
     """The ranked CIF for one design, whose filename carries its rank."""
     file_name = (row.get("file_name") or "").strip()
     rank = _number(row.get("final_rank"))
-    if not file_name or rank is None:
+    structures = _structure_dir(run_dir, task)
+    if not file_name or rank is None or structures is None:
         return []
-    relative = f"{task.directory}/{STRUCTURE_DIR}/rank{int(rank):02d}_{file_name}"
+    relative = f"{task.directory}/{RANKED_DIR}/{structures.name}/rank{int(rank):02d}_{file_name}"
     artifact = _artifact(run_dir, run_id, relative, "design_complex")
     if artifact is None:
         return []
     return [artifact.model_copy(update={"design_id": design.design_id})]
+
+
+def _structure_dir(run_dir: Path, task: TaskPlan) -> Path | None:
+    """Find the ranked-design directory, whatever budget named it."""
+    ranked = run_dir / task.directory / RANKED_DIR
+    matches = sorted(path for path in ranked.glob(STRUCTURE_GLOB) if path.is_dir())
+    return matches[0] if matches else None
 
 
 def _task_artifacts(run_dir: Path, run_id: str, task: TaskPlan) -> list[ArtifactRecord]:

@@ -149,3 +149,34 @@ def test_collection_dispatches_to_the_boltzgen_adapter(
 
     assert collected.run.tool == "boltzgen"
     assert all(m.name.startswith("boltzgen_") for m in collected.metrics)
+
+
+def test_the_structure_directory_is_found_not_assumed(
+    boltzgen_configs, tmp_path: Path
+) -> None:
+    """BoltzGen names it for the budget: final_10_designs at budget 10.
+
+    Hardcoding the benchmark's `final_40_designs` silently dropped every
+    structure artifact for any other budget.
+    """
+    manifest = planned(boltzgen_configs, tmp_path / "run")
+    write_boltzgen_task(manifest.directory, 0, status={})
+    ranked = manifest.path("tasks/0000/final_ranked_designs")
+    (ranked / "final_40_designs").rename(ranked / "final_10_designs")
+
+    structures = [a for a in collect(manifest).artifacts if a.kind == "design_complex"]
+
+    assert len(structures) == 4
+    assert all("final_10_designs" in a.uri for a in structures)
+
+
+def test_a_task_with_no_status_file_still_collects(boltzgen_configs, tmp_path: Path) -> None:
+    """BoltzGen writes no status of its own; the harness supplies one."""
+    manifest = planned(boltzgen_configs, tmp_path / "run")
+    write_boltzgen_task(manifest.directory, 0, status=None)
+
+    collected = collect(manifest)
+
+    assert len(collected.designs) == 4
+    assert collected.run.count_details["tasks"]["0000"]["status"] == "missing"
+    assert collected.run.status == "partial"

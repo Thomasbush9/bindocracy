@@ -16,6 +16,7 @@ from bindocracy.runs.manifest import (
     plan_run,
 )
 from bindocracy.runs.staging import read_collected, write_collected
+from bindocracy.runs.status import run_task, write_task_status
 
 __all__ = [
     "MANIFEST_NAME",
@@ -30,5 +31,7 @@ __all__ = [
     "mosaic_resources",
     "plan_run",
     "read_collected",
+    "run_task",
     "write_collected",
+    "write_task_status",
 ]

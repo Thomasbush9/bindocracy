@@ -143,8 +143,8 @@ def test_duplicate_sequence_with_distinct_ids_is_kept(configs, tmp_path: Path) -
     collected = collect(manifest)
 
     assert len(collected.designs) == 2
-    hashes = {design.sequence_hash for design in collected.designs}
-    assert len(hashes) == 1  # identical sequences share a hash, and both survive
+    assert len({design.sequence for design in collected.designs}) == 1
+    assert len({design.design_id for design in collected.designs}) == 2
 
 
 def test_missing_task_output_leaves_the_run_partial(configs, tmp_path: Path) -> None:

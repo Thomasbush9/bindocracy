@@ -47,7 +47,14 @@ def stable_id(kind: str, *parts: str) -> str:
 
 
 def sequence_hash(sequence: str) -> str:
-    """Hash an uppercase, whitespace-free single-chain sequence."""
+    """Hash a normalized sequence.
+
+    Not stored: for 70-90 residue binders the digest is the same size as the
+    sequence it replaces, and `GROUP BY sequence` deduplicates just as well in
+    a columnar store. Kept because computing an identity on demand is still
+    useful, and because a multi-chain sequence may one day be long enough for
+    a fixed-width key to pay for itself.
+    """
     return sha256_text(sequence)
 
 
@@ -194,7 +201,6 @@ class DesignRecord(Record):
     native_id: str
     candidate_type: CandidateType
     sequence: str | None = None
-    sequence_hash: str | None = None
     length: int | None = Field(default=None, gt=0)
     seed: int | None = None
     status: DesignStatus = DesignStatus.PRODUCED
@@ -212,19 +218,15 @@ class DesignRecord(Record):
         return normalized
 
     @model_validator(mode="after")
-    def fill_or_check_sequence_fields(self) -> Self:
+    def fill_or_check_length(self) -> Self:
         if self.sequence is None:
-            if self.sequence_hash is not None or self.length is not None:
-                raise ValueError("sequence_hash and length require sequence")
+            if self.length is not None:
+                raise ValueError("length requires sequence")
             return self
 
-        expected_hash = sequence_hash(self.sequence)
         expected_length = len(self.sequence)
-        if self.sequence_hash is not None and self.sequence_hash != expected_hash:
-            raise ValueError(f"sequence_hash does not match sequence: {expected_hash}")
         if self.length is not None and self.length != expected_length:
             raise ValueError(f"length does not match sequence: {expected_length}")
-        object.__setattr__(self, "sequence_hash", expected_hash)
         object.__setattr__(self, "length", expected_length)
         return self
 

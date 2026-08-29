@@ -7,7 +7,7 @@ in the general configuration; they are intentionally not repeated on every row.
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 TABLE_ORDER = ["configs", "runs", "designs", "artifacts", "metrics", "decisions"]
 
@@ -89,7 +89,6 @@ TABLES: dict[str, str] = {
                                  'sequence', 'backbone', 'complex'
                              )),
             sequence         VARCHAR,
-            sequence_hash    VARCHAR,
             length           INTEGER CHECK (length IS NULL OR length > 0),
             seed             BIGINT,
             status           VARCHAR NOT NULL CHECK (status IN (
@@ -99,9 +98,9 @@ TABLES: dict[str, str] = {
             created_at       TIMESTAMPTZ NOT NULL,
             UNIQUE (run_id, native_id),
             CHECK (
-                (sequence IS NULL AND sequence_hash IS NULL AND length IS NULL)
+                (sequence IS NULL AND length IS NULL)
                 OR
-                (sequence IS NOT NULL AND sequence_hash IS NOT NULL AND length IS NOT NULL)
+                (sequence IS NOT NULL AND length IS NOT NULL)
             )
         )
     """,
@@ -171,7 +170,6 @@ INDEXES: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_runs_kind_status ON runs(kind, status)",
     "CREATE INDEX IF NOT EXISTS idx_designs_run ON designs(run_id)",
     "CREATE INDEX IF NOT EXISTS idx_designs_parent ON designs(parent_design_id)",
-    "CREATE INDEX IF NOT EXISTS idx_designs_sequence_hash ON designs(sequence_hash)",
     "CREATE INDEX IF NOT EXISTS idx_artifacts_design ON artifacts(design_id)",
     "CREATE INDEX IF NOT EXISTS idx_metrics_design ON metrics(design_id)",
     "CREATE INDEX IF NOT EXISTS idx_metrics_name ON metrics(name)",
@@ -215,7 +213,27 @@ VIEWS: dict[str, str] = {
     """,
 }
 
-MIGRATIONS: dict[int, list[str]] = {}
+# v3 drops designs.sequence_hash. DuckDB cannot drop a column a CHECK depends
+# on, and cannot drop `designs` while artifacts/metrics/decisions reference it,
+# so the table and its three children are rebuilt in dependency order. Every
+# statement runs inside the single transaction schema.apply() already opens.
+_DESIGN_COLUMNS_V3 = (
+    "design_id, run_id, parent_design_id, native_id, candidate_type, "
+    "sequence, length, seed, status, metadata, created_at"
+)
+_REBUILT = ("designs", "artifacts", "metrics", "decisions")
+
+MIGRATIONS: dict[int, list[str]] = {
+    3: [
+        f"CREATE TABLE _v3_designs AS SELECT {_DESIGN_COLUMNS_V3} FROM designs",
+        *[f"CREATE TABLE _v3_{name} AS SELECT * FROM {name}" for name in _REBUILT[1:]],
+        # children first, then the parent they reference
+        *[f"DROP TABLE {name}" for name in reversed(_REBUILT)],
+        *[TABLES[name] for name in _REBUILT],
+        *[f"INSERT INTO {name} SELECT * FROM _v3_{name}" for name in _REBUILT],
+        *[f"DROP TABLE _v3_{name}" for name in _REBUILT],
+    ],
+}
 
 
 def apply(con) -> None:

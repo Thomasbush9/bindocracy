@@ -65,7 +65,6 @@ _COLUMNS: dict[str, tuple[str, ...]] = {
         "native_id",
         "candidate_type",
         "sequence",
-        "sequence_hash",
         "length",
         "seed",
         "status",

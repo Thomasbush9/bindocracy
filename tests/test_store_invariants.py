@@ -226,3 +226,46 @@ def test_configs_are_inserted_once_across_repeated_ingests(database: Path) -> No
     assert con.execute("SELECT count(*) FROM configs").fetchone() == (1,)
     assert con.execute("SELECT count(*) FROM runs").fetchone() == (2,)
     con.close()
+
+
+def test_a_v2_database_migrates_to_v3_without_losing_rows(tmp_path: Path) -> None:
+    """v3 drops designs.sequence_hash.
+
+    DuckDB cannot drop a column a CHECK depends on, nor drop `designs` while
+    three tables reference it, so the migration rebuilds all four. That is
+    exactly the kind of migration worth proving against real rows rather than
+    an empty file.
+    """
+    database = tmp_path / "campaign.duckdb"
+    config = config_record("mosaic", "m1")
+    with CampaignStore(database) as store:
+        store.ingest(bundle(config, run_id="run-1", sequences=("ACDEFG", "HIKLMN")),
+                     configs=[config])
+
+    con = duckdb.connect(str(database))
+    con.execute("UPDATE _meta SET value = '2' WHERE key = 'schema_version'")
+    con.execute("ALTER TABLE designs ADD COLUMN sequence_hash VARCHAR")
+    con.execute("UPDATE designs SET sequence_hash = 'sha256:stale'")
+    before = con.execute("SELECT design_id, native_id, sequence, length FROM designs "
+                         "ORDER BY design_id").fetchall()
+    con.close()
+
+    with CampaignStore(database):  # migrates on open
+        pass
+
+    con = duckdb.connect(str(database), read_only=True)
+    columns = [c[0] for c in con.execute("DESCRIBE designs").fetchall()]
+    assert "sequence_hash" not in columns
+    assert con.execute("SELECT value FROM _meta WHERE key='schema_version'").fetchone() == ("3",)
+    assert con.execute("SELECT design_id, native_id, sequence, length FROM designs "
+                       "ORDER BY design_id").fetchall() == before
+    # the children that had to be rebuilt alongside designs
+    assert con.execute("SELECT count(*) FROM metrics JOIN designs USING (design_id)").fetchone() == (2,)
+    assert con.execute("SELECT count(*) FROM design_history").fetchone() == (2,)
+    assert [r[0] for r in con.execute("SHOW TABLES").fetchall() if r[0].startswith("_v3")] == []
+    con.close()
+
+
+def test_a_design_still_rejects_length_without_sequence(database: Path) -> None:
+    with pytest.raises(ValueError, match="length requires sequence"):
+        DesignRecord(run_id="r", native_id="n", candidate_type="sequence", length=5)

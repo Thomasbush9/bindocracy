@@ -47,6 +47,22 @@ def test_unknown_mosaic_key_is_rejected(tmp_path: Path) -> None:
         load_yaml(model_path, MosaicConfig)
 
 
+def test_a_stale_schema_version_is_named_in_the_error(tmp_path: Path) -> None:
+    """A v1 document lacks required v2 fields; say so by version, not by field.
+
+    This matters because stored configs are the source of truth: a row written
+    by older code must fail with an explanation, not an unexplained missing key.
+    """
+    _, model_path = write_configs(tmp_path)
+    raw = yaml.safe_load(model_path.read_text())
+    raw["schema_version"] = 1
+    del raw["runtime"]["exec_wrapper"]
+    model_path.write_text(yaml.safe_dump(raw))
+
+    with pytest.raises(ValidationError, match="schema_version"):
+        load_yaml(model_path, MosaicConfig)
+
+
 def test_config_load_populates_only_configs_and_is_idempotent(tmp_path: Path) -> None:
     general_path, model_path = write_configs(tmp_path)
     loaded = load_mosaic_configs(general_path, model_path)

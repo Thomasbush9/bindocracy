@@ -119,7 +119,12 @@ class ResourceConfig(ConfigModel):
 
 
 class MosaicConfig(ConfigModel):
-    schema_version: Literal[1]
+    # v2 added runtime.exec_wrapper, runtime.scratch, and sampling.optimizer.
+    # The first two are required, so a v1 document cannot be loaded by this
+    # code. Bumping makes that say "schema_version: input should be 2" instead
+    # of an unexplained missing field — which matters now that stored configs,
+    # not files, are the source of truth.
+    schema_version: Literal[2]
     name: str = Field(min_length=1)
     tool: Literal["mosaic"]
     driver: MosaicDriverConfig

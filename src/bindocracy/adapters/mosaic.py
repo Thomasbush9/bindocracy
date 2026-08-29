@@ -223,12 +223,15 @@ def _task_artifacts(run_dir: Path, run_id: str, task: TaskPlan) -> list[Artifact
 def _provenance_artifacts(
     run_dir: Path, run_id: str, manifest: RunManifest
 ) -> list[ArtifactRecord]:
+    # `general` and `model` only appear in runs planned before the configs
+    # stopped being archived; they are still collected so those runs reparse.
     kinds = {"driver": "driver_script", "general": "general_config",
              "model": "model_config"}
     return [
         artifact
         for key, archived in manifest.provenance.items()
-        if (artifact := _artifact(run_dir, run_id, archived.path, kinds[key])) is not None
+        if (artifact := _artifact(
+            run_dir, run_id, archived.path, kinds.get(key, key))) is not None
     ]
 
 

@@ -94,7 +94,7 @@ def write_configs(root: Path, **mosaic_overrides) -> tuple[Path, Path]:
     }, sort_keys=False))
 
     mosaic = {
-        "schema_version": 1,
+        "schema_version": 2,
         "name": "mosaic-test",
         "tool": "mosaic",
         "driver": {"script": str(driver), "archive": True},

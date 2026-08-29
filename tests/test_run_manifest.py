@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from bindocracy.config import load_mosaic_configs
+from bindocracy.config import GeneralConfig, MosaicConfig, load_mosaic_configs
 from bindocracy.runs import ManifestError, RunManifest, plan_mosaic_run
 
 
@@ -20,10 +20,36 @@ def test_plan_creates_the_run_layout(configs, tmp_path: Path) -> None:
     assert manifest.designs_per_task == 4
     assert manifest.name == "config_01"
     assert manifest.to_run_record().n_requested == 8
-    for relative in ("provenance/general.yaml", "provenance/mosaic.yaml",
-                     "provenance/hallucinate_binders.py", "tasks/0000", "tasks/0001",
+    for relative in ("provenance/hallucinate_binders.py", "tasks/0000", "tasks/0001",
                      "logs"):
         assert (run_dir / relative).exists()
+
+
+def test_only_the_executed_driver_is_archived(configs, tmp_path: Path) -> None:
+    """Configs live in the database, so copying the YAML would be a third copy.
+
+    The driver is different in kind: it is executed, and its content is in no
+    other store.
+    """
+    loaded = load_mosaic_configs(*configs)
+
+    manifest = plan_mosaic_run(loaded, tmp_path / "run")
+
+    assert list(manifest.provenance) == ["driver"]
+    assert list((manifest.directory / "provenance").iterdir()) == [
+        manifest.path("provenance/hallucinate_binders.py")
+    ]
+
+
+def test_the_manifest_carries_the_whole_config(configs, tmp_path: Path) -> None:
+    """A run is replayable from run.json alone, with no file on the share."""
+    loaded = load_mosaic_configs(*configs)
+
+    manifest = plan_mosaic_run(loaded, tmp_path / "run")
+
+    rebuilt = MosaicConfig.model_validate(manifest.config.model_config_json)
+    assert rebuilt == loaded.mosaic
+    assert GeneralConfig.model_validate(manifest.config.general_config_json) == loaded.general
 
 
 def test_archived_driver_is_a_copy_not_a_reference(configs, tmp_path: Path) -> None:

@@ -41,8 +41,10 @@ uv run snakemake --configfile workflow/campaign.yaml --profile workflow/profiles
 
 ```text
 runs/<model>/
-|-- run.json          run identity, task plan, archived-input hashes, config pair
-|-- provenance/       the exact general.yaml, mosaic.yaml, and driver that ran
+|-- run.json          run identity, task plan, driver hash, and the whole
+|                     config pair as JSON — a run is replayable from this
+|                     alone, with no config file on the share
+|-- provenance/       the exact driver that ran, archived and executed
 |-- tasks/0000/       designs.jsonl and status.json, written by the driver
 |-- logs/
 |-- collected.json    the validated staging bundle

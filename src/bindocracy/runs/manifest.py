@@ -9,7 +9,7 @@ Layout, all paths inside the manifest relative to the run directory:
 
     runs/<name>/
     |-- run.json
-    |-- provenance/{general.yaml,mosaic.yaml,<driver>.py}
+    |-- provenance/<driver>.py       the code that ran, archived and executed
     |-- tasks/0000/{designs.jsonl,status.json}
     |-- logs/
     `-- collected.json
@@ -150,9 +150,12 @@ def plan_mosaic_run(
             )
         )
 
+    # Only the driver is archived. It is the one input that is *executed* and
+    # whose content lives nowhere else. The configs are carried whole in
+    # `config` below and stored in the database, so copying the YAML would be a
+    # third copy that nothing reads, and would make a file on a shared
+    # filesystem load-bearing again.
     provenance = {
-        "general": _archive(loaded.general_path, directory, "general.yaml"),
-        "model": _archive(loaded.model_path, directory, "mosaic.yaml"),
         "driver": _archive(
             loaded.mosaic.driver.script, directory, loaded.mosaic.driver.script.name
         ),

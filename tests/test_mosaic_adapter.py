@@ -177,8 +177,7 @@ def test_artifacts_cover_outputs_status_logs_and_driver(configs, tmp_path: Path)
     collected = collect(manifest)
 
     kinds = {artifact.kind for artifact in collected.artifacts}
-    assert kinds == {"native_designs", "task_status", "log", "driver_script",
-                     "general_config", "model_config"}
+    assert kinds == {"native_designs", "task_status", "log", "driver_script"}
     assert all(not Path(artifact.uri).is_absolute() for artifact in collected.artifacts)
 
 

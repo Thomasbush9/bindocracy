@@ -95,6 +95,7 @@ def run_task(
     log_path: str | Path,
     status_path: str | Path,
     task_id: int,
+    mkdirs: tuple[Path, ...] = (),
 ) -> int:
     """Run one task, tee its output to `log_path`, and record how it ended.
 
@@ -107,11 +108,8 @@ def run_task(
     started_at = utc_now()
     try:
         log.parent.mkdir(parents=True, exist_ok=True)
-        # Node-local TMPDIR and per-tool caches have to exist before the
-        # container starts; a runscript may mkdir under them but not create them.
-        for key in ("TMPDIR", "SINGULARITYENV_BOLTZGEN_RUNTIME_CACHE"):
-            if key in env:
-                Path(env[key]).mkdir(parents=True, exist_ok=True)
+        for directory in mkdirs:
+            Path(directory).mkdir(parents=True, exist_ok=True)
         with log.open("w") as stream:
             completed = subprocess.run(
                 argv, env={**os.environ, **env},

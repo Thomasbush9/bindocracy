@@ -6,6 +6,8 @@ the archived design spec directly.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from bindocracy.config.models import GeneralConfig
 from bindocracy.runs.launch import LaunchSpec, slurm_resources, task_of
 from bindocracy.runs.manifest import RunManifest
@@ -40,12 +42,22 @@ def boltzgen_launch_spec(
     if sampling.diffusion_batch_size is not None:
         argv += ["--diffusion_batch_size", str(sampling.diffusion_batch_size)]
 
+    node_tmp = _node_tmp(model, manifest, task_id)
     return LaunchSpec(
         argv=tuple(argv),
         env=_boltzgen_environment(model, manifest, task_id),
+        mkdirs=(node_tmp, node_tmp / "boltzgen-cache"),
         resources=slurm_resources(general.cluster, model.resources),
         log=run_dir / task.log,
         outputs=(run_dir / task.designs,),
+    )
+
+
+def _node_tmp(model: BoltzGenConfig, manifest: RunManifest, task_id: int) -> Path:
+    """Node-local scratch for one task, unique so two jobs cannot collide."""
+    return (
+        model.runtime.node_tmp_root
+        / f"bindocracy-boltzgen-{manifest.run_id[:8]}-{task_id:04d}"
     )
 
 
@@ -60,10 +72,7 @@ def _boltzgen_environment(
     the run and task so two concurrent jobs on one node cannot collide.
     See docs/known-issues.md sections 2.1 and 2.5.
     """
-    node_tmp = (
-        model.runtime.node_tmp_root
-        / f"bindocracy-boltzgen-{manifest.run_id[:8]}-{task_id:04d}"
-    )
+    node_tmp = _node_tmp(model, manifest, task_id)
     return {
         "TMPDIR": str(node_tmp),
         "SINGULARITYENV_TMPDIR": str(node_tmp),

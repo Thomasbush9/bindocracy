@@ -47,7 +47,7 @@ def generate_step(
     manifest = RunManifest.read(manifest_path)
     manifest.verify_inputs()
     spec: LaunchSpec = launch_spec(manifest, task_id)
-    return run_task(spec.argv, spec.env, log_path, status_path, task_id)
+    return run_task(spec.argv, spec.env, log_path, status_path, task_id, spec.mkdirs)
 
 
 def collect_step(

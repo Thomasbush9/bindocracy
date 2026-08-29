@@ -24,6 +24,10 @@ class LaunchSpec:
     resources: dict[str, Any]
     log: Path
     outputs: tuple[Path, ...]
+    # Directories that must exist before the tool starts. A container runscript
+    # may mkdir *under* its cache or TMPDIR without creating the root, and only
+    # the tool knows which of its own paths that applies to.
+    mkdirs: tuple[Path, ...] = ()
 
     @property
     def command(self) -> str:

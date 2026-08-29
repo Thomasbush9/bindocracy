@@ -138,3 +138,14 @@ def test_budget_cannot_exceed_what_is_generated(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="budget cannot exceed num_designs"):
         load_configs(general_path, model_path)
+
+
+def test_boltzgen_declares_the_directories_it_needs(planned) -> None:
+    """The runner knows nothing about BOLTZGEN_RUNTIME_CACHE; the tool does."""
+    _, manifest = planned
+
+    spec = launch_spec(manifest, 0)
+
+    assert spec.mkdirs
+    assert str(spec.mkdirs[0]) == spec.env["TMPDIR"]
+    assert str(spec.mkdirs[1]) == spec.env["SINGULARITYENV_BOLTZGEN_RUNTIME_CACHE"]

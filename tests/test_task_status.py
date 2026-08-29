@@ -79,16 +79,16 @@ def test_a_harness_failure_does_raise(tmp_path: Path) -> None:
     assert read_task_status(status).status == "failed"
 
 
-def test_node_local_directories_are_created_before_the_container_starts(
-    tmp_path: Path
-) -> None:
-    """The BoltzGen runscript mkdir -p's under TMPDIR but not TMPDIR itself."""
-    node_tmp = tmp_path / "nodetmp" / "run-0000"
-    env = {"TMPDIR": str(node_tmp),
-           "SINGULARITYENV_BOLTZGEN_RUNTIME_CACHE": str(node_tmp / "cache")}
+def test_a_tool_can_require_directories_to_exist_first(tmp_path: Path) -> None:
+    """A container runscript may mkdir *under* its cache without creating it.
 
-    run_task((sys.executable, "-c", "pass"), env, tmp_path / "t.log",
-             tmp_path / "status.json", 0)
+    The tool declares which of its own paths that applies to; the runner does
+    not know any tool's environment variable names.
+    """
+    node_tmp = tmp_path / "nodetmp" / "run-0000"
+
+    run_task((sys.executable, "-c", "pass"), {}, tmp_path / "t.log",
+             tmp_path / "status.json", 0, mkdirs=(node_tmp, node_tmp / "cache"))
 
     assert node_tmp.is_dir()
     assert (node_tmp / "cache").is_dir()

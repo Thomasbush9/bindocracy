@@ -1,3 +1,16 @@
+> **History, not instructions.** This is the plan the generation slice was
+> built from, in 2026-08, when Mosaic was the only tool. It is kept because the
+> reasoning behind the run manifest, the staging boundary, and the single
+> DuckDB writer is here, and because several of its predictions were wrong in
+> instructive ways.
+>
+> What it says is out of date in at least these respects: run directories are
+> named by the workflow index rather than by config filename; every rule is
+> tool-agnostic; `sequence_hash` is gone; a filter verdict is a decision rather
+> than a design status; and collection dispatches through one plugin registry.
+>
+> **To add a tool, read [adding-a-tool.md](../adding-a-tool.md) instead.**
+
 # Mosaic generation: end-to-end implementation plan
 
 This plan covers Mosaic from authored configuration through generated designs

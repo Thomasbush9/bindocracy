@@ -19,9 +19,12 @@ use the login node only to edit inputs, inspect help, and submit jobs.
 - **[Campaign database and output-adapter contract](docs/database.md)** — the
   single-target schema, empty-database command, and normalized parser interface
 - **[Generation workflow](workflow/README.md)** — the Snakemake rule graph that
-  takes a Mosaic config to designs in DuckDB, and how to run it
-- **[launching_scripts/](launching_scripts/)** — ready-to-run, heavily commented
-  `sbatch` launchers and configs, one directory per tool
+  takes any registered tool's config to designs in DuckDB, and how to run it
+- **[Adding a tool](docs/adding-a-tool.md)** — the five things a tool supplies,
+  and the one line that registers it
+- **[drivers/](drivers/)** — code the harness runs inside a container
+- **[legacy/](legacy/)** — the hand-written `sbatch` launchers from the alpha
+  benchmark, kept as reference and not used by the harness
 - [Running containers on the cluster](docs/running-containers.md)
 - [Weights and offline-readiness report](docs/weights.md)
 - [Container catalog](docs/containers/README.md)

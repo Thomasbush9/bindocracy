@@ -4,6 +4,7 @@ A placeholder so the `bindocracy` console script declared in pyproject.toml
 resolves against a real callable. Subcommands get added as the harness lands.
 """
 
+import shutil
 from pathlib import Path
 from typing import Annotated
 
@@ -26,6 +27,7 @@ from bindocracy.store import (
     create_database,
 )
 from bindocracy.tools import UnknownToolError, collect_run, load_configs
+from bindocracy.tools.boltzgen.migrate import backfill_boltzgen_decisions
 
 app = typer.Typer(
     add_completion=False,
@@ -151,6 +153,35 @@ def ingest(
         typer.echo(str(error), err=True)
         raise typer.Exit(code=2) from error
     typer.echo("ingested" if inserted else "already ingested; nothing to do")
+
+
+@app.command("migrate-boltzgen")
+def migrate_boltzgen(
+    database: Path,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Report without writing.")] = False,
+    backup: Annotated[bool, typer.Option("--backup/--no-backup")] = True,
+) -> None:
+    """Rewrite historical BoltzGen rows into filter and rank decisions.
+
+    Runs collected before the semantics changed stored a filtered-out design as
+    `partial`, kept the verdict in `designs.metadata`, and recorded `final_rank`
+    as a metric. Without this the table holds two meanings at once.
+    """
+    if backup and not dry_run:
+        copy = database.with_suffix(database.suffix + ".pre-boltzgen-backfill")
+        shutil.copyfile(database, copy)
+        typer.echo(f"backup: {copy}")
+
+    result = backfill_boltzgen_decisions(database, dry_run=dry_run)
+    if result.empty:
+        typer.echo("nothing to migrate")
+        return
+    verb = "would convert" if dry_run else "converted"
+    typer.echo(f"{verb} {result.designs} designs")
+    typer.echo(f"  filter decisions : {result.filters}")
+    typer.echo(f"  rank decisions   : {result.ranks}")
+    typer.echo(f"  metrics removed  : {result.metrics_removed}")
+    typer.echo(f"  statuses fixed   : {result.statuses_corrected}")
 
 
 if __name__ == "__main__":

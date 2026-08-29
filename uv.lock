@@ -59,41 +59,34 @@ dependencies = [
     { name = "typer" },
 ]
 
-[package.optional-dependencies]
-reporting = [
+[package.dev-dependencies]
+dev = [
+    { name = "biotite" },
+    { name = "harlequin" },
     { name = "matplotlib" },
     { name = "pandas" },
     { name = "pyarrow" },
-]
-structures = [
-    { name = "biotite" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "harlequin" },
     { name = "pytest" },
     { name = "ruff" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "biotite", marker = "extra == 'structures'", specifier = ">=1.7" },
     { name = "duckdb", specifier = ">=1.5" },
-    { name = "matplotlib", marker = "extra == 'reporting'", specifier = ">=3.9" },
-    { name = "pandas", marker = "extra == 'reporting'", specifier = ">=2.2" },
-    { name = "pyarrow", marker = "extra == 'reporting'", specifier = ">=17" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "snakemake", specifier = ">=9.26" },
     { name = "snakemake-executor-plugin-slurm", specifier = ">=2.8" },
     { name = "typer", specifier = ">=0.15" },
 ]
-provides-extras = ["reporting", "structures"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "biotite", specifier = ">=1.7" },
     { name = "harlequin", specifier = ">=2.10" },
+    { name = "matplotlib", specifier = ">=3.9" },
+    { name = "pandas", specifier = ">=2.2" },
+    { name = "pyarrow", specifier = ">=17" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.8" },
 ]

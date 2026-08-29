@@ -51,6 +51,10 @@ class ToolPlan:
     archives: dict[str, Path]
     container: Path
     workflow: dict[str, Any]
+    # What the tool will attempt on the way there. Equal to designs_per_task
+    # for a tool that produces exactly what it is asked for (Mosaic); larger
+    # for one that generates a pool and keeps a budget (BoltzGen).
+    generated_per_task: int | None = None
 
 
 class ManifestError(RuntimeError):
@@ -69,7 +73,11 @@ class TaskPlan(ManifestModel):
     designs: str
     status: str
     log: str
+    # Final outputs this task is asked for.
     n_requested: int
+    # Candidates it will generate to get there, when that is a different
+    # number. None means the tool attempts exactly n_requested.
+    n_generated: int | None = None
 
 
 class ArchivedFile(ManifestModel):
@@ -165,6 +173,7 @@ def plan_run(
                 status=f"{task_dir}/{STATUS_FILE}",
                 log=f"logs/task-{task_id:04d}.log",
                 n_requested=tool_plan.designs_per_task,
+                n_generated=tool_plan.generated_per_task,
             )
         )
 

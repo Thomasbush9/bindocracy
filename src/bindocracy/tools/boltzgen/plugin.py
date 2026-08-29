@@ -38,6 +38,7 @@ class BoltzGenPlugin(ToolPlugin):
             # What the run asks for is the budget: the designs meant to survive
             # into final_ranked_designs, not the backbones generated on the way.
             designs_per_task=sampling.budget,
+            generated_per_task=sampling.num_designs,
             designs_file=METRICS_FILE,
             # The spec is bound into the container and consumed by the run, so
             # it is archived for the same reason Mosaic's driver is.

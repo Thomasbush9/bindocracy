@@ -6,9 +6,12 @@ upstream docs. Three things about that output shape this parser:
 * The metrics table has 237 columns. Ingesting all of them would bury the few
   that mean something, so a named subset becomes metrics and the rest stays in
   the CSV, which is recorded as an artifact.
-* Requested, produced, and passed are three different numbers. The benchmark
-  asked for 40, got 38 rows, and only 7 of those satisfied the tool's own
-  filters. All three are recorded; collapsing them would hide the difference.
+* Requested, generated, produced, and passed are four different numbers. The
+  benchmark generated 40, kept 38, and only 7 of those satisfied the tool's own
+  filters. Producing a complete design is not the same as passing a filter, so
+  every complete row is `produced` and the filter verdict is a decision --
+  which is what `decisions` is for, and what keeps a later filtering pass from
+  contradicting this one.
 * Designs are complexes, not bare sequences: each row names a CIF holding the
   binder and the target together.
 """
@@ -29,6 +32,8 @@ from bindocracy.store.records import (
     ArtifactRecord,
     CandidateType,
     CollectedRun,
+    DecisionKind,
+    DecisionRecord,
     DesignRecord,
     DesignStatus,
     MetricDirection,
@@ -55,8 +60,10 @@ NATIVE_METRICS: dict[str, MetricDirection] = {
     "complex_plddt": MetricDirection.MAX,
     "design_to_target_ipsae": MetricDirection.MAX,
     "quality_score": MetricDirection.MAX,
-    "final_rank": MetricDirection.MIN,
 }
+
+FILTER_NAME = "boltzgen_pass_filters"
+RANK_NAME = "boltzgen_final_rank"
 
 _SEQUENCE = re.compile(r"[A-Z]+")
 _MEDIA_TYPES = {".csv": "text/csv", ".json": "application/json",
@@ -76,6 +83,7 @@ class BoltzGenOutputAdapter(OutputAdapter):
         designs: list[DesignRecord] = []
         metrics: list[MetricRecord] = []
         artifacts: list[ArtifactRecord] = []
+        decisions: list[DecisionRecord] = []
         seen: set[str] = set()
         per_task: dict[str, Any] = {}
         attempted = 0
@@ -84,7 +92,9 @@ class BoltzGenOutputAdapter(OutputAdapter):
         for task in manifest.tasks:
             status = read_task_status(run_dir / task.status)
             rows, rejected = _read_metrics(run_dir / task.designs, task, seen)
-            attempted += status.n_attempted if status and status.n_attempted is not None else task.n_requested
+            # Native count first; otherwise what the task set out to generate,
+            # which is num_designs and not the budget it keeps.
+            attempted += _attempted(status, task)
             task_passed = sum(1 for row in rows if _truthy(row.get("pass_filters")))
             passed += task_passed
             per_task[f"{task.task_id:04d}"] = {
@@ -98,6 +108,7 @@ class BoltzGenOutputAdapter(OutputAdapter):
                 design = _design_record(run.run_id, row, manifest.created_at)
                 designs.append(design)
                 metrics.extend(_metric_records(run.run_id, design, row))
+                decisions.extend(_decision_records(run.run_id, design, row, task))
                 artifacts.extend(_structure_artifacts(run_dir, run.run_id, task, design, row))
             artifacts.extend(_task_artifacts(run_dir, run.run_id, task))
 
@@ -118,6 +129,7 @@ class BoltzGenOutputAdapter(OutputAdapter):
             run=collected_run,
             designs=tuple(designs),
             metrics=tuple(metrics),
+            decisions=tuple(decisions),
             artifacts=tuple(_unique_by_uri(artifacts)),
         )
 
@@ -187,12 +199,10 @@ def _design_record(run_id: str, row: dict[str, str], fallback: datetime) -> Desi
         # A BoltzGen design is a folded complex, not a bare sequence.
         candidate_type=CandidateType.COMPLEX,
         sequence=sequence,
-        status=DesignStatus.PRODUCED if _truthy(row.get("pass_filters")) else DesignStatus.PARTIAL,
-        metadata={
-            "pass_filters": _truthy(row.get("pass_filters")),
-            "final_rank": _number(row.get("final_rank")),
-            "file_name": (row.get("file_name") or "").strip() or None,
-        },
+        # A complete row is a produced design. Whether it satisfied the tool's
+        # own filters is a decision, not a lesser kind of existence.
+        status=DesignStatus.PRODUCED,
+        metadata={"file_name": (row.get("file_name") or "").strip() or None},
         created_at=fallback,
     )
 
@@ -215,6 +225,54 @@ def _metric_records(run_id: str, design: DesignRecord, row: dict[str, str]) -> l
             )
         )
     return records
+
+
+def _decision_records(
+    run_id: str, design: DesignRecord, row: dict[str, str], task: TaskPlan
+) -> list[DecisionRecord]:
+    """BoltzGen's own verdicts: did it pass, and where did it rank.
+
+    The rank is scoped to the task, not the run. BoltzGen ranks each task's
+    pool independently, so a two-task run has two designs ranked first, and a
+    run-scoped rank would record that as a contradiction.
+    """
+    records = [
+        DecisionRecord(
+            decision_id=stable_id("decision", run_id, design.design_id, FILTER_NAME),
+            run_id=run_id,
+            design_id=design.design_id,
+            kind=DecisionKind.FILTER,
+            name=FILTER_NAME,
+            passed=_truthy(row.get("pass_filters")),
+            created_at=design.created_at,
+        )
+    ]
+    rank = _number(row.get("final_rank"))
+    if rank is not None:
+        records.append(
+            DecisionRecord(
+                decision_id=stable_id("decision", run_id, design.design_id, RANK_NAME),
+                run_id=run_id,
+                design_id=design.design_id,
+                kind=DecisionKind.RANK,
+                name=RANK_NAME,
+                rank=int(rank),
+                scope_id=rank_scope(run_id, task.task_id),
+                created_at=design.created_at,
+            )
+        )
+    return records
+
+
+def rank_scope(run_id: str, task_id: int) -> str:
+    """The pool a BoltzGen rank is meaningful within: one task's designs."""
+    return stable_id("rank-scope", run_id, f"task-{task_id:04d}")
+
+
+def _attempted(status, task: TaskPlan) -> int:
+    if status is not None and status.n_attempted is not None:
+        return status.n_attempted
+    return task.n_generated if task.n_generated is not None else task.n_requested
 
 
 def _structure_artifacts(

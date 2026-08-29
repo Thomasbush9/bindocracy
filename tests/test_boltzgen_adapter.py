@@ -63,19 +63,50 @@ def test_produced_and_passed_are_different_numbers(boltzgen_configs, tmp_path: P
     assert run.count_details["tasks"]["0000"]["n_passed"] == 2
 
 
-def test_a_design_that_failed_the_filters_is_kept_and_marked(
+def test_the_filter_verdict_is_a_decision_not_a_lesser_design(
     boltzgen_configs, tmp_path: Path
 ) -> None:
-    """Filtered-out designs are campaign history, not garbage."""
+    """Producing a design and passing a filter are different facts.
+
+    Every complete row is `produced`; whether BoltzGen's own filters accepted
+    it is a decision, so a later filtering pass adds a verdict rather than
+    contradicting this one.
+    """
     manifest = planned(boltzgen_configs, tmp_path / "run")
     write_boltzgen_task(manifest.directory, 0, status={})
 
-    by_id = {d.native_id: d for d in collect(manifest).designs}
+    collected = collect(manifest)
+    by_id = {d.native_id: d for d in collected.designs}
+    verdicts = {d.design_id: d for d in collected.decisions if d.kind == "filter"}
 
-    assert by_id["task-0000-dio3_cut_binder_14"].status == "produced"
-    assert by_id["task-0000-dio3_cut_binder_39"].status == "partial"
-    assert by_id["task-0000-dio3_cut_binder_39"].metadata["pass_filters"] is False
-    assert by_id["task-0000-dio3_cut_binder_14"].metadata["final_rank"] == 1
+    assert {d.status for d in collected.designs} == {"produced"}
+    assert verdicts[by_id["task-0000-dio3_cut_binder_14"].design_id].passed is True
+    assert verdicts[by_id["task-0000-dio3_cut_binder_39"].design_id].passed is False
+
+
+def test_a_rank_is_scoped_to_the_task_that_produced_it(
+    boltzgen_configs, tmp_path: Path
+) -> None:
+    """BoltzGen ranks each task's pool from 1, so the run is the wrong scope.
+
+    A two-task run has two designs ranked first. Recording both against the
+    run would say something false; recording them against their task does not.
+    """
+    general_path, model_path = boltzgen_configs
+    raw = yaml.safe_load(model_path.read_text())
+    raw["sampling"]["jobs"] = 2
+    model_path.write_text(yaml.safe_dump(raw))
+    manifest = plan(load_configs(general_path, model_path), tmp_path / "run")
+    for task_id in (0, 1):
+        write_boltzgen_task(manifest.directory, task_id, status={})
+
+    ranks = [d for d in collect(manifest).decisions if d.kind == "rank"]
+
+    assert len(ranks) == 8
+    assert len({d.scope_id for d in ranks}) == 2
+    firsts = [d for d in ranks if d.rank == 1]
+    assert len(firsts) == 2
+    assert firsts[0].scope_id != firsts[1].scope_id
 
 
 def test_designs_are_complexes_not_bare_sequences(boltzgen_configs, tmp_path: Path) -> None:
@@ -204,3 +235,31 @@ def test_two_tasks_do_not_collide_on_native_ids(boltzgen_configs, tmp_path: Path
     assert len(collected.designs) == 8
     assert len({d.native_id for d in collected.designs}) == 8
     assert collected.run.count_details["tasks"]["0001"]["n_invalid"] == 0
+
+
+def test_attempted_counts_what_was_generated_not_the_budget(
+    boltzgen_configs, tmp_path: Path
+) -> None:
+    """n_requested is the budget; n_attempted is num_designs.
+
+    Falling back to n_requested made a run that generated 8 and kept 4 look
+    like it had only ever tried 4.
+    """
+    manifest = planned(boltzgen_configs, tmp_path / "run")
+    write_boltzgen_task(manifest.directory, 0, status=None)  # no native count
+
+    run = collect(manifest).run
+
+    assert manifest.tasks[0].n_requested == 4    # budget
+    assert manifest.tasks[0].n_generated == 8    # num_designs
+    assert run.n_requested == 4
+    assert run.n_attempted == 8
+
+
+def test_a_native_attempt_count_wins_over_the_configured_one(
+    boltzgen_configs, tmp_path: Path
+) -> None:
+    manifest = planned(boltzgen_configs, tmp_path / "run")
+    write_boltzgen_task(manifest.directory, 0, status={"n_attempted": 6})
+
+    assert collect(manifest).run.n_attempted == 6

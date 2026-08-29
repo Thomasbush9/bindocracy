@@ -114,6 +114,12 @@ def test_two_tools_land_in_one_database_without_colliding(
     assert con.execute(
         "SELECT tool, n_produced, n_passed FROM runs ORDER BY tool"
     ).fetchall() == [("boltzgen", 4, 2), ("mosaic", 4, None)]
+    # The tool that filters records verdicts; the one that does not records none.
+    assert con.execute(
+        "SELECT r.tool, d.kind, count(*) FROM decisions d JOIN runs r USING (run_id) "
+        "GROUP BY 1, 2 ORDER BY 2"
+    ).fetchall() == [("boltzgen", "filter", 4), ("boltzgen", "rank", 4)]
+    assert con.execute("SELECT count(DISTINCT status) FROM designs").fetchone() == (1,)
     con.close()
 
 

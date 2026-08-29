@@ -9,6 +9,10 @@ manifest and the staging bundle, that test is what fails.
 There is one registry. A tool registered through it is reachable from the
 workflow and from the CLI alike, which was not true when collection had a
 registry of its own.
+
+These are the fast in-process checks. `tests/test_third_tool.py` takes the
+harder one: a complete foreign tool, planned and launched and ingested through
+the real Snakefile without editing anything under `src/bindocracy/`.
 """
 
 from __future__ import annotations

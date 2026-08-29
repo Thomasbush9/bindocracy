@@ -64,9 +64,9 @@ def test_dry_run_plans_one_job_per_task_and_one_ingestion(campaign, tmp_path: Pa
         for line in (result.stdout + result.stderr).splitlines()
         if len(parts := line.split()) == 2 and parts[1].isdigit()
     }
-    assert counts["mosaic_generate"] == 2  # sampling.jobs
-    assert counts["ingest_mosaic"] == 1
-    assert counts["prepare_mosaic_run"] == 1
+    assert counts["generate"] == 2  # sampling.jobs
+    assert counts["ingest"] == 1
+    assert counts["prepare_run"] == 1
 
 
 def test_local_end_to_end_fills_the_database(campaign, tmp_path: Path) -> None:

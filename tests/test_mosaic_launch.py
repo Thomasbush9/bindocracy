@@ -6,13 +6,14 @@ import pytest
 import yaml
 
 from bindocracy.config import load_mosaic_configs
-from bindocracy.runs import mosaic_launch_spec, plan_mosaic_run
+from bindocracy.runs import mosaic_launch_spec
+from bindocracy.tools import plan
 
 
 @pytest.fixture
 def planned(configs, tmp_path: Path):
     loaded = load_mosaic_configs(*configs)
-    return loaded, plan_mosaic_run(loaded, tmp_path / "run")
+    return loaded, plan(loaded, tmp_path / "run")
 
 
 def test_argv_passes_every_run_dependent_value(planned) -> None:
@@ -20,7 +21,7 @@ def test_argv_passes_every_run_dependent_value(planned) -> None:
 
     spec = mosaic_launch_spec(loaded, manifest, 1)
 
-    assert spec.argv[:2] == (str(loaded.mosaic.runtime.exec_wrapper), "python")
+    assert spec.argv[:2] == (str(loaded.model.runtime.exec_wrapper), "python")
     flags = dict(zip(spec.argv[3::2], spec.argv[4::2], strict=True))
     assert flags == {
         "--target-fasta": str(loaded.general.target.sequence_fasta),
@@ -44,7 +45,7 @@ def test_a_shortened_schedule_reaches_the_driver(configs, tmp_path: Path) -> Non
     model_path.write_text(yaml.safe_dump(raw, sort_keys=False))
     loaded = load_mosaic_configs(general_path, model_path)
 
-    argv = mosaic_launch_spec(loaded, plan_mosaic_run(loaded, tmp_path / "run"), 0).argv
+    argv = mosaic_launch_spec(loaded, plan(loaded, tmp_path / "run"), 0).argv
 
     flags = dict(zip(argv[3::2], argv[4::2], strict=True))
     assert flags["--soft-steps"] == "10"
@@ -58,7 +59,7 @@ def test_it_runs_the_archived_driver_not_the_authored_one(planned) -> None:
     driver = Path(mosaic_launch_spec(loaded, manifest, 0).argv[2])
 
     assert driver == manifest.directory / "provenance" / "hallucinate_binders.py"
-    assert driver != loaded.mosaic.driver.script
+    assert driver != loaded.model.driver.script
 
 
 def test_environment_carries_what_the_wrapper_reads(planned) -> None:
@@ -66,9 +67,9 @@ def test_environment_carries_what_the_wrapper_reads(planned) -> None:
 
     env = mosaic_launch_spec(loaded, manifest, 0).env
 
-    assert env["MOSAIC_SIF"] == str(loaded.mosaic.runtime.container)
-    assert env["MOSAIC_WEIGHTS"] == str(loaded.mosaic.runtime.weights)
-    assert env["MOSAIC_SCRATCH"] == str(loaded.mosaic.runtime.scratch)
+    assert env["MOSAIC_SIF"] == str(loaded.model.runtime.container)
+    assert env["MOSAIC_WEIGHTS"] == str(loaded.model.runtime.weights)
+    assert env["MOSAIC_SCRATCH"] == str(loaded.model.runtime.scratch)
     assert env["SINGULARITYENV_SSL_CERT_FILE"].endswith("ca-certificates.crt")
 
 

@@ -214,3 +214,102 @@ def write_task(
         } | status))
     (run_dir / "logs").mkdir(exist_ok=True)
     (run_dir / "logs" / f"task-{task_id:04d}.log").write_text("fake log\n")
+
+
+BOLTZGEN_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "boltzgen"
+
+
+def write_boltzgen_configs(root: Path, **overrides) -> tuple[Path, Path]:
+    """A general + BoltzGen pair. BoltzGen needs geometry, not a sequence."""
+    fasta = root / "target.fasta"
+    msa = root / "target.a3m"
+    cif = root / "target.cif"
+    container = root / "boltzgen.sif"
+    spec = root / "binder_spec.yaml"
+
+    fasta.write_text(">target\nACDEFG\n")
+    msa.write_text(">target\nACDEFG\n")
+    cif.write_text("data_target\n#\n")
+    container.write_bytes(b"fixture")
+    spec.write_text(yaml.safe_dump({
+        "entities": [
+            {"protein": {"id": "B", "sequence": "70..90"}},
+            {"file": {"path": str(cif), "include": [{"chain": {"id": "A"}}]}},
+        ]
+    }, sort_keys=False))
+
+    general_path = root / "general.yaml"
+    general_path.write_text(yaml.safe_dump({
+        "schema_version": 1,
+        "campaign": {"name": "test-campaign"},
+        "target": {
+            "name": "test-target",
+            "sequence_fasta": str(fasta),
+            "msa": str(msa),
+            "chain_id": "A",
+            "hotspots": [],
+            "structure_cif": str(cif),
+        },
+        "cluster": {
+            "executor": "slurm",
+            "account": "test-account",
+            "default_partition": "test-gpu",
+            "max_concurrent_jobs": 2,
+        },
+    }, sort_keys=False))
+
+    boltzgen = {
+        "schema_version": 1,
+        "name": "boltzgen-test",
+        "tool": "boltzgen",
+        "spec": {"template": str(spec)},
+        "sampling": {"jobs": 1, "num_designs": 8, "budget": 4,
+                     "protocol": "protein-anything", "filter_biased": False},
+        "runtime": {"container": str(container), "node_tmp_root": str(root / "nodetmp")},
+        "resources": {"gpus": 1, "cpus": 8, "memory_gb": 96, "walltime": "04:00:00"},
+    }
+    for section, values in overrides.items():
+        boltzgen[section].update(values)
+    (root / "nodetmp").mkdir(exist_ok=True)
+
+    model_path = root / "boltzgen.yaml"
+    model_path.write_text(yaml.safe_dump(boltzgen, sort_keys=False))
+    return general_path, model_path
+
+
+@pytest.fixture
+def boltzgen_configs(tmp_path: Path) -> tuple[Path, Path]:
+    return write_boltzgen_configs(tmp_path)
+
+
+def write_boltzgen_task(
+    run_dir: Path, task_id: int, *, rows: int | None = None, status: dict | None = None
+) -> None:
+    """Lay out one BoltzGen task from the committed real-output fixture."""
+    task_dir = run_dir / "tasks" / f"{task_id:04d}"
+    ranked = task_dir / "final_ranked_designs"
+    ranked.mkdir(parents=True, exist_ok=True)
+
+    lines = (BOLTZGEN_FIXTURE / "all_designs_metrics.csv").read_text().splitlines()
+    header, body = lines[0], lines[1:]
+    if rows is not None:
+        body = body[:rows]
+    (ranked / "all_designs_metrics.csv").write_text("\n".join([header, *body]) + "\n")
+
+    structures = ranked / "final_40_designs"
+    structures.mkdir(exist_ok=True)
+    for line in body:
+        fields = line.split(",")
+        (structures / f"rank{int(fields[1]):02d}_{fields[4]}").write_text("data_design\n#\n")
+
+    if status is not None:
+        (task_dir / "status.json").write_text(json.dumps({
+            "task_id": task_id,
+            "status": "succeeded",
+            "started_at": "2026-08-27T10:00:00+00:00",
+            "finished_at": "2026-08-27T10:23:00+00:00",
+            "n_attempted": 8,
+            "exit_code": 0,
+        } | status))
+    (run_dir / "logs").mkdir(exist_ok=True)
+    (run_dir / "logs" / f"task-{task_id:04d}.log").write_text("boltzgen log\n")

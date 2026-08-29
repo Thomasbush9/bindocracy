@@ -1,11 +1,15 @@
-# Mosaic generation: authored config -> designs in DuckDB.
+# Generation: authored config -> designs in DuckDB, for any registered tool.
 #
-#   prepare_mosaic_run
-#           |
-#           +--> mosaic_generate[task=0..N] --> collect_mosaic --> ingest_mosaic
-#                                                                       |
-#                                                                       v
-#                                                             generation_complete
+#   prepare_run
+#        |
+#        +--> generate[task=0..N] --> collect --> ingest
+#                                                   |
+#                                                   v
+#                                            generation_complete
+#
+# No rule names a tool. Each model config declares its own `tool:`, and the
+# plugin for that tool supplies the task count, the command, the resources, and
+# the adapter. Adding a tool changes this file not at all.
 #
 # The workflow config is an execution index; the scientific inputs stay in the
 # general and model YAML it points at. Run:
@@ -20,15 +24,8 @@ import subprocess
 from pathlib import Path
 
 from bindocracy.adapters import collect_run
-from bindocracy.config import load_mosaic_configs
-from bindocracy.runs import (
-    RunManifest,
-    ingest_bundle,
-    mosaic_launch_spec,
-    mosaic_resources,
-    plan_mosaic_run,
-    write_collected,
-)
+from bindocracy.runs import RunManifest, ingest_bundle, write_collected
+from bindocracy.tools import index_configs, launch_spec, plan, plugin_for, resources
 from bindocracy.runs.manifest import write_json_atomic
 
 GENERAL = Path(config["general_config"])
@@ -38,23 +35,24 @@ DATABASE = Path(config["database"])
 # Validated at DAG time, so a bad config fails in a second rather than in the
 # queue. This is also where the task count comes from, which is why no
 # checkpoint is needed to know the shape of the fan-out.
-LOADED = {
-    Path(path).stem: load_mosaic_configs(GENERAL, path)
-    for path in config["models"]["mosaic"]
-}
+# `models` maps a tool name to its config files. The tool key is only for the
+# author's benefit -- dispatch uses the `tool:` field inside each config.
+LOADED = index_configs(
+    GENERAL, [path for paths in config["models"].values() for path in paths]
+)
 TASKS = {
-    model: [f"{task_id:04d}" for task_id in range(loaded.mosaic.sampling.jobs)]
+    model: [f"{task_id:04d}" for task_id in range(plugin_for(loaded.tool).tool_plan(loaded).jobs)]
     for model, loaded in LOADED.items()
 }
 
 
 def slurm(name):
     """One launch resource, resolved at DAG time from the configs alone."""
-    return lambda wildcards: mosaic_resources(LOADED[wildcards.model])[name]
+    return lambda wildcards: resources(LOADED[wildcards.model])[name]
 
 
 # Everything except the GPU work runs on the submitting host.
-localrules: all, prepare_mosaic_run, collect_mosaic, ingest_mosaic, generation_complete
+localrules: all, prepare_run, collect, ingest, generation_complete
 
 
 rule all:
@@ -62,18 +60,18 @@ rule all:
         expand(str(RUN_ROOT / "{model}" / "generation.done"), model=list(LOADED)),
 
 
-rule prepare_mosaic_run:
+rule prepare_run:
     """Create or reuse the run identity, directory, and archived inputs."""
     output:
         RUN_ROOT / "{model}" / "run.json",
     run:
-        plan_mosaic_run(
+        plan(
             LOADED[wildcards.model], RUN_ROOT / wildcards.model, name=wildcards.model
         )
 
 
-rule mosaic_generate:
-    """One GPU task. Exit status is not the success signal: status.json is."""
+rule generate:
+    """One GPU task, however this tool runs one."""
     input:
         RUN_ROOT / "{model}" / "run.json",
     output:
@@ -88,7 +86,7 @@ rule mosaic_generate:
         mem_mb=slurm("mem_mb"),
         runtime=slurm("runtime"),
     run:
-        spec = mosaic_launch_spec(
+        spec = launch_spec(
             LOADED[wildcards.model], RunManifest.read(input[0]), int(wildcards.task)
         )
         with open(log[0], "w") as stream:
@@ -101,7 +99,7 @@ rule mosaic_generate:
             )
 
 
-rule collect_mosaic:
+rule collect:
     """Parse every planned task, keeping whatever partial work exists."""
     input:
         manifest=RUN_ROOT / "{model}" / "run.json",
@@ -115,8 +113,8 @@ rule collect_mosaic:
         write_collected(collect_run(input.manifest), output[0])
 
 
-rule ingest_mosaic:
-    """The only DuckDB writer. db_writer serializes it across models."""
+rule ingest:
+    """The only DuckDB writer. db_writer serializes it across tools."""
     input:
         RUN_ROOT / "{model}" / "collected.json",
     output:

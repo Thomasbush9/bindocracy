@@ -1,0 +1,59 @@
+"""BoltzGen: diffuse a binder backbone against the target's geometry.
+
+The contrast with Mosaic is the point of this module. BoltzGen consumes the
+target as *structure* rather than sequence, is driven by an authored design
+spec rather than a script, writes a 237-column CSV rather than JSON lines, and
+filters its own pool so that produced and passed are different numbers.
+
+None of that reaches the generic machinery.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from bindocracy.adapters.boltzgen import METRICS_FILE, BoltzGenOutputAdapter
+from bindocracy.config.load import LoadedConfigs
+from bindocracy.config.models import BoltzGenConfig, GeneralConfig
+from bindocracy.config.preflight import BoltzGenPreflight, preflight_boltzgen
+from bindocracy.runs.launch import LaunchSpec, boltzgen_launch_spec, boltzgen_resources
+from bindocracy.runs.manifest import RunManifest, ToolPlan
+from bindocracy.tools.base import ToolPlugin
+
+
+class BoltzGenPlugin(ToolPlugin):
+    tool = "boltzgen"
+    config_type = BoltzGenConfig
+    adapter_type = BoltzGenOutputAdapter
+
+    def preflight(self, general: GeneralConfig, model: BoltzGenConfig) -> BoltzGenPreflight:
+        return preflight_boltzgen(general, model)
+
+    def tool_plan(self, loaded: LoadedConfigs) -> ToolPlan:
+        sampling = loaded.model.sampling
+        return ToolPlan(
+            jobs=sampling.jobs,
+            # What the run asks for is the budget: the designs meant to survive
+            # into final_ranked_designs, not the backbones generated on the way.
+            designs_per_task=sampling.budget,
+            designs_file=METRICS_FILE,
+            # The spec is bound into the container and consumed by the run, so
+            # it is archived for the same reason Mosaic's driver is.
+            archives={"spec": loaded.model.spec.template},
+            container=loaded.model.runtime.container,
+            workflow={
+                "target_length": loaded.preflight.target_length,
+                "protocol": sampling.protocol,
+                "num_designs": sampling.num_designs,
+                "budget": sampling.budget,
+                "filter_biased": sampling.filter_biased,
+            },
+        )
+
+    def launch_spec(
+        self, loaded: LoadedConfigs, manifest: RunManifest, task_id: int
+    ) -> LaunchSpec:
+        return boltzgen_launch_spec(loaded, manifest, task_id)
+
+    def resources(self, loaded: LoadedConfigs) -> dict[str, Any]:
+        return boltzgen_resources(loaded)

@@ -15,7 +15,8 @@ from pathlib import Path
 from bindocracy.adapters.mosaic import MosaicOutputAdapter
 from bindocracy.config import load_mosaic_configs
 from bindocracy.config.preflight import read_single_fasta
-from bindocracy.runs import mosaic_launch_spec, plan_mosaic_run
+from bindocracy.runs import mosaic_launch_spec
+from bindocracy.tools import plan
 
 
 def parse(driver, argv: tuple[str, ...], monkeypatch):
@@ -28,19 +29,19 @@ def test_the_driver_accepts_exactly_what_the_connector_launches(
     driver, configs, tmp_path: Path, monkeypatch
 ) -> None:
     loaded = load_mosaic_configs(*configs)
-    manifest = plan_mosaic_run(loaded, tmp_path / "run")
+    manifest = plan(loaded, tmp_path / "run")
     spec = mosaic_launch_spec(loaded, manifest, 1)
 
     # argparse exits non-zero on an unknown or missing flag, so this failing
     # means the connector would have launched a job that dies immediately.
     parsed = parse(driver, spec.argv, monkeypatch)
 
-    assert parsed.binder_length == loaded.mosaic.sampling.binder_length
+    assert parsed.binder_length == loaded.model.sampling.binder_length
     assert parsed.task_id == 1
-    assert parsed.n_designs == loaded.mosaic.sampling.designs_per_job
-    assert parsed.seed_base == loaded.mosaic.sampling.seed_base
-    assert parsed.max_runtime == loaded.mosaic.sampling.max_runtime_hours
-    assert parsed.soft_steps == loaded.mosaic.sampling.optimizer.soft_steps
+    assert parsed.n_designs == loaded.model.sampling.designs_per_job
+    assert parsed.seed_base == loaded.model.sampling.seed_base
+    assert parsed.max_runtime == loaded.model.sampling.max_runtime_hours
+    assert parsed.soft_steps == loaded.model.sampling.optimizer.soft_steps
     assert Path(parsed.save_dir) == manifest.directory / "tasks" / "0001"
     assert Path(parsed.target_fasta) == loaded.general.target.sequence_fasta
 
@@ -50,7 +51,7 @@ def test_the_driver_writes_into_the_directory_the_adapter_reads(
 ) -> None:
     """--save-dir and the manifest's task directory must be the same place."""
     loaded = load_mosaic_configs(*configs)
-    manifest = plan_mosaic_run(loaded, tmp_path / "run")
+    manifest = plan(loaded, tmp_path / "run")
     spec = mosaic_launch_spec(loaded, manifest, 0)
     parsed = parse(driver, spec.argv, monkeypatch)
 
@@ -69,7 +70,7 @@ def test_a_status_file_the_driver_wrote_is_read_back_by_the_adapter(
 ) -> None:
     """The driver's writer and the adapter's reader, with no fixture between."""
     loaded = load_mosaic_configs(*configs)
-    manifest = plan_mosaic_run(loaded, tmp_path / "run", name="run")
+    manifest = plan(loaded, tmp_path / "run", name="run")
     task_dir = manifest.path("tasks/0000")
 
     driver.write_status(task_dir, {
@@ -126,7 +127,7 @@ def test_the_driver_names_designs_the_way_the_adapter_expects(
 ) -> None:
     """The native_id scheme is a contract between two files that never meet."""
     loaded = load_mosaic_configs(*configs)
-    manifest = plan_mosaic_run(loaded, tmp_path / "run")
+    manifest = plan(loaded, tmp_path / "run")
     task_dir = manifest.path("tasks/0001")
 
     # Exactly the format hallucinate_binders.py writes, for task 1 design 2.

@@ -16,6 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from bindocracy.adapters.base import OutputAdapter
+from bindocracy.adapters.boltzgen import BoltzGenOutputAdapter
 from bindocracy.adapters.mosaic import MosaicOutputAdapter
 from bindocracy.runs.manifest import RunManifest
 from bindocracy.store.records import CollectedRun
@@ -62,3 +63,4 @@ def collect_run(manifest_path: str | Path) -> CollectedRun:
 
 
 register(MosaicOutputAdapter)
+register(BoltzGenOutputAdapter)

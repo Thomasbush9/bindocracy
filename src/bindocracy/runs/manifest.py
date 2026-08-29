@@ -21,18 +21,36 @@ import json
 import os
 import shutil
 import subprocess
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict
 
-from bindocracy.config.load import LoadedMosaicConfigs, sha256_file
+from bindocracy.config.load import LoadedConfigs, sha256_file
 from bindocracy.store.records import ConfigRecord, RunKind, RunRecord, new_id, utc_now
 
 MANIFEST_NAME = "run.json"
 DESIGNS_FILE = "designs.jsonl"
 STATUS_FILE = "status.json"
+
+
+@dataclass(frozen=True)
+class ToolPlan:
+    """What a tool's plugin must supply to have a run planned for it.
+
+    Everything below this line is generic. A tool contributes its task count,
+    its per-task output name, and the files worth archiving; it never reaches
+    into the manifest itself.
+    """
+
+    jobs: int
+    designs_per_task: int
+    designs_file: str
+    archives: dict[str, Path]
+    container: Path
+    workflow: dict[str, Any]
 
 
 class ManifestError(RuntimeError):
@@ -113,8 +131,9 @@ class RunManifest(ManifestModel):
         )
 
 
-def plan_mosaic_run(
-    loaded: LoadedMosaicConfigs,
+def plan_run(
+    loaded: LoadedConfigs,
+    tool_plan: ToolPlan,
     run_dir: str | Path,
     *,
     name: str | None = None,
@@ -129,67 +148,60 @@ def plan_mosaic_run(
     if manifest_path.is_file():
         return _reuse(manifest_path, loaded)
 
-    sampling = loaded.mosaic.sampling
     config = loaded.to_record()
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "provenance").mkdir(exist_ok=True)
     (directory / "logs").mkdir(exist_ok=True)
 
     tasks = []
-    for task_id in range(sampling.jobs):
+    for task_id in range(tool_plan.jobs):
         task_dir = f"tasks/{task_id:04d}"
         (directory / task_dir).mkdir(parents=True, exist_ok=True)
         tasks.append(
             TaskPlan(
                 task_id=task_id,
                 directory=task_dir,
-                designs=f"{task_dir}/{DESIGNS_FILE}",
+                designs=f"{task_dir}/{tool_plan.designs_file}",
                 status=f"{task_dir}/{STATUS_FILE}",
                 log=f"logs/task-{task_id:04d}.log",
-                n_requested=sampling.designs_per_job,
+                n_requested=tool_plan.designs_per_task,
             )
         )
 
-    # Only the driver is archived. It is the one input that is *executed* and
-    # whose content lives nowhere else. The configs are carried whole in
-    # `config` below and stored in the database, so copying the YAML would be a
-    # third copy that nothing reads, and would make a file on a shared
-    # filesystem load-bearing again.
+    # Only inputs that are *consumed by the run* are archived -- Mosaic's driver
+    # script, BoltzGen's design spec. The configs are carried whole in `config`
+    # below and stored in the database, so copying their YAML would be a third
+    # copy that nothing reads, and would make a file on a shared filesystem
+    # load-bearing again.
     provenance = {
-        "driver": _archive(
-            loaded.mosaic.driver.script, directory, loaded.mosaic.driver.script.name
-        ),
+        label: _archive(source, directory, source.name)
+        for label, source in tool_plan.archives.items()
     }
 
     manifest = RunManifest(
         run_id=new_id(),
-        name=name or loaded.mosaic.name,
-        tool=loaded.mosaic.tool,
+        name=name or loaded.model.name,
+        tool=loaded.model.tool,
         kind=RunKind.GENERATE,
         general_config_id=config.general_config_id,
         model_config_id=config.model_config_id,
         created_at=utc_now(),
         run_dir=str(directory),
         tasks=tuple(tasks),
-        designs_per_task=sampling.designs_per_job,
-        resources=loaded.mosaic.resources.model_dump(mode="json"),
+        designs_per_task=tool_plan.designs_per_task,
+        resources=loaded.model.resources.model_dump(mode="json"),
         provenance=provenance,
-        container=str(loaded.mosaic.runtime.container),
+        container=str(tool_plan.container),
         container_digest=None,
         code_revision=_code_revision(),
-        workflow={
-            "engine": "snakemake",
-            "target_length": loaded.preflight.target_length,
-            "binder_length": sampling.binder_length,
-            "seed_base": sampling.seed_base,
-        },
+        workflow={"engine": "snakemake", **tool_plan.workflow},
         config=config,
     )
     _write_atomic(manifest_path, manifest.model_dump_json(indent=2) + "\n")
     return manifest
 
 
-def _reuse(manifest_path: Path, loaded: LoadedMosaicConfigs) -> RunManifest:
+def _reuse(manifest_path: Path, loaded: LoadedConfigs) -> RunManifest:
     manifest = RunManifest.read(manifest_path)
     config = loaded.to_record()
     if manifest.model_config_id != config.model_config_id:

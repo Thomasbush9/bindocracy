@@ -9,7 +9,7 @@ from bindocracy.adapters import collect_run
 from bindocracy.adapters.base import CollectionError
 from bindocracy.adapters.mosaic import METRIC_NAME, MosaicOutputAdapter
 from bindocracy.config import load_mosaic_configs
-from bindocracy.runs import plan_mosaic_run
+from bindocracy.tools import plan as plan_tool_run
 
 
 def plan(configs: tuple[Path, Path], run_dir: Path, **sampling):
@@ -21,7 +21,7 @@ def plan(configs: tuple[Path, Path], run_dir: Path, **sampling):
         raw = yaml.safe_load(model_path.read_text())
         raw["sampling"].update(sampling)
         model_path.write_text(yaml.safe_dump(raw, sort_keys=False))
-    return plan_mosaic_run(load_mosaic_configs(general_path, model_path), run_dir)
+    return plan_tool_run(load_mosaic_configs(general_path, model_path), run_dir)
 
 
 def collect(manifest):

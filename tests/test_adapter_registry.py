@@ -26,8 +26,9 @@ from bindocracy.adapters import (
 )
 from bindocracy.adapters.mosaic import MosaicOutputAdapter
 from bindocracy.config import load_mosaic_configs
-from bindocracy.runs import RunManifest, plan_mosaic_run
+from bindocracy.runs import RunManifest
 from bindocracy.store.records import CandidateType, CollectedRun, DesignRecord, RunStatus
+from bindocracy.tools import plan
 
 
 class ToyAdapter(OutputAdapter):
@@ -70,7 +71,7 @@ def isolated_registry():
 @pytest.fixture
 def toy_run(configs, tmp_path: Path) -> Path:
     """A run directory whose manifest says the tool is `toy`, not `mosaic`."""
-    manifest = plan_mosaic_run(load_mosaic_configs(*configs), tmp_path / "run")
+    manifest = plan(load_mosaic_configs(*configs), tmp_path / "run")
     toy = manifest.model_copy(update={"tool": "toy"})
     (manifest.directory / "run.json").write_text(toy.model_dump_json(indent=2))
     (manifest.directory / "toy_output.txt").write_text("ACDEFG\nHIKLMN\n")
@@ -111,7 +112,7 @@ def test_removing_a_tool_leaves_the_others_working(
     assert "toy" not in registered_tools()
     assert "mosaic" in registered_tools()
 
-    manifest = plan_mosaic_run(load_mosaic_configs(*configs), tmp_path / "run")
+    manifest = plan(load_mosaic_configs(*configs), tmp_path / "run")
     write_task(manifest.directory, 0, [design_line(0, 0)], status={})
     write_task(manifest.directory, 1, [design_line(1, 0)], status={})
     assert len(collect_run(manifest.directory / "run.json").designs) == 2
@@ -127,7 +128,7 @@ def test_collection_dispatches_on_the_manifest_not_the_caller(
 ) -> None:
     """A mosaic run is parsed by the mosaic adapter, whatever else is loaded."""
     register(ToyAdapter)
-    manifest = plan_mosaic_run(load_mosaic_configs(*configs), tmp_path / "run")
+    manifest = plan(load_mosaic_configs(*configs), tmp_path / "run")
     for task_id in (0, 1):
         write_task(manifest.directory, task_id, [design_line(task_id, 0)], status={})
     # A toy output file sitting in a mosaic run must be ignored entirely.
@@ -167,7 +168,7 @@ def test_the_manifest_is_the_only_source_of_the_tool_name(
     configs, tmp_path: Path
 ) -> None:
     """Nothing infers the tool from a path or a filename."""
-    manifest = plan_mosaic_run(load_mosaic_configs(*configs), tmp_path / "nothing-here")
+    manifest = plan(load_mosaic_configs(*configs), tmp_path / "nothing-here")
 
     assert RunManifest.read(manifest.directory / "run.json").tool == "mosaic"
     assert json.loads((manifest.directory / "run.json").read_text())["tool"] == "mosaic"

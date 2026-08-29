@@ -24,7 +24,7 @@ def test_load_mosaic_configs_returns_typed_models(tmp_path: Path) -> None:
     loaded = load_mosaic_configs(general_path, model_path)
 
     assert loaded.general.target.sequence_fasta == tmp_path / "target.fasta"
-    assert loaded.mosaic.sampling.jobs == 2
+    assert loaded.model.sampling.jobs == 2
     assert loaded.preflight.target_length == 6
     record = loaded.to_record()
     assert record.general_name == "test-campaign"
@@ -68,7 +68,7 @@ def test_a_recovered_config_can_be_re_run(tmp_path: Path) -> None:
     )
 
     assert recovered.general == original.general
-    assert recovered.mosaic == original.mosaic
+    assert recovered.model == original.model
     assert recovered.to_record().model_config_id == record.model_config_id
     assert recovered.to_record().general_config_id == record.general_config_id
 
@@ -149,4 +149,4 @@ def test_recover_general_and_model_yaml(tmp_path: Path) -> None:
 
     recovered_model = tmp_path / "recovered" / "mosaic.yaml"
     recover_config_yaml(database, record.model_config_id, recovered_model)
-    assert yaml.safe_load(recovered_model.read_text()) == loaded.mosaic.model_dump(mode="json")
+    assert yaml.safe_load(recovered_model.read_text()) == loaded.model.model_dump(mode="json")

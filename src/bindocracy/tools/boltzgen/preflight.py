@@ -21,6 +21,7 @@ from bindocracy.tools.boltzgen.config import BoltzGenConfig
 class BoltzGenPreflight:
     target_sequence: str
     spec_files: tuple[Path, ...]
+    spec: dict
 
     @property
     def target_length(self) -> int:
@@ -94,4 +95,5 @@ def preflight_boltzgen(general: GeneralConfig, boltzgen: BoltzGenConfig) -> Bolt
     return BoltzGenPreflight(
         target_sequence=read_single_fasta(general.target.sequence_fasta),
         spec_files=spec_files,
+        spec=spec,
     )

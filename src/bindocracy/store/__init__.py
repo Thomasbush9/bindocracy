@@ -9,7 +9,12 @@ from bindocracy.store.records import (
     MetricRecord,
     RunRecord,
 )
-from bindocracy.store.store import CampaignStore, IngestConflictError, create_database
+from bindocracy.store.store import (
+    CampaignStore,
+    IngestConflictError,
+    TargetMismatchError,
+    create_database,
+)
 
 __all__ = [
     "ArtifactRecord",
@@ -21,5 +26,6 @@ __all__ = [
     "IngestConflictError",
     "MetricRecord",
     "RunRecord",
+    "TargetMismatchError",
     "create_database",
 ]

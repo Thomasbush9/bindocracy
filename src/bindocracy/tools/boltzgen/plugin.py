@@ -43,6 +43,13 @@ class BoltzGenPlugin(ToolPlugin):
             # The spec is bound into the container and consumed by the run, so
             # it is archived for the same reason Mosaic's driver is.
             archives={"spec": loaded.model.spec.template},
+            # The spec is a referenced input whose contents matter; the config
+            # only names its path. Digest every structure it pulls geometry
+            # from, so replacing one in place is visible in the run record.
+            inputs={
+                f"spec_structure_{index}": path
+                for index, path in enumerate(loaded.preflight.spec_files)
+            },
             container=loaded.model.runtime.container,
             workflow={
                 "target_length": loaded.preflight.target_length,
@@ -50,6 +57,9 @@ class BoltzGenPlugin(ToolPlugin):
                 "num_designs": sampling.num_designs,
                 "budget": sampling.budget,
                 "filter_biased": sampling.filter_biased,
+                # Parsed, not just referenced: model_config_json records the
+                # spec's path, and a path does not say what was designed.
+                "spec": loaded.preflight.spec,
             },
         )
 

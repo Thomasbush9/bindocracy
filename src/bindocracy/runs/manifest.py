@@ -21,7 +21,7 @@ import json
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -29,6 +29,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict
 
 from bindocracy.config.load import LoadedConfigs, sha256_file
+from bindocracy.runs.inputs import InputDigest, TargetDigest, digest_of
 from bindocracy.store.records import ConfigRecord, RunKind, RunRecord, new_id, utc_now
 
 MANIFEST_NAME = "run.json"
@@ -55,6 +56,9 @@ class ToolPlan:
     # for a tool that produces exactly what it is asked for (Mosaic); larger
     # for one that generates a pool and keeps a budget (BoltzGen).
     generated_per_task: int | None = None
+    # Files this tool reads that the general config does not name, keyed by a
+    # label. Digested so the run records the bytes it consumed.
+    inputs: dict[str, Path] = field(default_factory=dict)
 
 
 class ManifestError(RuntimeError):
@@ -106,6 +110,11 @@ class RunManifest(ManifestModel):
     container_digest: str | None
     code_revision: str | None
     workflow: dict[str, Any]
+    # The biological target, by content rather than by path. One database
+    # follows one target, and this is what makes that checkable.
+    target: TargetDigest | None = None
+    # Every referenced input, digested when the run was planned.
+    inputs: dict[str, InputDigest] = {}
     # Carried whole so ingestion can insert the config pair without re-reading
     # and re-validating YAML that may have changed since the run was planned.
     config: ConfigRecord
@@ -187,6 +196,16 @@ def plan_run(
         for label, source in tool_plan.archives.items()
     }
 
+    target = loaded.general.target
+    inputs = {
+        "target_fasta": digest_of(target.sequence_fasta),
+        "target_msa": digest_of(target.msa),
+        "container": digest_of(tool_plan.container),
+        **{label: digest_of(path) for label, path in tool_plan.inputs.items()},
+    }
+    if target.structure_cif is not None:
+        inputs["target_structure"] = digest_of(target.structure_cif)
+
     manifest = RunManifest(
         run_id=new_id(),
         name=name or loaded.model.name,
@@ -204,6 +223,8 @@ def plan_run(
         container_digest=None,
         code_revision=_code_revision(),
         workflow={"engine": "snakemake", **tool_plan.workflow},
+        target=TargetDigest.of(target.name, loaded.preflight.target_sequence),
+        inputs=inputs,
         config=config,
     )
     _write_atomic(manifest_path, manifest.model_dump_json(indent=2) + "\n")
@@ -211,13 +232,31 @@ def plan_run(
 
 
 def _reuse(manifest_path: Path, loaded: LoadedConfigs) -> RunManifest:
+    """Return an existing manifest, or refuse it loudly.
+
+    Two ways a reused run can be wrong: the configuration changed under it, or
+    an archived input was edited in place after being copied. Both are checked
+    here, because everything downstream trusts the manifest.
+    """
     manifest = RunManifest.read(manifest_path)
     config = loaded.to_record()
     if manifest.model_config_id != config.model_config_id:
         raise ManifestError(
             f"{manifest_path} was planned for model_config_id="
             f"{manifest.model_config_id}, not {config.model_config_id}; "
-            "use a different run directory"
+            "give this execution a different name"
+        )
+
+    tampered = [
+        archived.path
+        for archived in manifest.provenance.values()
+        if sha256_file(manifest.directory / archived.path) != archived.sha256
+    ]
+    if tampered:
+        raise ManifestError(
+            f"{manifest_path} records archived inputs that have since changed: "
+            + ", ".join(tampered)
+            + "\nThe archive is what the run executes, so it cannot be edited."
         )
     return manifest
 

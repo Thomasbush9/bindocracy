@@ -24,4 +24,7 @@ def ingest_bundle(database: str | Path, collected_path: str | Path) -> bool:
             f"manifest describes run {manifest.run_id}"
         )
     with CampaignStore(database) as store:
+        # One database, one target. Checked before anything is written.
+        if manifest.target is not None:
+            store.assert_target(manifest.target.name, manifest.target.sequence_sha256)
         return store.ingest(collected, configs=[manifest.config])

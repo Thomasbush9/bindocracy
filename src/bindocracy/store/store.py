@@ -128,6 +128,10 @@ class IngestConflictError(RuntimeError):
     """A different bundle has already been ingested under this run ID."""
 
 
+class TargetMismatchError(RuntimeError):
+    """This database follows a different biological target."""
+
+
 class CampaignStore:
     """Own one DuckDB connection; only the serialized ingest job should write."""
 
@@ -159,6 +163,36 @@ class CampaignStore:
         traceback: TracebackType | None,
     ) -> None:
         self.close()
+
+    def assert_target(self, name: str, sequence_sha256: str) -> bool:
+        """Stamp this database's target, or refuse a run against another one.
+
+        One DuckDB file follows one target -- that assumption is everywhere,
+        from `design_history` to any cross-tool comparison. Nothing enforced
+        it, so a general config naming a different protein would have loaded
+        happily and mixed two campaigns into one table. The identity is the
+        resolved sequence, not the path it came from, so replacing a FASTA
+        in place is caught too.
+
+        Returns True when this call stamped the database.
+        """
+        stored = self.connection.execute(
+            "SELECT value FROM _meta WHERE key = 'target_sha256'"
+        ).fetchone()
+        if stored is None:
+            schema._set_meta(self.connection, "target_sha256", sequence_sha256)
+            schema._set_meta(self.connection, "target_name", name)
+            return True
+        if stored[0] != sequence_sha256:
+            existing = self.connection.execute(
+                "SELECT value FROM _meta WHERE key = 'target_name'"
+            ).fetchone()
+            raise TargetMismatchError(
+                f"this database follows target {existing[0] if existing else '?'} "
+                f"({stored[0]}), not {name} ({sequence_sha256}). "
+                "One campaign database is one target; use a different database."
+            )
+        return False
 
     def add_configs(self, configs: Iterable[ConfigRecord]) -> tuple[str, ...]:
         """Insert config pairs atomically, skipping IDs already present.

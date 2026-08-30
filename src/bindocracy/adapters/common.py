@@ -24,6 +24,8 @@ MEDIA_TYPES = {
     ".py": "text/x-python",
     ".yaml": "application/yaml",
     ".cif": "chemical/x-cif",
+    ".pdb": "chemical/x-pdb",
+    ".fasta": "application/x-fasta",
 }
 
 # Artifacts small enough to be worth a checksum. A design complex is kilobytes;

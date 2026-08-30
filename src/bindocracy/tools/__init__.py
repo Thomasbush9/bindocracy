@@ -9,7 +9,9 @@ from importlib import import_module
 
 from bindocracy.tools.base import ToolPlugin
 from bindocracy.tools.boltzgen import BoltzGenPlugin
+from bindocracy.tools.genie3 import Genie3Plugin
 from bindocracy.tools.mosaic import MosaicPlugin
+from bindocracy.tools.pxdesign import PXDesignPlugin
 from bindocracy.tools.registry import (
     UnknownToolError,
     collect_run,
@@ -25,6 +27,8 @@ from bindocracy.tools.registry import (
 
 register(MosaicPlugin)
 register(BoltzGenPlugin)
+register(Genie3Plugin)
+register(PXDesignPlugin)
 
 # A tool does not have to live in this repository. Anything named in
 # BINDOCRACY_PLUGINS (comma-separated importable modules) is imported here and
@@ -36,7 +40,9 @@ for _module in os.environ.get("BINDOCRACY_PLUGINS", "").split(","):
 
 __all__ = [
     "BoltzGenPlugin",
+    "Genie3Plugin",
     "MosaicPlugin",
+    "PXDesignPlugin",
     "ToolPlugin",
     "UnknownToolError",
     "collect_run",

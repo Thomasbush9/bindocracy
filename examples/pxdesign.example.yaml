@@ -1,0 +1,54 @@
+# TEMPLATE. Real configs live outside the repository, beside the campaign
+# data, because their absolute paths belong to one machine. Copy, edit, and
+# point a workflow index at your copy.
+
+schema_version: 1
+name: pxdesign-binder-run12
+tool: pxdesign
+
+# Two designs, one task. This exists to prove the whole path end to end on real
+# Slurm -- archived spec, container, offline Protenix, output contract, adapter,
+# ingestion -- not to produce binders. Upstream needs 10,000+ designs to land
+# 10-100 dual-filter passes, so even the 40-design benchmark run was a pilot.
+spec:
+  template: /absolute/path/to/binder_design/configs/pxdesign/pxdesign_input.yaml
+
+sampling:
+  jobs: 1
+  # summary.csv will have exactly this many rows. The CLI appends
+  # --min_total_return and --max_success_return equal to it, so the table is
+  # padded with failed designs rather than coming back short; produced and
+  # passed are always different questions here.
+  designs_per_job: 2
+  diffusion_steps: 400
+  # Passed as --seeds. Without it PXDesign seeds from time.time_ns(), which
+  # makes the run unreproducible and leaves two tasks differing only by when
+  # they happened to start.
+  seed_base: 0
+  # Explicit, because the CLI's own default is `custom`, which configures no
+  # confidence filters at all and still writes a normal-looking summary.csv.
+  preset: extended
+  # The schedule the container's config intends. The CLI emits every shared
+  # option unconditionally, so leaving these out means const / 2.5 / 2.5.
+  eta_type: piecewise_65
+  eta_min: 1.0
+  eta_max: 2.5
+
+runtime:
+  container: /absolute/path/to/binder_design/images/pxdesign.sif
+  # bf16 with the fused kernels on is right for H100. The image's pinned JAX
+  # and custom Protenix LayerNorm kernel cover sm_70-sm_90 only, so a Blackwell
+  # node would fail and a V100 needs fp32 with both kernels off.
+  dtype: bf16
+  use_fast_ln: true
+  use_deepspeed_evo_attention: true
+  node_tmp_root: /tmp
+
+resources:
+  gpus: 1
+  cpus: 16
+  memory_gb: 96
+  # The 40-design benchmark run took 15m24s wall and 13.4 GB RSS, most of it
+  # fixed cost: checkpoint load, target prediction, and the AF2 and Protenix
+  # filter stages starting up. Two designs is well inside this.
+  walltime: "00:45:00"

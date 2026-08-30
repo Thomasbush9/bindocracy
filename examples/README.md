@@ -11,6 +11,10 @@ durable record of what a run used.
 | `mosaic.example.yaml` | `configs/mosaic/<name>.yaml` |
 | `boltzgen.example.yaml` | `configs/boltzgen/<name>.yaml` |
 | `boltzgen_spec.example.yaml` | the file `spec.template` points at |
+| `genie3.example.yaml` | `configs/genie3/<name>.yaml` |
+| `genie3_experiment.example.yaml` | the file `experiment.template` points at |
+| `pxdesign.example.yaml` | `configs/pxdesign/<name>.yaml` |
+| `pxdesign_input.example.yaml` | the file `spec.template` points at |
 | `../workflow/campaign.example.yaml` | an execution index beside your runs |
 
 A model config selects its own plugin through its `tool:` field, so adding a

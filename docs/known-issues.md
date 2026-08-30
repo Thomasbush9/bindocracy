@@ -174,6 +174,30 @@ The docstring says extended is the default. It is not. `custom` runs with no
 confidence filters at all, so the run completes and produces a `summary.csv`
 that looks normal and means much less.
 
+### 1.6b PXDesign's CLI rejects no flag you can misspell
+
+`pxdesign pipeline` is declared with `ignore_unknown_options=True` and
+`allow_extra_args=True`, and what click passes through lands in
+`parse_known_args`, which ignores its remainder in turn. Neither layer will
+tell you a flag was wrong:
+
+```console
+$ singularity run --cleanenv pxdesign.sif pipeline --definitely_not_a_flag 1
+Error: Missing option '--input' / '-i'.
+```
+
+That is the same message a *valid* invocation missing `-i` produces. The flags
+that do this deliberately — `--use_fast_ln`, `--use_deepspeed_evo_attention`,
+`--dtype` — are real config keys consumed further in (`pipeline.py` reads
+`configs.use_deepspeed_evo_attention` directly), so pass-through is the design,
+not an accident. The cost is that a typo in one is indistinguishable from
+having set it.
+
+**What the harness does:** types these as fields on `PXDesignRuntimeConfig`
+rather than offering a free-form argument list, so a misspelling is refused by
+Pydantic before a GPU is allocated, and the value that ran is in the stored
+config.
+
 ### 1.7 Proteina-Complexa reports every ipSAE as exactly 0.0
 
 In the benchmark run, all twelve `self_complex_*_ipSAE*` columns of
@@ -379,6 +403,38 @@ annotations`, `X | None` unions and the walrus operator. `python3.12` exists at
 `/usr/bin/python3.12` if you need it, but writing 3.6-compatible helpers is less
 fragile.
 
+### 2.11 A job can burn its whole walltime without running your code
+
+Genie 3's first harness run (job 42803697) sat on `holygpu8a13604` for the full
+two hours and was killed by the time limit having produced nothing: no task
+log, no output directories, and no error. It reads exactly like a slow tool.
+It was not one — the same launch command ran to completion on another node in
+**3m10s**.
+
+Three numbers from `sacct` tell the two apart, and they cost nothing to check:
+
+```bash
+sacct -j <jobid> --format=JobID,State,Elapsed,MaxRSS,NodeList
+```
+
+| | Job that hung | Job that worked |
+|---|---|---|
+| batch-step `MaxRSS` | **7888K** | 154088K |
+| a `.0` job step | **absent** | present, 7.3 GB |
+| bytes written to the rule log | **0** | the tool's output |
+
+A batch step peaking at 8 MB is a shell that never got a Python interpreter
+loaded, and no `.0` step means Snakemake never reached the `srun` that runs the
+rule. Both are upstream of anything a tool config can cause. The venv was
+untouched during the window (checked), so the likeliest cause is that node's
+access to `/n/home06`, where the interpreter lives.
+
+**What to do:** re-submit rather than debug the tool, and confirm on a
+different node before changing any configuration. And keep a smoke test's
+walltime near what the work should actually take — a 1-design Genie 3 run needs
+about five minutes, so a two-hour ceiling turned a hung node into two hours of
+lost allocation instead of five minutes.
+
 ---
 
 ## 3. Counting traps — "40 designs" means something different in each tool
@@ -392,7 +448,7 @@ Read this before comparing any two tools' output counts.
 | PXDesign | `--N_sample 40` | The CLI appends `--min_total_return 40 --max_success_return 40`, so `summary.csv` always has exactly 40 rows — **padded with failed designs** if fewer pass. Real hits are the rows where `AF2-IG-easy-success` / `Protenix-success` are set. |
 | Proteina-Complexa | `nsamples × nrepeat_per_sample × replicas` generated, then filtered to `filter_samples_limit` | `dedup_sequence: true` drops identical sequences before top-N, so you can finish with fewer than 40. |
 | Protein-Hunter | 40 trajectories × `num_cycles` sequences | ProteinMPNN emits exactly **one** sequence per cycle (`batch_size` hardcoded to 1). A 20%-alanine cap silently excludes designs from `best_*` and writes their `best_iptm` as `NaN`. |
-| Genie 3 | `n_sample: 40` **per problem** | With one problem that is the total. Binder length comes from the problem JSON, not the YAML. |
+| Genie 3 | `n_sample: 40` **per problem** BACKBONES | With one problem that is the total number of *backbones*. Each one then gets `evaluation.inverse_folding.num_seq` sequences, so designs are the product — 40 at `num_seq: 1`, 320 at the default 8. And `results/info.csv` has a row per design *per AF2 model*, so 40 designs at `num_models: 5` is 200 rows. Binder length comes from the problem JSON, not the YAML. |
 | RFdiffusion | `inference.num_designs=40` backbones | Backbones only, poly-glycine — no sequences. Upstream `inference.cautious=True` skips existing PDBs; the launcher explicitly sets it to `False`, so a fixed-prefix rerun overwrites them. |
 | Caliby | `num_seqs_per_pdb × n_structures` | Sequences live only in `seq_des_outputs.csv`; despite the `out_pdb` column name the files are `.cif`. |
 | Mosaic | `--n-designs 40` | Straightforward — one sequence per design, appended as it finishes. |

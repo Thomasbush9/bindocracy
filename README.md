@@ -31,18 +31,22 @@ use the login node only to edit inputs, inspect help, and submit jobs.
 
 ## Container guides
 
-| Tool | Image | Primary use |
-|---|---|---|
-| [Genie 3](docs/containers/genie3.md) | `genie3.sif` | Backbone generation and end-to-end design/evaluation |
-| [FreeBindCraft](docs/containers/freebindcraft.md) | `freebindcraft.sif` | BindCraft-style binder design without PyRosetta |
-| [Caliby](docs/containers/caliby.md) | `caliby.sif` | Sequence design, scoring, packing, and ensembles |
-| [BoltzGen](docs/containers/boltzgen.md) | `boltzgen.sif` | Structure-conditioned protein/peptide design |
-| [Protein-Hunter](docs/containers/protein-hunter.md) | `protein_hunter.sif` | Boltz- and Chai-based binder design pipelines |
-| [Proteina-Complexa](docs/containers/proteina-complexa.md) | `proteina_complexa.sif` | Local multi-stage binder, ligand, AME, and motif workflows |
-| [PXDesign](docs/containers/pxdesign.md) | `pxdesign.sif` | Diffusion binder design with structure filters |
-| [SwitchCraft](docs/containers/switchcraft.md) | `switchcraft.sif` | Multistate and allosteric protein design |
-| [Mosaic](docs/containers/mosaic.md) | `mosaic.sif` | Differentiable multi-model binder optimization |
-| [RFdiffusion](docs/containers/rfdiffusion.md) | `rfd.sif` | Diffusion-based protein backbone generation |
+Four of these run through the harness today — Mosaic, BoltzGen, Genie 3 and
+PXDesign. The rest are documented images you drive by hand; adding one is
+[one package and one line](docs/adding-a-tool.md).
+
+| Tool | Image | Primary use | Harness |
+|---|---|---|---|
+| [Genie 3](docs/containers/genie3.md) | `genie3.sif` | Backbone generation and end-to-end design/evaluation | `tool: genie3` |
+| [FreeBindCraft](docs/containers/freebindcraft.md) | `freebindcraft.sif` | BindCraft-style binder design without PyRosetta | — |
+| [Caliby](docs/containers/caliby.md) | `caliby.sif` | Sequence design, scoring, packing, and ensembles | — |
+| [BoltzGen](docs/containers/boltzgen.md) | `boltzgen.sif` | Structure-conditioned protein/peptide design | `tool: boltzgen` |
+| [Protein-Hunter](docs/containers/protein-hunter.md) | `protein_hunter.sif` | Boltz- and Chai-based binder design pipelines | — |
+| [Proteina-Complexa](docs/containers/proteina-complexa.md) | `proteina_complexa.sif` | Local multi-stage binder, ligand, AME, and motif workflows | — |
+| [PXDesign](docs/containers/pxdesign.md) | `pxdesign.sif` | Diffusion binder design with structure filters | `tool: pxdesign` |
+| [SwitchCraft](docs/containers/switchcraft.md) | `switchcraft.sif` | Multistate and allosteric protein design | — |
+| [Mosaic](docs/containers/mosaic.md) | `mosaic.sif` | Differentiable multi-model binder optimization | `tool: mosaic` |
+| [RFdiffusion](docs/containers/rfdiffusion.md) | `rfd.sif` | Diffusion-based protein backbone generation | — (see §2.2) |
 
 ## Scope and conventions
 

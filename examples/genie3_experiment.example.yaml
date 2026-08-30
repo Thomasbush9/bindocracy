@@ -1,0 +1,74 @@
+# TEMPLATE. Real configs live outside the repository, beside the campaign
+# data, because their absolute paths belong to one machine. Copy, edit, and
+# point a workflow index at your copy.
+
+# Genie 3 experiment template, for the harness rather than for `genie3` directly.
+#
+# Three keys that the standalone examples carry are deliberately absent, and
+# preflight refuses this file if they come back:
+#
+#   paths.rootdir                 each task gets its own output root
+#   experiment.seed               each task gets seed_base + task_id
+#   generation.dataset.n_sample   comes from sampling.backbones_per_job
+#
+# The driver writes them into a per-task copy at tasks/NNNN/experiment.yaml,
+# which is collected as an artifact, so what each task ran stays readable.
+#
+# `paths.dataset` points at the problem set built by
+# legacy/genie3/prepare_problemset.py. Genie 3 cannot consume a raw target PDB:
+# `source: target` needs problems/*.json plus targets/{pdb,fasta,msa}/, and the
+# shipped builder calls the ColabFold MSA server, which a compute node cannot
+# reach. That is only sound because folding.mode below is `template`, which
+# never reads the MSA.
+#
+# Binder length is NOT set here. It comes from binder_min_length /
+# binder_max_length in the problem JSON (60..120) and is sampled per design;
+# the harness records the range on the run.
+#
+# HOTSPOTS ARE MANDATORY. Genie 3 has no hotspot-free binder mode -- its
+# reducer reads target_interface_residues['hotspot'] unconditionally. The set
+# in the problem JSON (A110/A112/A131, renumbered to B) is the solvent-exposed
+# rim of the DIO3 catalytic pocket. That is a defensible default, NOT an
+# experimentally mapped epitope, and it makes these designs not strictly
+# comparable to the campaign's hotspot-free Mosaic and BoltzGen runs.
+
+experiment:
+  name: dio3_cut_binders
+
+paths:
+  dataset: /absolute/path/to/binder_design/outputs/_shared/genie3_dataset
+
+generation:
+  dataset:
+    source: target
+    selections: dio3_cut
+    # 'extended' is the paper default: the hotspot triple plus the 12-residue
+    # interface patch computed around it. 'hotspot' conditions on the three
+    # residues alone.
+    cond_strategy: extended
+  sampler:
+    sampler:
+      # 0.0 is the binder setting; nonzero trades diversity for per-sample
+      # quality and is meant for unconditional generation.
+      direction_scale: 0.0
+
+# Genie 3 emits UNK backbones, so this block is what turns them into binder
+# SEQUENCES. Without it the run produces nothing comparable to the other tools,
+# and preflight refuses a template that omits it.
+evaluation:
+  version: binder
+  inverse_folding:
+    model_name: proteinmpnn
+    num_seq: 1          # one sequence per backbone
+  folding:
+    model_name: colabfold
+    # `template` runs AF2-multimer single-sequence with the target supplied as
+    # a custom template. No MSA, no network. `msa` mode would call the server
+    # and is refused.
+    mode: template
+    backend: subprocess
+    num_models: 5       # the v0 success filters are calibrated at 5 / 20
+    num_recycles: 20
+
+runtime:
+  num_devices: 1

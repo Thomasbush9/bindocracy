@@ -17,7 +17,16 @@ from pathlib import Path
 
 import pytest
 
-from bindocracy.runs.staging import migrate, read_collected, staged_digest, write_collected
+from bindocracy.runs.staging import (
+    BUNDLE_VERSION,
+    PAYLOAD_KEY,
+    VERSION_KEY,
+    StagingFormatError,
+    migrate,
+    read_collected,
+    staged_digest,
+    write_collected,
+)
 
 V2_BUNDLE = Path(__file__).resolve().parent / "fixtures" / "staging" / "v2_bundle.collected.json"
 
@@ -76,4 +85,53 @@ def test_an_unreadable_bundle_still_fails(tmp_path: Path) -> None:
     path.write_text(json.dumps({"run": {"name": "x"}}))
 
     with pytest.raises(ValueError):
+        read_collected(path)
+
+
+def test_a_bundle_written_now_says_which_format_it_is_in(tmp_path: Path) -> None:
+    """The point of the envelope: a reader never has to infer the version."""
+
+    path = write_collected(read_collected(V2_BUNDLE), tmp_path / "collected.json")
+    raw = json.loads(path.read_text())
+
+    assert raw[VERSION_KEY] == BUNDLE_VERSION
+    assert set(raw) == {VERSION_KEY, PAYLOAD_KEY}
+
+
+def test_a_bundle_from_a_newer_bindocracy_is_refused(tmp_path: Path) -> None:
+    """Dropping unrecognised fields is only safe backwards.
+
+    Forwards, a field this code does not know is one it was supposed to
+    understand, and quietly discarding it would ingest a partial run as a
+    complete one.
+    """
+
+    path = write_collected(read_collected(V2_BUNDLE), tmp_path / "collected.json")
+    raw = json.loads(path.read_text())
+    raw[VERSION_KEY] = BUNDLE_VERSION + 1
+    raw[PAYLOAD_KEY]["designs"][0]["something_new"] = "load-bearing"
+    path.write_text(json.dumps(raw))
+
+    with pytest.raises(StagingFormatError, match="newer bindocracy"):
+        read_collected(path)
+
+
+def test_the_envelope_is_not_part_of_a_bundles_identity(tmp_path: Path) -> None:
+    """Bumping the version must not make every stored bundle look rewritten."""
+
+    path = write_collected(read_collected(V2_BUNDLE), tmp_path / "collected.json")
+    before = staged_digest(path)
+    raw = json.loads(path.read_text())
+    raw[VERSION_KEY] = 0
+    path.write_text(json.dumps({VERSION_KEY: 0, PAYLOAD_KEY: raw[PAYLOAD_KEY]}))
+
+    assert staged_digest(path) == before
+
+
+def test_a_versioned_bundle_missing_its_payload_is_refused(tmp_path: Path) -> None:
+
+    path = tmp_path / "collected.json"
+    path.write_text(json.dumps({VERSION_KEY: 1, "designs": []}))
+
+    with pytest.raises(StagingFormatError, match="must carry"):
         read_collected(path)

@@ -6,6 +6,17 @@ Repository: `PXDesign/`
 PXDesign couples diffusion-based binder generation to Protenix and AF2-IG
 confidence filters.
 
+## Through the harness
+
+PXDesign is a registered tool, so a campaign runs it the way it runs anything
+else: a `tool: pxdesign` model config, an entry in a workflow index, and
+`uv run snakemake`. See `examples/pxdesign.example.yaml` and its input spec.
+
+The harness passes the three flags whose defaults are wrong (`--preset`, the
+eta schedule, `--seeds`), keeps every JIT cache node-local, and refuses to
+start if the spec's target is not the campaign's or its MSA directory is
+incomplete. The commands below remain the way to run one off by hand.
+
 ## Input YAML
 
 A minimal target description has this shape:

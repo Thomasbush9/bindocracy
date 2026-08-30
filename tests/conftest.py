@@ -317,3 +317,364 @@ def write_boltzgen_task(
         } | status))
     (run_dir / "logs").mkdir(exist_ok=True)
     (run_dir / "logs" / f"task-{task_id:04d}.log").write_text("boltzgen log\n")
+
+
+GENIE3_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "genie3"
+# The fixture rows are unmodified output of the 2026-08-26 benchmark run, whose
+# problem was keyed `dio3_cut`. The key names the output tree, so the test
+# configs use it too and the fixture never has to be edited.
+GENIE3_SELECTION = "dio3_cut"
+GENIE3_TARGET = "ACDEFGHIKLMNPQRSTVWY"
+
+
+def write_genie3_problemset(root: Path, *, key: str = GENIE3_SELECTION,
+                            sequence: str = GENIE3_TARGET,
+                            hotspots: list[str] | None = None) -> Path:
+    """A Genie 3 problem set: one problem JSON and the target files it names."""
+    dataset = root / "genie3_dataset"
+    (dataset / "problems").mkdir(parents=True, exist_ok=True)
+    (dataset / "targets" / "pdb").mkdir(parents=True, exist_ok=True)
+    (dataset / "targets" / "fasta").mkdir(parents=True, exist_ok=True)
+
+    fasta = dataset / "targets" / "fasta" / f"{key}.fasta"
+    fasta.write_text(f">{key}\n{sequence}\n")
+    pdb = dataset / "targets" / "pdb" / f"{key}.pdb"
+    pdb.write_text("ATOM      1  CA  ALA B   1       0.000   0.000   0.000\n")
+    chain_pdb = dataset / "targets" / "pdb" / f"{key}-chain_B.pdb"
+    chain_pdb.write_text(pdb.read_text())
+
+    (dataset / "problems" / f"{key}.json").write_text(json.dumps({
+        "key": key,
+        "name": key,
+        "target_pdb_filepath": str(pdb),
+        "target_fasta_filepath": str(fasta),
+        "target_pdb_filepath_by_chain": [str(chain_pdb)],
+        "target_chain_and_residues": [f"B1-{len(sequence)}"],
+        "target_interface_residues": {
+            "hotspot": hotspots if hotspots is not None else ["B10", "B12", "B13"],
+            "extended": ["B9", "B10", "B11", "B12", "B13"],
+        },
+        "binder_min_length": 60,
+        "binder_max_length": 120,
+    }, indent=4))
+    return dataset
+
+
+def write_genie3_overlays(root: Path) -> dict[str, Path]:
+    """The three JAX overlays, as preflight looks for them."""
+    overlays = root / "overlays"
+    (overlays / "jax" / "jax_plugins").mkdir(parents=True, exist_ok=True)
+    (overlays / "cudnn").mkdir(parents=True, exist_ok=True)
+    (overlays / "cudnn" / "libcudnn.so.9").write_bytes(b"fixture")
+    (overlays / "nvcc" / "bin").mkdir(parents=True, exist_ok=True)
+    (overlays / "nvcc" / "bin" / "ptxas").write_bytes(b"fixture")
+    return {
+        "jax_plugin_overlay": overlays / "jax",
+        "cudnn_overlay": overlays / "cudnn",
+        "cuda_nvcc_overlay": overlays / "nvcc",
+    }
+
+
+def genie3_experiment(dataset: Path, *, key: str = GENIE3_SELECTION, **sections) -> dict:
+    """A template with none of the three keys the harness writes per task."""
+    experiment = {
+        "experiment": {"name": "test-genie3"},
+        "paths": {"dataset": str(dataset)},
+        "generation": {
+            "dataset": {"source": "target", "selections": key, "cond_strategy": "extended"},
+            "sampler": {"sampler": {"direction_scale": 0.0}},
+        },
+        "evaluation": {
+            "version": "binder",
+            "inverse_folding": {"model_name": "proteinmpnn", "num_seq": 1},
+            "folding": {"model_name": "colabfold", "mode": "template",
+                        "backend": "subprocess", "num_models": 5, "num_recycles": 20},
+        },
+        "runtime": {"num_devices": 1},
+    }
+    for section, values in sections.items():
+        experiment[section] = values
+    return experiment
+
+
+GENIE3_DRIVER_PATH = (
+    Path(__file__).resolve().parents[1] / "drivers" / "genie3" / "run_genie3.py"
+)
+
+
+def write_genie3_configs(root: Path, *, experiment: dict | None = None,
+                         **overrides) -> tuple[Path, Path]:
+    """A general + Genie 3 pair. Genie 3 needs a problem set, not a FASTA."""
+    fasta = root / "target.fasta"
+    fasta.write_text(f">target\n{GENIE3_TARGET}\n")
+    container = root / "genie3.sif"
+    container.write_bytes(b"fixture")
+    driver = root / "run_genie3.py"
+    driver.write_text(GENIE3_DRIVER_PATH.read_text())
+
+    # A caller passing its own experiment has already built the problem set it
+    # points at, and rebuilding the default one here would overwrite it.
+    if experiment is None:
+        experiment = genie3_experiment(write_genie3_problemset(root))
+    overlays = write_genie3_overlays(root)
+    template = root / "experiment.yaml"
+    template.write_text(yaml.safe_dump(experiment, sort_keys=False))
+
+    general_path = root / "general.yaml"
+    general_path.write_text(yaml.safe_dump({
+        "schema_version": 1,
+        "campaign": {"name": "test-campaign"},
+        "target": {
+            "name": "test-target",
+            "sequence_fasta": str(fasta),
+            "chain_id": "A",
+            "hotspots": [],
+        },
+        "cluster": {
+            "executor": "slurm",
+            "account": "test-account",
+            "default_partition": "test-gpu",
+        },
+    }, sort_keys=False))
+
+    genie3 = {
+        "schema_version": 1,
+        "name": "genie3-test",
+        "tool": "genie3",
+        "experiment": {"template": str(template)},
+        "driver": {"script": str(driver)},
+        "sampling": {"jobs": 1, "backbones_per_job": 4, "seed_base": 100},
+        "runtime": {
+            "container": str(container),
+            "node_tmp_root": str(root / "nodetmp"),
+            **{name: str(path) for name, path in overlays.items()},
+        },
+        "resources": {"gpus": 1, "cpus": 16, "memory_gb": 96, "walltime": "08:00:00"},
+    }
+    for section, values in overrides.items():
+        genie3[section].update(values)
+    (root / "nodetmp").mkdir(exist_ok=True)
+
+    model_path = root / "genie3.yaml"
+    model_path.write_text(yaml.safe_dump(genie3, sort_keys=False))
+    return general_path, model_path
+
+
+@pytest.fixture
+def genie3_configs(tmp_path: Path) -> tuple[Path, Path]:
+    return write_genie3_configs(tmp_path)
+
+
+def write_genie3_task(
+    run_dir: Path,
+    task_id: int,
+    *,
+    designs: int | None = None,
+    successes: tuple[str, ...] = (),
+    backbones: int | None = None,
+    results: str | None = None,
+    status: dict | None = None,
+    reducer: bool = True,
+    selection: str = GENIE3_SELECTION,
+) -> None:
+    """Lay out one Genie 3 task from the committed real-output fixture.
+
+    `designs` keeps that many design groups (five rows each); `successes` names
+    the designs the v0 reducer called successes, using real rows for those too.
+
+    `reducer=True` writes `success_info.csv` whether or not anything passed,
+    which is what Genie 3 does -- the benchmark's zero-hit run left a header
+    and no rows. `reducer=False` leaves the file out, which is what an
+    evaluation that never reached the reduce step leaves behind.
+    """
+    task_dir = run_dir / "tasks" / f"{task_id:04d}"
+    output = task_dir / selection
+    (output / "results").mkdir(parents=True, exist_ok=True)
+    (output / "pdbs").mkdir(exist_ok=True)
+    (output / "sequences").mkdir(exist_ok=True)
+
+    lines = (GENIE3_FIXTURE / "info.csv").read_text().splitlines()
+    header, body = lines[0], lines[1:]
+    if designs is not None:
+        names = list(dict.fromkeys(line.split(",")[0] for line in body))[:designs]
+        body = [line for line in body if line.split(",")[0] in names]
+    text = results if results is not None else "\n".join([header, *body]) + "\n"
+    (output / "results" / "info.csv").write_text(text)
+
+    if reducer:
+        (output / "results" / "v0_success").mkdir(exist_ok=True)
+        winners = [line for line in body if line.split(",")[0] in successes]
+        (output / "results" / "v0_success" / "success_info.csv").write_text(
+            "\n".join([header, *winners]) + "\n"
+        )
+
+    for line in body:
+        fields = line.split(",")
+        name, domain = fields[0], fields[1]
+        (output / "pdbs" / f"{domain}.pdb").write_text("ATOM\n")
+        (output / "sequences" / f"{domain}.fasta").write_text(f">{domain}\nACDEF\n")
+        structures = output / "structures" / name
+        structures.mkdir(parents=True, exist_ok=True)
+        (structures / Path(fields[3]).name).write_text("ATOM\n")
+    for index in range(backbones or 0):
+        (output / "pdbs" / f"{selection}_extra_{index}.pdb").write_text("ATOM\n")
+
+    (task_dir / "experiment.yaml").write_text("experiment:\n  name: test-genie3\n")
+    if status is not None:
+        # Genie 3 writes no status of its own, so this is the shape the harness
+        # writes around it -- notably with no count of its own.
+        (task_dir / "status.json").write_text(json.dumps({
+            "task_id": task_id,
+            "status": "succeeded",
+            "started_at": "2026-08-26T19:00:00+00:00",
+            "finished_at": "2026-08-26T22:31:00+00:00",
+            "exit_code": 0,
+            "error": None,
+            "written_by": "harness",
+        } | status))
+    (run_dir / "logs").mkdir(exist_ok=True)
+    (run_dir / "logs" / f"task-{task_id:04d}.log").write_text("genie3 log\n")
+
+
+@pytest.fixture
+def genie3_driver():
+    """Import the Genie 3 driver, which needs only stdlib and PyYAML."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("run_genie3", GENIE3_DRIVER_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+PXDESIGN_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "pxdesign"
+# The fixture rows are unmodified output of the 2026-08-26 benchmark run, whose
+# spec was keyed `dio3_cut`. task_name names the output tree, so the test
+# configs use it too and the fixture never has to be edited.
+PXDESIGN_TASK_NAME = "dio3_cut"
+
+
+def write_pxdesign_msa(root: Path, chain: str = "A") -> Path:
+    """A precomputed MSA directory, with both alignments PXDesign requires."""
+    directory = root / "msa" / chain
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in ("non_pairing.a3m", "pairing.a3m"):
+        (directory / name).write_text(">target\nACDEFG\n")
+    return directory
+
+
+def pxdesign_spec(cif: Path, msa: Path, *, task_name: str = PXDESIGN_TASK_NAME,
+                  binder_length: int = 80, hotspots: list[int] | None = None) -> dict:
+    chain: dict = {"msa": str(msa)}
+    if hotspots is not None:
+        chain["hotspots"] = hotspots
+    return {
+        "task_name": task_name,
+        "target": {"file": str(cif), "chains": {"A": chain}},
+        "binder_length": binder_length,
+    }
+
+
+def write_pxdesign_configs(root: Path, *, spec: dict | None = None,
+                           **overrides) -> tuple[Path, Path]:
+    """A general + PXDesign pair. PXDesign needs geometry and a precomputed MSA."""
+    fasta = root / "target.fasta"
+    cif = root / "target.cif"
+    container = root / "pxdesign.sif"
+    fasta.write_text(">target\nACDEFG\n")
+    cif.write_text("data_target\n#\n")
+    container.write_bytes(b"fixture")
+
+    if spec is None:
+        spec = pxdesign_spec(cif, write_pxdesign_msa(root))
+    template = root / "pxdesign_input.yaml"
+    template.write_text(yaml.safe_dump(spec, sort_keys=False))
+
+    general_path = root / "general.yaml"
+    general_path.write_text(yaml.safe_dump({
+        "schema_version": 1,
+        "campaign": {"name": "test-campaign"},
+        "target": {
+            "name": "test-target",
+            "sequence_fasta": str(fasta),
+            "chain_id": "A",
+            "hotspots": [],
+            "structure_cif": str(cif),
+        },
+        "cluster": {
+            "executor": "slurm",
+            "account": "test-account",
+            "default_partition": "test-gpu",
+        },
+    }, sort_keys=False))
+
+    pxdesign = {
+        "schema_version": 1,
+        "name": "pxdesign-test",
+        "tool": "pxdesign",
+        "spec": {"template": str(template)},
+        "sampling": {"jobs": 1, "designs_per_job": 4, "diffusion_steps": 400,
+                     "seed_base": 100, "preset": "extended"},
+        "runtime": {"container": str(container), "node_tmp_root": str(root / "nodetmp")},
+        "resources": {"gpus": 1, "cpus": 16, "memory_gb": 96, "walltime": "10:00:00"},
+    }
+    for section, values in overrides.items():
+        pxdesign[section].update(values)
+    (root / "nodetmp").mkdir(exist_ok=True)
+
+    model_path = root / "pxdesign.yaml"
+    model_path.write_text(yaml.safe_dump(pxdesign, sort_keys=False))
+    return general_path, model_path
+
+
+@pytest.fixture
+def pxdesign_configs(tmp_path: Path) -> tuple[Path, Path]:
+    return write_pxdesign_configs(tmp_path)
+
+
+def write_pxdesign_task(
+    run_dir: Path,
+    task_id: int,
+    *,
+    designs: int | None = None,
+    summary: str | None = None,
+    status: dict | None = None,
+    task_name: str = PXDESIGN_TASK_NAME,
+) -> None:
+    """Lay out one PXDesign task from the committed real-output fixture."""
+    task_dir = run_dir / "tasks" / f"{task_id:04d}"
+    outputs = task_dir / "design_outputs" / task_name
+    outputs.mkdir(parents=True, exist_ok=True)
+
+    lines = (PXDESIGN_FIXTURE / "summary.csv").read_text().splitlines()
+    header, body = lines[0], lines[1:]
+    if designs is not None:
+        body = body[:designs]
+    text = summary if summary is not None else "\n".join([header, *body]) + "\n"
+    (outputs / "summary.csv").write_text(text)
+    (outputs / "task_info.json").write_text(
+        json.dumps({"mode": "Extended", "protenix": "Protenix"})
+    )
+    (task_dir / "config.yaml").write_text("dump_dir: fixture\n")
+
+    columns = header.split(",")
+    chosen = columns.index("chosen_struct_path")
+    for line in body:
+        structure = outputs / line.split(",")[chosen]
+        structure.parent.mkdir(parents=True, exist_ok=True)
+        structure.write_text("data_design\n#\n")
+
+    if status is not None:
+        # PXDesign writes no status of its own, so this is the shape the
+        # harness writes around it -- notably with no count of its own.
+        (task_dir / "status.json").write_text(json.dumps({
+            "task_id": task_id,
+            "status": "succeeded",
+            "started_at": "2026-08-26T19:43:00+00:00",
+            "finished_at": "2026-08-26T19:58:00+00:00",
+            "exit_code": 0,
+            "error": None,
+            "written_by": "harness",
+        } | status))
+    (run_dir / "logs").mkdir(exist_ok=True)
+    (run_dir / "logs" / f"task-{task_id:04d}.log").write_text("pxdesign log\n")

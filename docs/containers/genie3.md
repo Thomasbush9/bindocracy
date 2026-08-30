@@ -6,6 +6,16 @@ Repository: `genie3/`
 Genie 3 generates protein backbones and can run generation, sequence design,
 and structure evaluation as one configured workflow.
 
+## Through the harness
+
+Genie 3 is a registered tool, so a campaign runs it the same way it runs
+anything else: a `tool: genie3` model config, an entry in a workflow index, and
+`uv run snakemake`. See `examples/genie3.example.yaml` and its experiment
+template. The harness handles everything the manual path below needs handling
+for — the three JAX overlays, the writable `lightning_logs`, the ColabFold
+parameter cache, and a per-task output root — and refuses to start if any of
+them is missing. The manual commands here remain the way to debug one stage.
+
 ## Quick start
 
 Copy and edit one of the repository examples:

@@ -1,0 +1,44 @@
+# TEMPLATE. Real configs live outside the repository, beside the campaign
+# data, because their absolute paths belong to one machine. Copy, edit, and
+# point a workflow index at your copy.
+
+schema_version: 1
+name: genie3-binder-run12
+tool: genie3
+
+# One backbone, one sequence, one task -- one design. This exists to prove the
+# whole path end to end on real Slurm: the driver renders a config, the three
+# JAX overlays reach the container, the AF2 stage lands on the GPU, and the
+# adapter reads what comes out. It is not meant to produce binders.
+experiment:
+  template: /absolute/path/to/binder_design/configs/genie3/experiment_smoke.yaml
+
+driver:
+  script: /absolute/path/to/binder_design/bindocracy/drivers/genie3/run_genie3.py
+
+# Designs are backbones times evaluation.inverse_folding.num_seq, which is 1 in
+# the template above. Raising either raises the design count.
+sampling:
+  jobs: 1
+  backbones_per_job: 1
+  seed_base: 0
+
+runtime:
+  container: /absolute/path/to/binder_design/images/genie3.sif
+  # Without these three the AF2 evaluation stage runs on the CPU and never
+  # finishes, with no error. Built by legacy/genie3/build_jax_overlay.sh; the
+  # image alone no longer determines the result, so they are recorded per run.
+  jax_plugin_overlay: /absolute/path/to/binder_design/overlays/genie3-jax-cuda
+  cudnn_overlay: /absolute/path/to/binder_design/overlays/genie3-cudnn/nvidia/cudnn/lib
+  cuda_nvcc_overlay: /absolute/path/to/binder_design/overlays/genie3-cuda-nvcc/nvidia/cuda_nvcc
+  node_tmp_root: /tmp
+
+resources:
+  gpus: 1
+  cpus: 16
+  memory_gb: 96
+  # Measured for exactly this config on an H100: 11 s to diffuse the backbone,
+  # 1 s for ProteinMPNN, 142 s to fold 5 AF2 models -- 3m10s end to end. Half
+  # an hour is generous, and a ceiling near the real cost is what keeps a hung
+  # node from quietly eating a long allocation. See known-issues section 2.11.
+  walltime: "00:30:00"

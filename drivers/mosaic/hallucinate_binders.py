@@ -43,9 +43,8 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
-import numpy as np
-
 import mosaic.losses.structure_prediction as sp
+import numpy as np
 from mosaic.common import TOKENS
 from mosaic.losses.protein_mpnn import InverseFoldingSequenceRecovery
 from mosaic.losses.transformations import NoCys

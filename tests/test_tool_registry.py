@@ -27,8 +27,8 @@ from bindocracy.tools import (
 )
 
 
-def test_both_tools_are_registered() -> None:
-    assert registered_tools() == ("boltzgen", "mosaic")
+def test_every_built_in_tool_is_registered() -> None:
+    assert registered_tools() == ("boltzgen", "genie3", "mosaic", "pxdesign")
 
 
 def test_an_unknown_tool_names_the_ones_that_exist() -> None:

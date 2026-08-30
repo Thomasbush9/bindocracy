@@ -44,12 +44,25 @@ local `TMPDIR`, the container CA bundle, and `--cleanenv` dropping
 **Answer these four questions.** They are what the contract asks for, and the
 tools already in the tree answer them differently:
 
-| Question | Mosaic | BoltzGen |
-|---|---|---|
-| What form of the target? | sequence + MSA | structure (CIF) |
-| What is consumed and archived? | a driver script it executes | a design spec bound into the container |
-| What does it write? | JSON lines, one per design | a 237-column CSV |
-| Does it judge its own output? | no | yes — `produced` and `passed` differ |
+| Question | Mosaic | BoltzGen | Genie 3 | PXDesign |
+|---|---|---|---|---|
+| What form of the target? | sequence + MSA | structure (CIF) | a problem set: renumbered PDB + FASTA + epitope | structure (CIF) + a precomputed MSA directory |
+| What is consumed and archived? | a driver script it executes | a design spec bound into the container | both — a driver, and the experiment YAML it renders per task | an input spec passed to `pipeline -i` |
+| What does it write? | JSON lines, one per design | a 237-column CSV | a 51-column CSV with one row *per design per fold* | a 31-column CSV, always exactly `--N_sample` rows |
+| Does it judge its own output? | no | yes — `produced` and `passed` differ | yes — a v0 success reducer | yes — **four** filters that disagree |
+
+PXDesign is the shortest of the four and the one to copy first: no driver, no
+rendering, and every value the harness owns is a CLI flag. What it costs
+instead is config surface, because three of its CLI defaults are wrong for a
+campaign — a preset that configures no filters, a sampling schedule the CLI
+overwrites, and a seed taken from the clock — and each is answered by a
+required or explicitly-defaulted field rather than left to the default.
+
+Genie 3 is the one to read if your tool has no CLI override for its output
+directory. It has none for its seed or its sample count either, so a driver
+renders one config per task from the archived template, and preflight refuses a
+template that sets any of those three itself. Two answers to "how many designs
+did this run ask for" is worse than none.
 
 ---
 
@@ -244,5 +257,8 @@ SELECT producing_tool, count(*) FROM design_history GROUP BY 1;
 | a simple worked example | `tests/toytool/plugin.py` |
 | a tool with a driver | `src/bindocracy/tools/mosaic/` |
 | a tool with its own filters | `src/bindocracy/tools/boltzgen/` |
+| a tool whose config must be written per task | `src/bindocracy/tools/genie3/` |
+| a tool that scores each design several times | `src/bindocracy/tools/genie3/adapter.py` |
+| a tool whose CLI defaults are actively wrong | `src/bindocracy/tools/pxdesign/config.py` |
 | what the tables mean | `docs/database.md` |
 | what has already gone wrong | `docs/known-issues.md` |

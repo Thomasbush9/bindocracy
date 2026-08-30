@@ -10,7 +10,10 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "== ruff"
-uv run ruff check src tests
+# drivers/ is production code that runs inside a container, so it is linted
+# with everything else -- it was outside this command until 2026-08-30, and a
+# real import-order finding had been sitting in the Mosaic driver.
+uv run ruff check src tests drivers
 
 echo "== pytest"
 uv run pytest -q

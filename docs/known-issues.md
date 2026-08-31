@@ -211,6 +211,40 @@ The generation-stage rewards CSV *does* carry real
 `af2folding_avg_ipsae` values, so rank from `rewards_*.csv` until the evaluation
 path is understood. **Not diagnosed** — flagged so it is not read as a result.
 
+### 1.7b A campaign epitope that a tool never reads
+
+Found 2026-08-31, across three of the five registered tools. `target.hotspots`
+is campaign-level, and Mosaic, BoltzGen and Protein-Hunter all ignored it. A
+campaign that named an epitope would have run PXDesign and Genie 3 conditioned
+on it and the other three unconstrained, and reported the four sets of designs
+side by side.
+
+Nothing fails. Each tool produces well-formed designs; they are simply not
+answers to the same question.
+
+**Fixed** by making the rule uniform: a tool either consumes the epitope or
+refuses to start.
+
+| Tool | How it expresses an epitope | On `target.hotspots` |
+|---|---|---|
+| Genie 3 | `target_interface_residues` in the problem set | compared; mismatch refused |
+| PXDesign | `hotspots` in the input spec | compared; mismatch refused |
+| BoltzGen | `binding_types` in the design spec | must cover the epitope, else refused |
+| Protein-Hunter | `--contact_residues` | mapped onto residue numbers and passed |
+| Mosaic | `BinderTargetContact(epitope_idx=...)` | **refused for now** — the term is in the loss, the driver builds it without one |
+
+Mosaic is the one still owing work rather than done: the loss its driver builds
+already contains `sp.BinderTargetContact()`, and that term takes an
+`epitope_idx` it is never given, so the contact reward is "touch the target
+anywhere". Threading it through is a driver argument and a mapping to 0-based
+indices — index by `seqid - 1`, not by position, or it is section 1.4 again.
+
+Protein-Hunter is the one that gained real capability rather than a guard.
+`--contact_residues` is load-bearing in three separate places upstream — a
+Boltz pocket constraint on generation, a resampling loop that rejects binders
+which miss the epitope, and a third condition on landing in `high_iptm_*` — so
+ignoring it was not only a comparison problem but a lost feature.
+
 ### 1.8 Protein-Hunter's chai pipeline silently overwrites previous runs
 
 `check()` tests `os.path.exists(self.jobname)` — the bare jobname in the CWD —
@@ -220,6 +254,37 @@ therefore never fires and the auto-rename never happens. A rerun overwrites.
 `dio3.cut` both become `dio3cut`. Use a fresh working directory per chai run.
 The `boltz` pipeline has `--save_dir` and does not have this problem — which is
 one reason this benchmark uses it.
+
+### 1.8b Protein-Hunter writes nothing at all when nothing clears
+
+`summary_high_iptm.csv` lists the (trajectory, cycle) pairs that cleared both
+thresholds. When none do, the pipeline writes **no file** — and no
+`high_iptm_pdb/` or `high_iptm_yaml/` directory either. So the state on disk
+for "zero hits" is identical to the state for "the threshold pass never ran",
+and a collector cannot tell them apart from that file alone.
+
+Observed 2026-08-30 on a one-trajectory smoke run: cycle 2 scored ipTM 0.75 and
+pLDDT 0.91, both above the 0.7 thresholds, but carried 20 alanines in 98
+residues — over the 20% cap — so it was excluded, nothing cleared, and the run
+left only `summary_all_runs.csv`.
+
+**What the harness does:** `summary_all_runs.csv` is written once, at the end,
+so a task holding every design it was asked for is one whose pipeline reached
+that point. On such a task an absent threshold table is read as a real zero and
+every design gets an explicit `passed: false`. On a short task it is read as
+nothing having judged them, and no verdict is recorded.
+
+### 1.8c "Empty MSA found; using single sequence mode" is about the BINDER
+
+It appears once per fold — 240 times in the 40-trajectory benchmark, three
+times in a three-fold smoke run — directly after the MSA cache is seeded, and
+it reads like the seeding failed. It has not. The binder is a novel sequence
+with no alignment, and that is the chain the message is about. The target's
+alignment is used: after a run, `0_protein_hunter_design/B_env/` holds an
+`msa.a3m` and an `msa.npz` built from the seeded `uniref.a3m`, with the
+sequence count the seeding wrote.
+
+Check that directory before concluding a run went single-sequence.
 
 ---
 
@@ -447,7 +512,7 @@ Read this before comparing any two tools' output counts.
 | FreeBindCraft | `max_trajectories: 40` **or** `number_of_final_designs: 40`, whichever trips first | Counts only **successful** trajectories (PDBs in `Trajectory/Relaxed/`); Clashing and LowConfidence runs are moved elsewhere and not counted, so attempts exceed the cap. **Measured: 49 attempted → 34 successful → 326 MPNN designs → 41 accepted.** The *accepted* cap tripped first, so `final_design_stats.csv` and `Accepted/Ranked/` WERE written (41 rows). The opposite branch — trajectory cap first, those files absent, rank from `mpnn_design_stats.csv` — is equally possible on a harder target. A harness must handle both and cannot assume which. |
 | PXDesign | `--N_sample 40` | The CLI appends `--min_total_return 40 --max_success_return 40`, so `summary.csv` always has exactly 40 rows — **padded with failed designs** if fewer pass. Real hits are the rows where `AF2-IG-easy-success` / `Protenix-success` are set. |
 | Proteina-Complexa | `nsamples × nrepeat_per_sample × replicas` generated, then filtered to `filter_samples_limit` | `dedup_sequence: true` drops identical sequences before top-N, so you can finish with fewer than 40. |
-| Protein-Hunter | 40 trajectories × `num_cycles` sequences | ProteinMPNN emits exactly **one** sequence per cycle (`batch_size` hardcoded to 1). A 20%-alanine cap silently excludes designs from `best_*` and writes their `best_iptm` as `NaN`. |
+| Protein-Hunter | 40 trajectories × `num_cycles` sequences | ProteinMPNN emits exactly **one** sequence per cycle (`batch_size` hardcoded to 1), so 40 × 5 = 200 designs. `summary_all_runs.csv` is **wide** — one row per trajectory — and `cycle_0` is the starting mostly-X binder with no sequence, so it is not a design. A 20%-alanine cap silently excludes cycles from `best_*`, and a trajectory whose every cycle was excluded has a **blank** `best_iptm` while still having produced all its sequences: 6 of the benchmark's 40. |
 | Genie 3 | `n_sample: 40` **per problem** BACKBONES | With one problem that is the total number of *backbones*. Each one then gets `evaluation.inverse_folding.num_seq` sequences, so designs are the product — 40 at `num_seq: 1`, 320 at the default 8. And `results/info.csv` has a row per design *per AF2 model*, so 40 designs at `num_models: 5` is 200 rows. Binder length comes from the problem JSON, not the YAML. |
 | RFdiffusion | `inference.num_designs=40` backbones | Backbones only, poly-glycine — no sequences. Upstream `inference.cautious=True` skips existing PDBs; the launcher explicitly sets it to `False`, so a fixed-prefix rerun overwrites them. |
 | Caliby | `num_seqs_per_pdb × n_structures` | Sequences live only in `seq_des_outputs.csv`; despite the `out_pdb` column name the files are `.cif`. |

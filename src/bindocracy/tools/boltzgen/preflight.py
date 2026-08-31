@@ -13,7 +13,11 @@ from pathlib import Path
 import yaml
 
 from bindocracy.config.models import GeneralConfig
-from bindocracy.config.preflight import ConfigPreflightError, read_single_fasta
+from bindocracy.config.preflight import (
+    ConfigPreflightError,
+    hotspot_numbers,
+    read_single_fasta,
+)
 from bindocracy.tools.boltzgen.config import BoltzGenConfig
 
 
@@ -92,8 +96,66 @@ def preflight_boltzgen(general: GeneralConfig, boltzgen: BoltzGenConfig) -> Bolt
             "A spec aimed at another structure designs against the wrong target silently."
         )
 
+    _require_matching_binding_sites(general, spec)
+
     return BoltzGenPreflight(
         target_sequence=read_single_fasta(general.target.sequence_fasta),
         spec_files=spec_files,
         spec=spec,
     )
+
+
+def binding_residues(spec: dict) -> set[int]:
+    """Every residue a BoltzGen spec names as a binding site.
+
+    `binding: 95..110,143` is a comma-separated list whose items are either a
+    single residue or an inclusive `a..b` range, in 1-based label_seq_id.
+    """
+    residues: set[int] = set()
+    for entity in spec.get("entities") or []:
+        if not isinstance(entity, dict):
+            continue
+        for binding_type in (entity.get("file") or {}).get("binding_types") or []:
+            chain = (binding_type or {}).get("chain") or {}
+            for item in str(chain.get("binding", "")).split(","):
+                item = item.strip()
+                if not item:
+                    continue
+                start, _, end = item.partition("..")
+                try:
+                    low = int(start)
+                    high = int(end) if end else low
+                except ValueError as error:
+                    raise ConfigPreflightError(
+                        f"cannot read a binding site from {item!r}; expected a "
+                        "residue or an inclusive range such as '95..110'"
+                    ) from error
+                residues.update(range(min(low, high), max(low, high) + 1))
+    return residues
+
+
+def _require_matching_binding_sites(general: GeneralConfig, spec: dict) -> None:
+    """A campaign epitope and a spec's binding sites must not disagree.
+
+    BoltzGen expresses an epitope in the spec, which the harness archives and
+    never rewrites, so the two can drift apart with nothing noticing -- and a
+    spec with no binding site designs against the whole surface while the rest
+    of the campaign designs against one patch.
+    """
+    if not general.target.hotspots:
+        return
+    campaign = hotspot_numbers(general.target.hotspots)
+    theirs = binding_residues(spec)
+    if not theirs:
+        raise ConfigPreflightError(
+            f"the campaign names an epitope ({sorted(campaign)}), but the "
+            "BoltzGen spec names no binding site, so it would design against "
+            "the whole surface.\nAdd a `binding_types` entry to the spec's "
+            "file entity, or clear target.hotspots."
+        )
+    if not campaign <= theirs:
+        raise ConfigPreflightError(
+            f"the BoltzGen spec binds residues {sorted(theirs)}, which does not "
+            f"cover the campaign epitope {sorted(campaign)}.\n"
+            "Spec binding sites are 1-based label_seq_id, not author numbering."
+        )

@@ -18,6 +18,37 @@ class MosaicPreflight:
         return len(self.target_sequence)
 
 
+def _refuse_unhonoured_hotspots(general: GeneralConfig) -> None:
+    """Mosaic can take an epitope; this driver does not yet pass one.
+
+    The loss already contains the term that would use it -- the driver builds
+    `sp.BinderTargetContact()`, and that term takes an `epitope_idx`. It is
+    simply not given one, so the contact term rewards contact anywhere on the
+    target. A campaign that names an epitope and runs this unchanged would
+    compare an epitope-conditioned tool against an unconstrained one and call
+    the difference a result.
+
+    Refusing is the placeholder, not the answer. Passing the epitope is a
+    driver argument threaded into `BinderTargetContact(epitope_idx=...)` as
+    0-based indices into the target sequence -- and note that indexing by
+    position rather than by `seqid - 1` is the bug in docs/known-issues.md
+    section 1.4, which is worth not repeating.
+    """
+    if general.target.hotspots:
+        raise ConfigPreflightError(
+            f"the campaign names an epitope ({', '.join(general.target.hotspots)}), "
+            "and Mosaic's driver does not pass one on. Its loss already has the "
+            "term that would use it -- sp.BinderTargetContact() takes an "
+            "epitope_idx and is built without one -- so the run would reward "
+            "contact anywhere on the target while the rest of the campaign "
+            "designs against the epitope.\n"
+            "Either clear target.hotspots, or give "
+            "drivers/mosaic/hallucinate_binders.py an --epitope argument and "
+            "pass it to BinderTargetContact(epitope_idx=...) as 0-based "
+            "indices."
+        )
+
+
 def preflight_mosaic(general: GeneralConfig, mosaic: MosaicConfig) -> MosaicPreflight:
     """Check paths needed to run one Mosaic configuration."""
     if general.target.msa is None:
@@ -49,6 +80,8 @@ def preflight_mosaic(general: GeneralConfig, mosaic: MosaicConfig) -> MosaicPref
 
     if errors:
         raise ConfigPreflightError("\n".join(errors))
+
+    _refuse_unhonoured_hotspots(general)
 
     return MosaicPreflight(target_sequence=read_single_fasta(general.target.sequence_fasta))
 

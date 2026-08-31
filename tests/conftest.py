@@ -678,3 +678,148 @@ def write_pxdesign_task(
         } | status))
     (run_dir / "logs").mkdir(exist_ok=True)
     (run_dir / "logs" / f"task-{task_id:04d}.log").write_text("pxdesign log\n")
+
+
+PROTEIN_HUNTER_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "protein_hunter"
+
+
+def write_protein_hunter_configs(root: Path, **overrides) -> tuple[Path, Path]:
+    """A general + Protein-Hunter pair. This tool needs a sequence, not geometry."""
+    fasta = root / "target.fasta"
+    msa = root / "target.a3m"
+    container = root / "protein_hunter.sif"
+    driver = root / "run_boltz_design.py"
+
+    fasta.write_text(">target\nACDEFG\n")
+    msa.write_text(">target\nACDEFG\n>hit_1\nACDEFG\n")
+    container.write_bytes(b"fixture")
+    driver.write_text(
+        (Path(__file__).resolve().parents[1]
+         / "drivers" / "protein_hunter" / "run_boltz_design.py").read_text()
+    )
+
+    general_path = root / "general.yaml"
+    general_path.write_text(yaml.safe_dump({
+        "schema_version": 1,
+        "campaign": {"name": "test-campaign"},
+        "target": {
+            "name": "test-target",
+            "sequence_fasta": str(fasta),
+            "msa": str(msa),
+            "chain_id": "A",
+            "hotspots": [],
+        },
+        "cluster": {
+            "executor": "slurm",
+            "account": "test-account",
+            "default_partition": "test-gpu",
+        },
+    }, sort_keys=False))
+
+    protein_hunter = {
+        "schema_version": 1,
+        "name": "protein-hunter-test",
+        "tool": "protein_hunter",
+        "driver": {"script": str(driver)},
+        "sampling": {
+            "jobs": 1,
+            "trajectories_per_job": 3,
+            "cycles": 5,
+            "min_binder_length": 65,
+            "max_binder_length": 120,
+            "percent_x": 90,
+            "omit_aa": "C",
+            "temperature": 0.1,
+            "diffuse_steps": 200,
+            "recycling_steps": 3,
+        },
+        "filters": {"high_iptm_threshold": 0.7, "high_plddt_threshold": 0.7},
+        "contacts": {"cutoff": 15.0, "filter": True, "max_retries": 6},
+        "msa": {"mode": "mmseqs", "max_seqs": 512},
+        "runtime": {"container": str(container), "node_tmp_root": str(root / "nodetmp")},
+        "resources": {"gpus": 1, "cpus": 8, "memory_gb": 64, "walltime": "08:00:00"},
+    }
+    for section, values in overrides.items():
+        protein_hunter[section].update(values)
+    (root / "nodetmp").mkdir(exist_ok=True)
+
+    model_path = root / "protein_hunter.yaml"
+    model_path.write_text(yaml.safe_dump(protein_hunter, sort_keys=False))
+    return general_path, model_path
+
+
+@pytest.fixture
+def protein_hunter_configs(tmp_path: Path) -> tuple[Path, Path]:
+    return write_protein_hunter_configs(tmp_path)
+
+
+def write_protein_hunter_task(
+    run_dir: Path,
+    task_id: int,
+    *,
+    trajectories: int | None = None,
+    summary: str | None = None,
+    thresholds: bool = True,
+    status: dict | None = None,
+) -> None:
+    """Lay out one Protein-Hunter task from the committed real-output fixture.
+
+    `thresholds=True` writes `summary_high_iptm.csv` whether or not anything
+    cleared them; `thresholds=False` leaves it out, which is what a run that
+    stopped before the threshold pass leaves behind.
+    """
+    task_dir = run_dir / "tasks" / f"{task_id:04d}"
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    lines = (PROTEIN_HUNTER_FIXTURE / "summary_all_runs.csv").read_text().splitlines()
+    header, body = lines[0], lines[1:]
+    if trajectories is not None:
+        body = body[:trajectories]
+    kept = {line.split(",")[0] for line in body}
+    text = summary if summary is not None else "\n".join([header, *body]) + "\n"
+    (task_dir / "summary_all_runs.csv").write_text(text)
+
+    hi_lines = (PROTEIN_HUNTER_FIXTURE / "summary_high_iptm.csv").read_text().splitlines()
+    hi_header, hi_body = hi_lines[0], [
+        line for line in hi_lines[1:] if line.split(",")[0] in kept
+    ]
+    if thresholds:
+        (task_dir / "summary_high_iptm.csv").write_text(
+            "\n".join([hi_header, *hi_body]) + "\n"
+        )
+        columns = hi_header.split(",")
+        pdb, spec = columns.index("pdb_filename"), columns.index("yaml_filename")
+        (task_dir / "high_iptm_pdb").mkdir(exist_ok=True)
+        (task_dir / "high_iptm_yaml").mkdir(exist_ok=True)
+        for line in hi_body:
+            fields = line.split(",")
+            (task_dir / "high_iptm_pdb" / fields[pdb]).write_text("ATOM\n")
+            (task_dir / "high_iptm_yaml" / fields[spec]).write_text("sequences: []\n")
+
+    if status is not None:
+        # Protein-Hunter writes no status of its own, so this is the shape the
+        # harness writes around it.
+        (task_dir / "status.json").write_text(json.dumps({
+            "task_id": task_id,
+            "status": "succeeded",
+            "started_at": "2026-08-26T19:00:00+00:00",
+            "finished_at": "2026-08-26T22:00:00+00:00",
+            "exit_code": 0,
+            "error": None,
+            "written_by": "harness",
+        } | status))
+    (run_dir / "logs").mkdir(exist_ok=True)
+    (run_dir / "logs" / f"task-{task_id:04d}.log").write_text("protein-hunter log\n")
+
+
+@pytest.fixture
+def protein_hunter_driver():
+    """Import the Protein-Hunter driver, which needs only the stdlib."""
+    import importlib.util
+
+    path = (Path(__file__).resolve().parents[1]
+            / "drivers" / "protein_hunter" / "run_boltz_design.py")
+    spec = importlib.util.spec_from_file_location("run_boltz_design", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module

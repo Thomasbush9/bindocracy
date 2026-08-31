@@ -44,14 +44,20 @@ local `TMPDIR`, the container CA bundle, and `--cleanenv` dropping
 **Answer these four questions.** They are what the contract asks for, and the
 tools already in the tree answer them differently:
 
-| Question | Mosaic | BoltzGen | Genie 3 | PXDesign |
-|---|---|---|---|---|
-| What form of the target? | sequence + MSA | structure (CIF) | a problem set: renumbered PDB + FASTA + epitope | structure (CIF) + a precomputed MSA directory |
-| What is consumed and archived? | a driver script it executes | a design spec bound into the container | both — a driver, and the experiment YAML it renders per task | an input spec passed to `pipeline -i` |
-| What does it write? | JSON lines, one per design | a 237-column CSV | a 51-column CSV with one row *per design per fold* | a 31-column CSV, always exactly `--N_sample` rows |
-| Does it judge its own output? | no | yes — `produced` and `passed` differ | yes — a v0 success reducer | yes — **four** filters that disagree |
+| Question | Mosaic | BoltzGen | Genie 3 | PXDesign | Protein-Hunter |
+|---|---|---|---|---|---|
+| What form of the target? | sequence + MSA | structure (CIF) | a problem set: renumbered PDB + FASTA + epitope | structure (CIF) + a precomputed MSA directory | **a sequence on the command line** |
+| What is consumed and archived? | a driver script it executes | a design spec bound into the container | both — a driver, and the experiment YAML it renders per task | an input spec passed to `pipeline -i` | a driver, which seeds an MSA cache before the pipeline |
+| What does it write? | JSON lines, one per design | a 237-column CSV | a 51-column CSV with one row *per design per fold* | a 31-column CSV, always exactly `--N_sample` rows | a **wide** CSV, one row per *trajectory* with a block of columns per cycle |
+| Does it judge its own output? | no | yes — `produced` and `passed` differ | yes — a v0 success reducer | yes — **four** filters that disagree | yes — a threshold table, in a second file |
 
-PXDesign is the shortest of the four and the one to copy first: no driver, no
+Protein-Hunter is the one to read if your tool's output is not one row per
+design. Its table is one row per trajectory with a block of `cycle_N_*`
+columns across it, so a design is a cell block rather than a row — and its
+`best_*` columns go blank when a trajectory's every cycle trips an internal
+cap, which does not mean the trajectory produced nothing.
+
+PXDesign is the shortest of the five and the one to copy first: no driver, no
 rendering, and every value the harness owns is a CLI flag. What it costs
 instead is config surface, because three of its CLI defaults are wrong for a
 campaign — a preset that configures no filters, a sampling schedule the CLI
@@ -101,6 +107,19 @@ The assertions worth writing are the ones that would otherwise fail *silently*.
 BoltzGen's spec carries its own structure path, so preflight checks it is the
 campaign's target — without that, a spec pointing elsewhere designs against the
 wrong protein and the output looks entirely normal.
+
+**Consume every campaign field your tool can use, or refuse the run.** This is
+the rule that caught the most: three tools once ignored `target.hotspots`
+entirely, so a campaign with an epitope would have compared one tool designing
+against a patch with another designing against the whole surface, and called
+the difference a result. Use `parse_hotspots` / `hotspot_numbers` from
+`config.preflight` to read the epitope, map it onto whatever your tool expresses
+it as, and refuse anything you cannot map. A tool with no way to express one
+(Mosaic's generation driver) refuses outright.
+
+**An alignment is of a protein.** `require_alignment_of` checks that an a3m's
+query is the campaign target. An a3m for something else is a well-formed file
+that folds the wrong target and looks entirely normal.
 
 ### 3. `tool_plan` — the shape of a run
 
@@ -165,6 +184,24 @@ ranks per task.
 stable inputs, and timestamps from the files or the manifest — never
 `utcnow()`. Re-collecting an unchanged directory must produce an identical
 bundle, or re-ingestion looks like a conflicting rewrite.
+
+**Check the shape per task, not in aggregate.** A run-level count lets one
+task's shortfall hide behind another's surplus. Say what the table should be —
+exactly `n_requested` rows, ranks 1..N, every trajectory holding cycles
+1..`cycles` — and record the differences in `count_details`. For Protein-Hunter
+this decides whether an absent threshold table is a genuine zero or an
+unfinished run, so it is load-bearing rather than tidy.
+
+**A second output file is evidence, not truth.** Where a tool writes a verdict
+table naming designs its main table also names, check them against each other:
+a key that matches no design, a repeated key, or a row whose sequence and
+scores disagree with the primary table is a stale or corrupted file marking the
+wrong design as passed. Count each kind rather than dropping them silently.
+
+**Record the whole filter, not the part that is configurable.** Protein-Hunter's
+`high_iptm` gate is ipTM *and* pLDDT *and* a hard-coded 20% alanine cap *and*,
+with an epitope, a contact check — two of which appear in no configuration at
+all. The run records the complete protocol, and every verdict row carries it.
 
 ---
 
@@ -260,5 +297,7 @@ SELECT producing_tool, count(*) FROM design_history GROUP BY 1;
 | a tool whose config must be written per task | `src/bindocracy/tools/genie3/` |
 | a tool that scores each design several times | `src/bindocracy/tools/genie3/adapter.py` |
 | a tool whose CLI defaults are actively wrong | `src/bindocracy/tools/pxdesign/config.py` |
+| a tool whose output table is wide, not long | `src/bindocracy/tools/protein_hunter/adapter.py` |
+| a tool with no seed, and how to say so | `src/bindocracy/tools/protein_hunter/plugin.py` |
 | what the tables mean | `docs/database.md` |
 | what has already gone wrong | `docs/known-issues.md` |

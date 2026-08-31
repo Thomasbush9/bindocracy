@@ -33,7 +33,7 @@ def run(tmp_path: Path):
     """A planned four-design, one-task run, ready for a task directory."""
     general, model = write_pxdesign_configs(
         tmp_path,
-        sampling={"jobs": 1, "designs_per_job": 4, "seed_base": 100, "preset": "extended"},
+        sampling={"jobs": 1, "designs_per_job": 17, "seed_base": 100, "preset": "extended"},
     )
     return plan(load_configs(general, model), tmp_path / "run")
 
@@ -42,7 +42,7 @@ def run(tmp_path: Path):
 def two_task_run(tmp_path: Path):
     general, model = write_pxdesign_configs(
         tmp_path,
-        sampling={"jobs": 2, "designs_per_job": 4, "seed_base": 100, "preset": "extended"},
+        sampling={"jobs": 2, "designs_per_job": 17, "seed_base": 100, "preset": "extended"},
     )
     return plan(load_configs(general, model), tmp_path / "run")
 
@@ -59,7 +59,7 @@ def test_a_padded_failure_is_still_a_produced_design(run) -> None:
     write_pxdesign_task(run.directory, 0, status={})
     result = collected(run)
 
-    assert result.run.n_produced == 4
+    assert result.run.n_produced == 17
     assert {design.status for design in result.designs} == {DesignStatus.PRODUCED}
     padded = next(d for d in result.designs if d.native_id == PADDED)
     assert padded.metadata["chosen_struct_type"] == "orig"
@@ -69,14 +69,19 @@ def test_passing_is_the_dual_filter_and_not_the_row_count(run) -> None:
     write_pxdesign_task(run.directory, 0, status={})
     result = collected(run)
 
-    assert result.run.n_produced == 4
-    assert result.run.n_passed == 1
-    hits = {d.design_id for d in result.designs if d.native_id == HIT}
-    dual = {
-        d.design_id for d in result.decisions
-        if d.name == "pxdesign_protenix" and d.passed
+    assert result.run.n_produced == 17
+    # Sixteen of the seventeen cleared AF2-IG-easy; five also cleared Protenix.
+    # `n_passed` is the second number, not the first and not the row count.
+    assert result.run.n_passed == 5
+    passing = {
+        name: {d.design_id for d in result.decisions if d.name == name and d.passed}
+        for name in ("pxdesign_af2ig_easy", "pxdesign_protenix")
     }
-    assert dual == hits
+    assert len(passing["pxdesign_af2ig_easy"]) == 16
+    assert len(passing["pxdesign_protenix"]) == 5
+    assert passing["pxdesign_protenix"] <= passing["pxdesign_af2ig_easy"]
+    hit = next(d for d in result.designs if d.native_id == HIT)
+    assert hit.design_id in passing["pxdesign_protenix"]
 
 
 def test_all_four_verdicts_are_kept_because_they_disagree(run) -> None:
@@ -92,10 +97,10 @@ def test_all_four_verdicts_are_kept_because_they_disagree(run) -> None:
     assert set(by_name) == set(FILTERS.values())
     counts = {name: sum(passed) for name, passed in by_name.items()}
     assert counts == {
-        "pxdesign_af2ig_easy": 3,
+        "pxdesign_af2ig_easy": 16,
         "pxdesign_af2ig": 0,
-        "pxdesign_protenix": 1,
-        "pxdesign_protenix_basic": 2,
+        "pxdesign_protenix": 5,
+        "pxdesign_protenix_basic": 6,
     }
     assert result.run.count_details["tasks"]["0000"]["n_by_filter"] == counts
 
@@ -107,7 +112,7 @@ def test_a_run_that_passed_nothing_is_still_a_successful_run(run) -> None:
     result = collected(run)
 
     assert result.run.status == RunStatus.SUCCEEDED
-    assert result.run.n_produced == 4
+    assert result.run.n_produced == 17
     assert result.run.n_passed == 0
 
 
@@ -126,14 +131,14 @@ def test_a_preview_run_is_judged_on_the_filters_it_ran(tmp_path: Path) -> None:
     """`preview` disables Protenix, so the AF2 verdict is the only one there is."""
     general, model = write_pxdesign_configs(
         tmp_path,
-        sampling={"jobs": 1, "designs_per_job": 4, "seed_base": 0, "preset": "preview"},
+        sampling={"jobs": 1, "designs_per_job": 17, "seed_base": 0, "preset": "preview"},
     )
     manifest = plan(load_configs(general, model), tmp_path / "run")
     write_pxdesign_task(manifest.directory, 0, summary=drop_protenix_columns(), status={})
     result = collected(manifest)
 
     assert result.run.status == RunStatus.SUCCEEDED
-    assert result.run.n_passed == 3
+    assert result.run.n_passed == 16
     names = {d.name for d in result.decisions if d.kind == DecisionKind.FILTER}
     assert names == {"pxdesign_af2ig_easy", "pxdesign_af2ig"}
     assert result.run.count_details["tasks"]["0000"]["missing_filters"] == []
@@ -156,7 +161,7 @@ def test_an_extended_run_missing_protenix_is_not_a_preview_run(run) -> None:
         "pxdesign_protenix", "pxdesign_protenix_basic",
     ]
     # The designs are still produced, and no Protenix verdict is invented.
-    assert result.run.n_produced == 4
+    assert result.run.n_produced == 17
     names = {d.name for d in result.decisions if d.kind == DecisionKind.FILTER}
     assert names == {"pxdesign_af2ig_easy", "pxdesign_af2ig"}
 
@@ -179,8 +184,11 @@ def test_fewer_rows_than_asked_for_is_partial(run) -> None:
     result = collected(run)
 
     assert result.run.n_produced == 2
-    assert result.run.n_requested == 4
+    assert result.run.n_requested == 17
     assert result.run.status == RunStatus.PARTIAL
+    assert result.run.count_details["tasks"]["0000"]["shape_problems"] == [
+        "2 rows, expected 17",
+    ]
 
 
 # --- designs, metrics and ranks --------------------------------------------
@@ -224,9 +232,9 @@ def test_two_tasks_do_not_collect_as_duplicates_of_each_other(two_task_run) -> N
         write_pxdesign_task(two_task_run.directory, task_id, status={})
     result = collected(two_task_run)
 
-    assert result.run.n_produced == 8
-    assert len({design.native_id for design in result.designs}) == 8
-    assert len({design.design_id for design in result.designs}) == 8
+    assert result.run.n_produced == 34
+    assert len({design.native_id for design in result.designs}) == 34
+    assert len({design.design_id for design in result.designs}) == 34
 
 
 # --- malformed output ------------------------------------------------------
@@ -249,7 +257,7 @@ def test_a_row_with_no_rank_is_skipped_and_counted(run) -> None:
                         status={})
     result = collected(run)
 
-    assert result.run.n_produced == 4
+    assert result.run.n_produced == 17
     assert result.run.count_details["tasks"]["0000"]["n_invalid"] == 1
 
 
@@ -260,7 +268,7 @@ def test_a_repeated_rank_is_not_a_second_design(run) -> None:
                         summary="\n".join([header, *body, body[0]]) + "\n", status={})
     result = collected(run)
 
-    assert result.run.n_produced == 4
+    assert result.run.n_produced == 17
     assert result.run.count_details["tasks"]["0000"]["n_invalid"] == 1
 
 
@@ -276,7 +284,7 @@ def test_a_sequence_with_an_unknown_residue_is_not_a_design(run) -> None:
                         status={})
     result = collected(run)
 
-    assert result.run.n_produced == 3
+    assert result.run.n_produced == 16
     assert HIT not in {design.native_id for design in result.designs}
 
 
@@ -291,7 +299,7 @@ def test_a_sequence_of_the_wrong_length_is_not_a_design(run) -> None:
                         status={})
     result = collected(run)
 
-    assert result.run.n_produced == 3
+    assert result.run.n_produced == 16
     assert HIT not in {design.native_id for design in result.designs}
     assert result.run.count_details["tasks"]["0000"]["n_invalid"] == 1
 
@@ -307,7 +315,7 @@ def test_a_row_from_another_task_name_is_not_a_design(run) -> None:
                         status={})
     result = collected(run)
 
-    assert result.run.n_produced == 3
+    assert result.run.n_produced == 16
     assert result.run.count_details["tasks"]["0000"]["n_invalid"] == 1
 
 
@@ -320,15 +328,15 @@ def test_a_fractional_rank_is_a_parse_error_not_a_rank(run) -> None:
     lines = (PXDESIGN_FIXTURE / "summary.csv").read_text().splitlines()
     header, body = lines[0], lines[1:]
     fields = body[1].split(",")
-    fields[0] = "9.5"
+    fields[0] = "19.5"
     write_pxdesign_task(run.directory, 0,
                         summary="\n".join([header, body[0], ",".join(fields), *body[2:]]) + "\n",
                         status={})
     result = collected(run)
 
-    assert result.run.n_produced == 3
+    assert result.run.n_produced == 16
     assert result.run.count_details["tasks"]["0000"]["n_invalid"] == 1
-    assert "task-0000-rank-0009" not in {d.native_id for d in result.designs}
+    assert "task-0000-rank-0019" not in {d.native_id for d in result.designs}
 
 
 def test_a_structure_path_climbing_out_of_the_run_is_dropped(run) -> None:
@@ -347,7 +355,7 @@ def test_a_structure_path_climbing_out_of_the_run_is_dropped(run) -> None:
     result = collected(run)
 
     # The design is still produced; only the bogus artifact is refused.
-    assert result.run.n_produced == 4
+    assert result.run.n_produced == 17
     complexes = {a.design_id for a in result.artifacts if a.kind == "design_complex"}
     hit = next(d for d in result.designs if d.native_id == HIT)
     assert hit.design_id not in complexes

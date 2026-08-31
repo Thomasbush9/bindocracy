@@ -1,0 +1,76 @@
+# TEMPLATE. Real configs live outside the repository, beside the campaign
+# data, because their absolute paths belong to one machine. Copy, edit, and
+# point a workflow index at your copy.
+
+schema_version: 1
+name: protein-hunter-binder-run12
+tool: protein_hunter
+
+# One trajectory, two cycles — two designs. This exists to prove the whole path
+# end to end on real Slurm: the driver seeds the MSA cache, the Boltz pipeline
+# runs offline, and the adapter unpacks the wide table. It is not meant to
+# produce binders; the benchmark needed 40 trajectories to land 79 hits.
+driver:
+  script: /absolute/path/to/binder_design/bindocracy/drivers/protein_hunter/run_boltz_design.py
+
+sampling:
+  jobs: 1
+  # Trajectories, not designs. Each one loops {Boltz-2 co-fold, LigandMPNN
+  # redesign} `cycles` times and every cycle emits exactly one sequence, so the
+  # designs this task produces is 1 x 2 = 2.
+  trajectories_per_job: 1
+  cycles: 2
+  min_binder_length: 65
+  max_binder_length: 120
+  # The search starts from a mostly-X binder; 90 is the benchmark's value.
+  percent_x: 90
+  # No cysteine: an unpaired one is a liability in a secreted binder.
+  omit_aa: C
+  temperature: 0.1
+  diffuse_steps: 200
+  recycling_steps: 3
+
+# The thresholds are the definition of n_passed for this tool, and they are not
+# recorded anywhere in its output.
+filters:
+  high_iptm_threshold: 0.7
+  high_plddt_threshold: 0.7
+
+# Only consulted when the campaign names an epitope. Upstream reads
+# --contact_residues in three separate places: a Boltz pocket constraint on
+# generation, a resampling loop that rejects binders which miss the epitope,
+# and a third condition on landing in high_iptm_*. A hotspot-free campaign
+# passes none of this.
+contacts:
+  # Angstroms, CA to CA. The CLI default is 15.0; the docstring of the function
+  # that consumes it says 10.0. The CLI wins.
+  cutoff: 15.0
+  # Resample a binder that misses the epitope rather than keeping it.
+  filter: true
+  max_retries: 6
+
+msa:
+  # `mmseqs` reads the ColabFold cache the driver seeds from the campaign's own
+  # alignment; it never reaches api.colabfold.com. `single` would fold the
+  # 201-residue target with no alignment at all, which is a different
+  # experiment, so preflight refuses mmseqs when target.msa is unset.
+  mode: mmseqs
+  # Downstream hardcodes 4096 and overrides the caller, so the full ~3000
+  # sequence alignment would be carried through every prediction.
+  max_seqs: 512
+
+runtime:
+  container: /absolute/path/to/binder_design/images/protein_hunter.sif
+  # The image derives PROTEIN_HUNTER_RUNTIME_CACHE, XDG_CACHE_HOME, HF_HOME and
+  # TORCH_HOME from TMPDIR, and its runscript mkdirs them under `set -eu`
+  # before anything else runs.
+  node_tmp_root: /tmp
+
+resources:
+  gpus: 1
+  cpus: 8
+  memory_gb: 64
+  # The 40-trajectory benchmark took 3h 46m for ~240 Boltz-2 predictions and
+  # ~200 MPNN calls, so roughly 55 s per cycle. Two cycles plus model load is
+  # minutes; half an hour is generous.
+  walltime: "00:30:00"

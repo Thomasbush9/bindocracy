@@ -147,7 +147,8 @@ class PXDesignOutputAdapter(OutputAdapter):
             # it actually did. A missing one means the filter stage did not
             # finish, not that the preset never asked for it.
             missing = [name for name in EXPECTED_FILTERS[preset] if name not in columns]
-            complete = not missing and bool(rows)
+            malformed = _shape_problems(rows, task)
+            complete = not missing and not malformed and bool(rows)
             evaluated = evaluated and complete
             task_passed = (
                 sum(1 for row in rows if _is_hit(row, preset)) if complete else 0
@@ -169,6 +170,9 @@ class PXDesignOutputAdapter(OutputAdapter):
                 # Empty on a healthy run. Non-empty means this task's table is
                 # missing verdicts the preset should have produced.
                 "missing_filters": [FILTERS[column] for column in missing],
+                # Empty on a healthy run. Non-empty means the table is not the
+                # shape this task was planned to produce.
+                "shape_problems": malformed,
                 **rejected,
             }
 
@@ -194,11 +198,11 @@ class PXDesignOutputAdapter(OutputAdapter):
         collected_run = run.model_copy(update={
             # PXDesign pads its table to exactly what was asked for, so fewer
             # rows than requested is work that did not finish, never filtering.
-            # A task missing an expected verdict is unfinished for the same
-            # reason, even when every row is there.
-            "status": run_status(
-                len(designs), statuses, complete=len(designs) >= requested and evaluated
-            ),
+            # A task missing an expected verdict, or holding a table that is
+            # not the planned shape, is unfinished for the same reason -- and
+            # an aggregate row count would let one task's shortfall be covered
+            # by another's surplus.
+            "status": run_status(len(designs), statuses, complete=evaluated),
             "n_requested": requested,
             "n_attempted": max(_attempted(statuses, manifest.tasks), len(designs)),
             "n_produced": len(designs),
@@ -267,6 +271,26 @@ def _expectations(manifest: RunManifest) -> Expectations:
         task_name=task_name_of(manifest.tasks[0]),
         binder_length=int(length) if isinstance(length, int) else None,
     )
+
+
+def _shape_problems(rows: list[dict[str, Any]], task: TaskPlan) -> list[str]:
+    """How this task's table differs from the one the plan asked for.
+
+    PXDesign pads to exactly `--N_sample` rows ranked 1..N, so anything else is
+    a table that did not come out of the run as planned. Checked per task
+    because a run-level count lets one task's shortfall hide behind another's
+    surplus.
+    """
+    problems = []
+    if len(rows) != task.n_requested:
+        problems.append(f"{len(rows)} rows, expected {task.n_requested}")
+    ranks = [row[RANK] for row in rows]
+    if len(set(ranks)) != len(ranks):
+        problems.append("duplicate ranks")
+    expected = set(range(1, task.n_requested + 1))
+    if set(ranks) != expected and len(rows) == task.n_requested:
+        problems.append(f"ranks are not 1..{task.n_requested}")
+    return problems
 
 
 def task_name_of(task: TaskPlan) -> str:

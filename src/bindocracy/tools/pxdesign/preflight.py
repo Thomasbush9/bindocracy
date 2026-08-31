@@ -24,7 +24,11 @@ from pathlib import Path
 import yaml
 
 from bindocracy.config.models import GeneralConfig
-from bindocracy.config.preflight import ConfigPreflightError, read_single_fasta
+from bindocracy.config.preflight import (
+    ConfigPreflightError,
+    read_single_fasta,
+    require_alignment_of,
+)
 from bindocracy.tools.pxdesign.config import PXDesignConfig
 
 # Both files, or PXDesign's parser raises FileNotFoundError. The directory is
@@ -92,13 +96,20 @@ def preflight_pxdesign(general: GeneralConfig, pxdesign: PXDesignConfig) -> PXDe
     msa_dirs = _msa_directories(spec, pxdesign.spec.template)
     _require_matching_hotspots(general, spec, pxdesign.spec.template)
 
+    target_sequence = read_single_fasta(general.target.sequence_fasta)
     input_files = {"spec_target": target_file}
     for chain, directory in msa_dirs.items():
         for name in MSA_FILES:
             input_files[f"msa_{chain}_{name.split('.')[0]}"] = directory / name
+        # An alignment of another protein is a well-formed file that folds the
+        # wrong target and looks entirely normal.
+        require_alignment_of(
+            directory / "non_pairing.a3m", target_sequence,
+            described_as=f"PXDesign's MSA for chain {chain}",
+        )
 
     return PXDesignPreflight(
-        target_sequence=read_single_fasta(general.target.sequence_fasta),
+        target_sequence=target_sequence,
         spec=spec,
         task_name=task_name,
         binder_length=binder_length,

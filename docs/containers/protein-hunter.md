@@ -5,6 +5,20 @@ Repository: `Protein-Hunter/`
 
 Protein-Hunter exposes separate Boltz and Chai binder-design pipelines.
 
+## Through the harness
+
+The **Boltz** pipeline is a registered tool, so a campaign runs it the way it
+runs anything else: a `tool: protein_hunter` model config, an entry in a
+workflow index, and `uv run snakemake`. See
+`examples/protein_hunter.example.yaml` — it references no second file, because
+this tool's science is entirely in its own config and the campaign's FASTA.
+
+The harness seeds the ColabFold MSA cache per task so `--msa_mode mmseqs`
+resolves from disk, keeps every cache the image derives from `TMPDIR` on
+node-local disk, never passes `--template_path`, and refuses to start if
+`mmseqs` is asked for without an alignment to seed from. Chai is deliberately
+not wired up: it has no `--save_dir`, and a rerun silently overwrites (§1.8).
+
 ## Discover the installed arguments
 
 ```bash

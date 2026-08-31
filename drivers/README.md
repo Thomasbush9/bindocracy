@@ -8,12 +8,15 @@ stays inspectable after the working tree moves on.
 |---|---|---|
 | `mosaic/hallucinate_binders.py` | Mosaic | `designs.jsonl` + `status.json`; see its module docstring |
 | `genie3/run_genie3.py` | Genie 3 | renders `<task>/experiment.yaml` from the archived template, then runs `genie3 run`; see its module docstring |
+| `protein_hunter/run_boltz_design.py` | Protein-Hunter | seeds the ColabFold MSA cache for this task, then runs the Boltz design pipeline |
 
-The two exist for different reasons. Mosaic's *is* the science — a copy of the
+They exist for different reasons. Mosaic's *is* the science — a copy of the
 hallucination loop, run because no packaged entry point does what the lab wants.
-Genie 3's is glue: its CLI takes a config file and nothing else, so a run that
-fans out over tasks needs something to write one config per task, next to the
-container fixes that only work in the same process as the tool.
+Genie 3's and Protein-Hunter's are glue: one writes a config per task because
+the CLI takes a config file and nothing else, and the other writes an MSA cache
+into the task's own save directory because there is no flag for a precomputed
+alignment. Both sit next to container fixes that only work in the same process
+as the tool.
 
 A driver cannot import `bindocracy` — it runs in the tool's own image, which
 knows nothing about this package. Everything it needs arrives as an argument.

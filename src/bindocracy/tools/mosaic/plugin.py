@@ -46,6 +46,11 @@ class MosaicPlugin(ToolPlugin):
                 "target_length": loaded.preflight.target_length,
                 "binder_length": sampling.binder_length,
                 "seed_base": sampling.seed_base,
+                # The campaign epitope as this tool expresses it, and how much
+                # it enforces. Empty when the campaign names none.
+                "hotspots": list(loaded.general.target.hotspots),
+                "epitope_idx": list(loaded.preflight.epitope_idx),
+                "epitope_enforcement": _epitope_enforcement(loaded.preflight),
             },
         )
 
@@ -55,3 +60,30 @@ class MosaicPlugin(ToolPlugin):
 
     def resources(self, loaded: LoadedConfigs) -> dict[str, Any]:
         return slurm_resources(loaded.general.cluster, loaded.model.resources)
+
+
+def _epitope_enforcement(preflight: MosaicPreflight) -> dict[str, Any]:
+    """What an epitope does to a Mosaic run, stated rather than assumed.
+
+    One of nine loss terms. `BinderTargetContact` slices its binder-by-target
+    contact matrix down to the epitope columns, then averages each binder
+    residue's three best contact log-probabilities at a 20 A cutoff -- so the
+    optimiser is pushed towards the patch during hallucination, and nothing
+    afterwards re-checks it. The ranking re-fold scores iPTM and ipSAE over the
+    whole complex and never mentions the epitope.
+
+    The same shape as FreeBindCraft, and weaker than Protein-Hunter, where the
+    epitope is a resampling filter and part of the hit gate.
+    """
+    if not preflight.epitope_idx:
+        return {"conditioned": False}
+    return {
+        "conditioned": True,
+        # 0-based into the target sequence, which is what the loss slices by.
+        "epitope_idx": list(preflight.epitope_idx),
+        "mechanism": "BinderTargetContact restricted to the epitope columns, "
+                     "during hallucination only",
+        # BinderTargetContact's own default, and not a harness field.
+        "contact_distance_angstroms": 20.0,
+        "verified_after_generation": False,
+    }

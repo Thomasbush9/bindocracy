@@ -33,6 +33,10 @@ def mosaic_launch_spec(
         "--soft-steps", str(mosaic.sampling.optimizer.soft_steps),
         "--sharpen-steps", str(mosaic.sampling.optimizer.sharpen_steps),
         "--final-steps", str(mosaic.sampling.optimizer.final_steps),
+        # The campaign epitope, mapped at planning and carried in the manifest
+        # so the launch cannot re-derive it differently from what was recorded.
+        # Empty is a value: it is the loss with no epitope at all.
+        "--epitope", _epitope(manifest),
     )
     return LaunchSpec(
         argv=argv,
@@ -41,6 +45,16 @@ def mosaic_launch_spec(
         log=run_dir / task.log,
         outputs=(run_dir / task.designs, run_dir / task.status),
     )
+
+
+def _epitope(manifest: RunManifest) -> str:
+    """The epitope indices this run was planned with, from the manifest alone.
+
+    A run planned before the epitope was recorded carries no key at all, and
+    reads as the unconditioned loss it actually was.
+    """
+    indices = manifest.workflow.get("epitope_idx") or ()
+    return ",".join(str(int(index)) for index in indices)
 
 
 def _environment(mosaic: MosaicConfig) -> dict[str, str]:

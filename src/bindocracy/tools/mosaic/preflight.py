@@ -1,52 +1,76 @@
-"""Filesystem checks Mosaic needs before any GPU work starts."""
+"""Filesystem checks Mosaic needs before any GPU work starts.
+
+Plus the one content check: Mosaic folds the target from its sequence and
+conditions on the epitope by *index into that sequence*, so the mapping from a
+campaign residue number to a loss argument happens here, where it can be
+refused, rather than inside a GPU job where it would be an array slice.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from bindocracy.config.models import GeneralConfig
-from bindocracy.config.preflight import ConfigPreflightError, read_single_fasta
+from bindocracy.config.preflight import (
+    ConfigPreflightError,
+    parse_hotspots,
+    read_single_fasta,
+)
 from bindocracy.tools.mosaic.config import MosaicConfig
 
 
 @dataclass(frozen=True)
 class MosaicPreflight:
     target_sequence: str
+    # The campaign epitope as Mosaic expresses it: 0-based indices into the
+    # target sequence. Empty when the campaign names none, which is a
+    # different loss rather than a missing argument.
+    epitope_idx: tuple[int, ...] = ()
 
     @property
     def target_length(self) -> int:
         return len(self.target_sequence)
 
 
-def _refuse_unhonoured_hotspots(general: GeneralConfig) -> None:
-    """Mosaic can take an epitope; this driver does not yet pass one.
+def _epitope_indices(general: GeneralConfig, target_sequence: str) -> tuple[int, ...]:
+    """Map the campaign epitope onto `BinderTargetContact(epitope_idx=...)`.
 
-    The loss already contains the term that would use it -- the driver builds
-    `sp.BinderTargetContact()`, and that term takes an `epitope_idx`. It is
-    simply not given one, so the contact term rewards contact anywhere on the
-    target. A campaign that names an epitope and runs this unchanged would
-    compare an epitope-conditioned tool against an unconstrained one and call
-    the difference a result.
+    The term slices its binder-by-target contact matrix down to these columns,
+    so they are 0-based positions in the target sequence and the mapping is
+    `seqid - 1`. Indexing by enumeration position instead is the bug in
+    docs/known-issues.md section 1.4, which silently conditioned 23 of 26
+    epitope entries on the wrong residues; the campaign FASTA is the whole
+    chain, numbered from 1, so `seqid - 1` is the mapping and the bounds check
+    below is what makes that assumption fail loudly if it ever stops holding.
 
-    Refusing is the placeholder, not the answer. Passing the epitope is a
-    driver argument threaded into `BinderTargetContact(epitope_idx=...)` as
-    0-based indices into the target sequence -- and note that indexing by
-    position rather than by `seqid - 1` is the bug in docs/known-issues.md
-    section 1.4, which is worth not repeating.
+    Everything that cannot be mapped is refused. Designing unconstrained while
+    another tool in the same campaign uses the epitope is the comparison
+    quietly becoming meaningless.
     """
-    if general.target.hotspots:
+    if not general.target.hotspots:
+        return ()
+
+    hotspots = parse_hotspots(general.target.hotspots)
+    chain = general.target.chain_id.upper()
+    elsewhere = sorted(
+        {spot.chain for spot in hotspots if spot.chain and spot.chain != chain}
+    )
+    if elsewhere:
         raise ConfigPreflightError(
-            f"the campaign names an epitope ({', '.join(general.target.hotspots)}), "
-            "and Mosaic's driver does not pass one on. Its loss already has the "
-            "term that would use it -- sp.BinderTargetContact() takes an "
-            "epitope_idx and is built without one -- so the run would reward "
-            "contact anywhere on the target while the rest of the campaign "
-            "designs against the epitope.\n"
-            "Either clear target.hotspots, or give "
-            "drivers/mosaic/hallucinate_binders.py an --epitope argument and "
-            "pass it to BinderTargetContact(epitope_idx=...) as 0-based "
-            "indices."
+            f"campaign hotspots name chain(s) {', '.join(elsewhere)}, but the "
+            f"campaign target is chain {chain}. Mosaic folds one target chain "
+            "from its sequence and cannot condition on another."
         )
+
+    length = len(target_sequence)
+    outside = sorted(spot.number for spot in hotspots if not 1 <= spot.number <= length)
+    if outside:
+        raise ConfigPreflightError(
+            f"campaign hotspots {outside} fall outside the target sequence, "
+            f"which is {length} residues. Mosaic conditions by position in that "
+            "sequence, so a residue it does not contain cannot be expressed."
+        )
+    return tuple(sorted({spot.number - 1 for spot in hotspots}))
 
 
 def preflight_mosaic(general: GeneralConfig, mosaic: MosaicConfig) -> MosaicPreflight:
@@ -81,8 +105,10 @@ def preflight_mosaic(general: GeneralConfig, mosaic: MosaicConfig) -> MosaicPref
     if errors:
         raise ConfigPreflightError("\n".join(errors))
 
-    _refuse_unhonoured_hotspots(general)
-
-    return MosaicPreflight(target_sequence=read_single_fasta(general.target.sequence_fasta))
+    target_sequence = read_single_fasta(general.target.sequence_fasta)
+    return MosaicPreflight(
+        target_sequence=target_sequence,
+        epitope_idx=_epitope_indices(general, target_sequence),
+    )
 
 

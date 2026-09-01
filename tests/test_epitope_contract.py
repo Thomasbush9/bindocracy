@@ -69,17 +69,80 @@ def test_an_unreadable_hotspot_is_refused() -> None:
 # --- each tool either uses it or refuses -----------------------------------
 
 
-def test_mosaic_refuses_an_epitope_it_does_not_pass_on(tmp_path: Path) -> None:
-    """Its loss has the term; the driver just builds it without an epitope.
+def test_mosaic_conditions_its_contact_loss_on_the_campaign_epitope(
+    tmp_path: Path,
+) -> None:
+    """`BinderTargetContact` slices its contact matrix to the epitope columns.
 
-    So the refusal is a placeholder for threading `epitope_idx` through, not a
-    statement that Mosaic cannot be conditioned.
+    The indices are 0-based positions in the target sequence, so a campaign
+    A2/A4 becomes [1, 3]. Indexing by enumeration position instead is the bug
+    in docs/known-issues.md section 1.4.
     """
     general, model = write_configs(tmp_path)
     with_hotspots(general, EPITOPE)
+    manifest = plan(load_configs(general, model), tmp_path / "run")
+    argv = launch_spec(manifest, 0).argv
 
-    with pytest.raises(ConfigPreflightError, match="BinderTargetContact"):
+    assert flag(argv, "--epitope") == "1,3"
+    assert manifest.workflow["epitope_idx"] == [1, 3]
+
+
+def test_a_hotspot_free_mosaic_run_passes_an_empty_epitope(configs, tmp_path) -> None:
+    """Empty is a value: it is the loss with the whole target as the partner."""
+    manifest = plan(load_configs(*configs), tmp_path / "run")
+    argv = launch_spec(manifest, 0).argv
+
+    assert flag(argv, "--epitope") == ""
+    assert manifest.workflow["epitope_enforcement"] == {"conditioned": False}
+
+
+def test_mosaic_records_how_little_its_epitope_enforces(tmp_path: Path) -> None:
+    """One of nine loss terms, at a 20 A cutoff, never checked afterwards."""
+    general, model = write_configs(tmp_path)
+    with_hotspots(general, EPITOPE)
+    manifest = plan(load_configs(general, model), tmp_path / "run")
+    enforcement = manifest.workflow["epitope_enforcement"]
+
+    assert enforcement["conditioned"] is True
+    assert enforcement["contact_distance_angstroms"] == 20.0
+    assert enforcement["verified_after_generation"] is False
+
+
+def test_mosaic_refuses_an_epitope_it_cannot_place(tmp_path: Path) -> None:
+    """The FASTA is six residues; a hotspot past it would slice silently."""
+    general, model = write_configs(tmp_path)
+    with_hotspots(general, ["A2", "A900"])
+
+    with pytest.raises(ConfigPreflightError, match="outside the target sequence"):
         load_configs(general, model)
+
+
+def test_mosaic_refuses_an_epitope_on_another_chain(tmp_path: Path) -> None:
+    general, model = write_configs(tmp_path)
+    with_hotspots(general, ["B2", "B4"])
+
+    with pytest.raises(ConfigPreflightError, match="cannot condition on another"):
+        load_configs(general, model)
+
+
+def test_the_mosaic_driver_accepts_and_bounds_the_epitope(
+    driver, tmp_path: Path
+) -> None:
+    """The connector builds the flag on a login node; the driver parses it.
+
+    The bounds check is repeated in the driver because this is the last place
+    the numbers exist before they become an array slice, and JAX would clip an
+    out-of-range index rather than raise.
+    """
+    general, model = write_configs(tmp_path)
+    with_hotspots(general, EPITOPE)
+    manifest = plan(load_configs(general, model), tmp_path / "run")
+    argv = list(launch_spec(manifest, 0).argv)
+
+    assert driver.parse_epitope(flag(tuple(argv), "--epitope"), 6) == [1, 3]
+    assert driver.parse_epitope("", 6) is None
+    with pytest.raises(SystemExit, match="outside a target"):
+        driver.parse_epitope("1,900", 6)
 
 
 def test_boltzgen_refuses_a_spec_that_binds_nothing(tmp_path: Path) -> None:

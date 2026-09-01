@@ -33,6 +33,10 @@ def test_argv_passes_every_run_dependent_value(planned) -> None:
         "--soft-steps": "100",
         "--sharpen-steps": "50",
         "--final-steps": "15",
+        # Always passed, and empty when the campaign names no epitope: the
+        # driver reads that as the loss with the whole target as its contact
+        # partner, which is a different objective rather than a missing one.
+        "--epitope": "",
     }
 
 

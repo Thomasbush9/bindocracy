@@ -66,8 +66,21 @@ def read_fasta(path: str) -> str:
     return "".join(ln for ln in lines if not ln.startswith(">")).upper()
 
 
-def build(target_sequence: str, msa_path: str, binder_length: int):
-    """Load the models and build the design objective. Once per process."""
+def build(
+    target_sequence: str,
+    msa_path: str,
+    binder_length: int,
+    epitope_idx: list[int] | None = None,
+):
+    """Load the models and build the design objective. Once per process.
+
+    `epitope_idx` is 0-based into the target sequence. It restricts the
+    contact term to those target positions -- `BinderTargetContact` slices its
+    binder-by-target contact matrix down to those columns -- so the binder is
+    rewarded for contacting the epitope rather than anywhere on the surface.
+    None leaves the whole target as the contact partner, which is the
+    unconditioned run.
+    """
     folder = Boltz2()
     mpnn = load_mpnn_sol(0.05)
 
@@ -76,7 +89,9 @@ def build(target_sequence: str, msa_path: str, binder_length: int):
     bias = jnp.zeros((binder_length, 20)).at[:, TOKENS.index("C")].set(-1e6)
 
     sp_loss = (
-        sp.BinderTargetContact()
+        # The only term the epitope reaches. Everything below it is about the
+        # binder itself or about the complex as a whole.
+        sp.BinderTargetContact(epitope_idx=epitope_idx)
         + sp.WithinBinderContact()
         + 10.0 * InverseFoldingSequenceRecovery(mpnn, temp=jnp.array(0.001), bias=bias)
         + 0.05 * sp.TargetBinderPAE()
@@ -169,6 +184,27 @@ def design(folder, loss, seed, target_sequence, msa_path, binder_length, schedul
     return seq_str, loss_value.item()
 
 
+def parse_epitope(value: str, target_length: int) -> list[int] | None:
+    """Read `--epitope` into 0-based target indices, or refuse it.
+
+    Checked here as well as in the harness because this is the last place the
+    numbers exist before they become a silent array slice: an out-of-range
+    index would be clipped by JAX rather than raised, and the run would
+    condition on whatever position it landed on.
+    """
+    indices = [int(item) for item in value.split(",") if item.strip()]
+    if not indices:
+        return None
+    outside = [index for index in indices if not 0 <= index < target_length]
+    if outside:
+        raise SystemExit(
+            f"epitope indices {outside} are outside a target of "
+            f"{target_length} residues. They are 0-based positions in the "
+            "target sequence, not residue numbers."
+        )
+    return sorted(set(indices))
+
+
 def write_status(save_dir: Path, payload: dict) -> None:
     """Write status.json atomically so a reader never sees a half file."""
     tmp = save_dir / (STATUS_FILE + ".tmp")
@@ -190,6 +226,10 @@ def parse_args() -> argparse.Namespace:
                     help="hours; set below the job walltime so the last design "
                          "finishes and gets written")
     ap.add_argument("--save-dir", required=True)
+    ap.add_argument("--epitope", default="",
+                    help="comma-separated 0-based indices into the target "
+                         "sequence. Empty means no epitope, which rewards "
+                         "contact anywhere on the target.")
     # The APGM schedule: soft optimization, then two sharpening passes. The
     # defaults are the lab's benchmarked settings, at ~7 min per design.
     ap.add_argument("--soft-steps", type=int, default=100)
@@ -214,11 +254,15 @@ def main() -> int:
     print(f"jax {jax.__version__} {jax.default_backend()} {jax.devices()}", flush=True)
     try:
         target_sequence = read_fasta(a.target_fasta)
+        epitope_idx = parse_epitope(a.epitope, len(target_sequence))
         print(f"target: {len(target_sequence)} aa   binder: {a.binder_length} aa", flush=True)
+        print(f"epitope: {epitope_idx if epitope_idx else 'none (whole target)'}", flush=True)
         print(f"schedule: {schedule}", flush=True)
 
         t_build = time.time()
-        folder, loss = build(target_sequence, a.target_msa, a.binder_length)
+        folder, loss = build(
+            target_sequence, a.target_msa, a.binder_length, epitope_idx
+        )
         print(f"models + loss built in {time.time() - t_build:.1f}s", flush=True)
 
         deadline = time.monotonic() + a.max_runtime * 3600

@@ -30,6 +30,7 @@ for flag in ("--binder-length", "--task-id", "--seed-base", "--n-designs",
              "--soft-steps", "--sharpen-steps", "--final-steps"):
     ap.add_argument(flag, type=int, required=True)
 ap.add_argument("--max-runtime", type=float, required=True)
+ap.add_argument("--epitope", default="")
 a = ap.parse_args()
 
 save_dir = os.path.abspath(a.save_dir)

@@ -1,0 +1,64 @@
+# TEMPLATE. Real configs live outside the repository, beside the campaign
+# data, because their absolute paths belong to one machine. Copy, edit, and
+# point a workflow index at your copy.
+
+schema_version: 1
+name: proteina-complexa-smoke-01
+tool: proteina_complexa
+
+# Proteina-Complexa reads its target through a registry entry rather than
+# through flags: the crop, the epitope and the binder length all arrive
+# together in that file. Preflight refuses one that disagrees with the
+# campaign, and folds it into the stored config so the database holds the
+# target definition rather than a path to it.
+registry:
+  template: /absolute/path/to/binder_design/configs/proteina_complexa/dio3_cut_registry.yaml
+  # The key inside `target_dict_cfg`, and what is passed as
+  # `++generation.task_name`. A name with no entry falls through to whichever
+  # target the image shipped, so preflight refuses it.
+  task_name: dio3_cut
+
+sampling:
+  jobs: 1
+  # One design, drawn once, kept. This exists to prove the path end to end on
+  # real Slurm -- that the container starts, the binds land, the registry is
+  # read, and the adapter reads what comes out. It is not meant to make
+  # binders. A real campaign wants samples_per_job around 40 with replicas 2-4.
+  samples_per_job: 1
+  nrepeat_per_sample: 1
+  # best-of-n width. The image's own default is 2, which doubles the GPU cost
+  # without doubling the output, so it is set explicitly either way.
+  replicas: 1
+  # The reward filter's budget. The image's default is 1000, which keeps
+  # everything and makes the filter a no-op that still looks like it ran.
+  # `filter.dedup_sequence` drops identical sequences before this cut, so
+  # slightly fewer designs than this is normal rather than a shortfall.
+  keep_per_job: 1
+  batch_size: 1
+  # Each task samples from seed_base + task_id. Note this does not reach the
+  # AF2 reward model, which carries its own.
+  seed_base: 5
+  reward_seed: 0
+
+runtime:
+  container: /absolute/path/to/binder_design/images/proteina_complexa.sif
+  # Node-local scratch. TMPDIR must NOT be on Lustre; see
+  # docs/known-issues.md section 2.1.
+  node_tmp_root: /tmp
+  # Left false, the launcher exports XLA_PYTHON_CLIENT_PREALLOCATE=false. AF2
+  # is JAX and the generative model is torch on the same device, and JAX
+  # otherwise reserves ~75% of the GPU at import and starves torch.
+  xla_preallocate: false
+
+resources:
+  gpus: 1
+  cpus: 16
+  # AF2 runs on every candidate during generation and again on the survivors
+  # during evaluation, which is where both the memory and the time go.
+  memory_gb: 160
+  # Measured for 40 designs on an H100: 723 s generating, 559 s evaluating,
+  # 1282 s end to end. Ten hours is the production figure for that shape; this
+  # single-design smoke run needs a small fraction of it, and a ceiling near
+  # the real cost is what keeps a hung node from eating a long allocation.
+  # See known-issues section 2.11.
+  walltime: "01:00:00"

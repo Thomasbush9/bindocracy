@@ -12,6 +12,7 @@ from bindocracy.tools.boltzgen import BoltzGenPlugin
 from bindocracy.tools.genie3 import Genie3Plugin
 from bindocracy.tools.mosaic import MosaicPlugin
 from bindocracy.tools.protein_hunter import ProteinHunterPlugin
+from bindocracy.tools.proteina_complexa import ProteinaComplexaPlugin
 from bindocracy.tools.pxdesign import PXDesignPlugin
 from bindocracy.tools.registry import (
     UnknownToolError,
@@ -31,6 +32,7 @@ register(BoltzGenPlugin)
 register(Genie3Plugin)
 register(PXDesignPlugin)
 register(ProteinHunterPlugin)
+register(ProteinaComplexaPlugin)
 
 # A tool does not have to live in this repository. Anything named in
 # BINDOCRACY_PLUGINS (comma-separated importable modules) is imported here and
@@ -46,6 +48,7 @@ __all__ = [
     "MosaicPlugin",
     "PXDesignPlugin",
     "ProteinHunterPlugin",
+    "ProteinaComplexaPlugin",
     "ToolPlugin",
     "UnknownToolError",
     "collect_run",

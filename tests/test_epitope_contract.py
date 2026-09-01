@@ -18,6 +18,7 @@ from conftest import (
     write_configs,
     write_genie3_configs,
     write_protein_hunter_configs,
+    write_proteina_complexa_configs,
     write_pxdesign_configs,
     write_pxdesign_msa,
 )
@@ -133,6 +134,38 @@ def test_pxdesign_still_compares_its_specs_epitope(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigPreflightError, match="conditions on residues"):
         load_configs(general, model)
+
+
+
+def test_proteina_complexa_still_compares_its_registrys_epitope(tmp_path: Path) -> None:
+    general, model = write_proteina_complexa_configs(tmp_path)
+    with_hotspots(general, EPITOPE)
+
+    with pytest.raises(ConfigPreflightError, match="conditions on no residues"):
+        load_configs(general, model)
+
+
+def test_proteina_complexa_resolves_the_epitope_against_the_structure(
+    tmp_path: Path,
+) -> None:
+    """Agreeing with the campaign is not enough; the residues must exist.
+
+    The mask is built by string match against each CA atom, and a hotspot that
+    matches nothing is silently dropped -- so a registry can agree with the
+    campaign and still condition on nothing at all.
+    """
+    general, model = write_proteina_complexa_configs(tmp_path, hotspots=["A2", "A4444"])
+
+    with pytest.raises(ConfigPreflightError, match="A4444"):
+        load_configs(general, model)
+
+
+def test_proteina_complexa_records_the_epitope_it_ran_with(tmp_path: Path) -> None:
+    general, model = write_proteina_complexa_configs(tmp_path, hotspots=EPITOPE)
+    manifest = plan(load_configs(general, model), tmp_path / "run")
+
+    assert manifest.workflow["hotspots"] == EPITOPE
+    assert manifest.workflow["target_input"] == "A1-201"
 
 
 # --- Protein-Hunter maps it onto the flags the pipeline reads --------------

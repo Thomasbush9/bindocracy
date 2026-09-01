@@ -1,0 +1,39 @@
+# TEMPLATE for `registry.template`. Bound read-only over the image's own
+# configs/targets/targets_dict.yaml, so the run can only see this target.
+#
+# Every field here is cross-checked against the campaign by preflight, because
+# each one can disagree with it while the run still looks entirely normal.
+
+target_dict_cfg:
+  # The key must equal `registry.task_name` in the model config.
+  dio3_cut:
+    source: bindocracy
+    target_filename: dio3_cut
+
+    # Must be exactly this: it is where the launcher binds the campaign's
+    # target.structure_pdb. Any other value names a structure inside the image,
+    # or a host path the container cannot see.
+    target_path: /mnt/bindocracy_target.pdb
+
+    # The contig the target is cropped to, as chain plus residue range.
+    # `A1-100,B1-50` and a bare `A` are also accepted. Every hotspot below must
+    # fall inside it.
+    target_input: "A1-201"
+
+    # Must equal the campaign's `target.hotspots`, in the same notation --
+    # Proteina-Complexa keys hotspots as chain-then-number and does not
+    # renumber, so this is a straight comparison.
+    #
+    # A residue that matches no CA atom is SILENTLY IGNORED by the tool, so
+    # preflight resolves every one of these against the real PDB first.
+    #
+    # An empty list is not the same as no epitope: `[]` still puts an
+    # all-False hotspot mask into the batch, which is a different conditioning
+    # signal from omitting it.
+    hotspot_residues: []
+
+    # [min, max]. Becomes UniformInt(low, high) in the dataloader, so each
+    # design samples its own length from this range.
+    binder_length: [70, 110]
+
+    pdb_id: null

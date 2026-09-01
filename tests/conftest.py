@@ -823,3 +823,105 @@ def protein_hunter_driver():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+# --- Proteina-Complexa -------------------------------------------------------
+
+PROTEINA_TARGET = "".join(["ACDEFGHIKLMNPQRSTVWY"] * 10) + "A"  # 201 aa, chain A
+
+
+def write_proteina_target_pdb(path: Path, sequence: str = PROTEINA_TARGET) -> Path:
+    """A CA-only PDB of the target, numbered 1..len from residue 1 of chain A.
+
+    Proteina-Complexa resolves its epitope against CA atoms keyed
+    `f"{chain_id}{res_id}"`, so a fixture that omits them cannot exercise the
+    check that matters.
+    """
+    lines = []
+    for index, _ in enumerate(sequence, start=1):
+        lines.append(
+            f"ATOM  {index:>5d}  CA  ALA A{index:>4d}    "
+            f"{index:>8.3f}{0.0:>8.3f}{0.0:>8.3f}  1.00  0.00           C"
+        )
+    lines.append("END")
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def proteina_registry(task_name: str = "test_target", *, hotspots: list[str] | None = None,
+                      **entry_overrides) -> dict:
+    entry = {
+        "source": "bindocracy",
+        "target_filename": task_name,
+        "target_path": "/mnt/bindocracy_target.pdb",
+        "target_input": "A1-201",
+        "hotspot_residues": hotspots if hotspots is not None else [],
+        "binder_length": [70, 110],
+        "pdb_id": None,
+    }
+    entry.update(entry_overrides)
+    return {"target_dict_cfg": {task_name: entry}}
+
+
+def write_proteina_complexa_configs(
+    root: Path, *, registry: dict | None = None, hotspots: list[str] | None = None,
+    **overrides,
+) -> tuple[Path, Path]:
+    """A general + Proteina-Complexa pair, with the target PDB it reads."""
+    fasta = root / "target.fasta"
+    fasta.write_text(f">target\n{PROTEINA_TARGET}\n")
+    pdb = write_proteina_target_pdb(root / "target.pdb")
+    container = root / "proteina_complexa.sif"
+    container.write_bytes(b"fixture")
+
+    document = registry if registry is not None else proteina_registry(hotspots=hotspots)
+    template = root / "target_registry.yaml"
+    template.write_text(yaml.safe_dump(document, sort_keys=False))
+
+    general_path = root / "general.yaml"
+    general_path.write_text(yaml.safe_dump({
+        "schema_version": 1,
+        "campaign": {"name": "test-campaign"},
+        "target": {
+            "name": "test-target",
+            "sequence_fasta": str(fasta),
+            "structure_pdb": str(pdb),
+            "chain_id": "A",
+            "hotspots": hotspots or [],
+        },
+        "cluster": {
+            "executor": "slurm",
+            "account": "test-account",
+            "default_partition": "test-gpu",
+        },
+    }, sort_keys=False))
+
+    model = {
+        "schema_version": 1,
+        "name": "proteina-complexa-test",
+        "tool": "proteina_complexa",
+        "registry": {"template": str(template), "task_name": "test_target"},
+        "sampling": {
+            "jobs": 1,
+            "samples_per_job": 4,
+            "keep_per_job": 4,
+            "seed_base": 5,
+        },
+        "runtime": {
+            "container": str(container),
+            "node_tmp_root": str(root / "nodetmp"),
+        },
+        "resources": {"gpus": 1, "cpus": 16, "memory_gb": 160, "walltime": "10:00:00"},
+    }
+    for section, values in overrides.items():
+        model[section].update(values)
+    (root / "nodetmp").mkdir(exist_ok=True)
+
+    model_path = root / "proteina_complexa.yaml"
+    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
+    return general_path, model_path
+
+
+@pytest.fixture
+def proteina_complexa_configs(tmp_path: Path) -> tuple[Path, Path]:
+    return write_proteina_complexa_configs(tmp_path)

@@ -1,0 +1,26 @@
+{
+  "filter_name": "protein_binder",
+  "thresholds": {
+    "i_pAE": {
+      "threshold": 7.0,
+      "op": "<=",
+      "scale": 31.0,
+      "column_prefix": "complex"
+    },
+    "pLDDT": {
+      "threshold": 0.9,
+      "op": ">=",
+      "scale": 1.0,
+      "column_prefix": "complex"
+    },
+    "scRMSD_ca": {
+      "threshold": 1.5,
+      "op": "<",
+      "scale": 1.0,
+      "column_prefix": "binder"
+    }
+  },
+  "sequence_types": [
+    "self"
+  ]
+}

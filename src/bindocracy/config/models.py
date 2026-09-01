@@ -52,6 +52,12 @@ class TargetConfig(ConfigModel):
     # tool's preflight asserts what it actually consumes.
     msa: Path | None = None
     structure_cif: Path | None = None
+    # The same geometry as `structure_cif`, in PDB. Proteina-Complexa reads the
+    # target through a PDB path and writes its crop and its epitope as residue
+    # numbers against that file, so converting per run would put a derived
+    # input on a shared path -- which is how a parameter sweep breaks itself.
+    # See docs/known-issues.md section 6.1b.
+    structure_pdb: Path | None = None
 
 
 class ClusterConfig(ConfigModel):

@@ -244,3 +244,29 @@ def test_the_evidence_files_are_recorded(tmp_path: Path, kind: str) -> None:
     collected = collect_run(build_run(tmp_path))
 
     assert any(a.kind == kind for a in collected.artifacts)
+
+
+def test_an_orphan_success_does_not_inflate_n_passed(tmp_path: Path) -> None:
+    """A verdict table is evidence, and an orphan row is bad evidence.
+
+    n_passed and the per-design verdicts have to agree: counting a sequence no
+    design produced reports a hit the run never made.
+    """
+    manifest_path = build_run(tmp_path)
+    manifest = RunManifest.read(manifest_path)
+    successes = manifest.directory / manifest.tasks[0].directory / successes_file(TASK_NAME)
+    with successes.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+        fields = reader.fieldnames
+    rows.append({**rows[0], "binder_sequence": "MKTAYIAKQRQISFVKSHFSRQ"})
+    with successes.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    collected = collect_run(manifest_path)
+    passing_decisions = sum(1 for d in collected.decisions if d.passed)
+
+    assert collected.run.n_passed == passing_decisions == 2
+    assert collected.run.count_details["tasks"]["0000"]["n_passed"] == 2

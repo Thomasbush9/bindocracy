@@ -122,6 +122,8 @@ class ProteinaComplexaOutputAdapter(OutputAdapter):
             # would report a real result the run never measured.
             complete = criteria is not None and successes is not None
             judged = judged and complete
+            # Orphans are excluded upstream, so this always agrees with the
+            # number of verdicts that passed.
             task_passed = len(successes) if successes is not None else 0
             passed += task_passed
 
@@ -282,11 +284,12 @@ def _read_criteria(path: Path) -> dict[str, Any] | None:
 def _read_successes(
     path: Path, rows: list[dict[str, str]]
 ) -> tuple[set[str] | None, set[str]]:
-    """Sequences the gate passed, and any it names that no design row does.
+    """Sequences the gate passed *and* a design produced, plus the orphans.
 
     The verdict table is evidence, not truth. A sequence marked successful that
     the primary table never produced is a stale or corrupted file marking the
-    wrong design as passed, so it is counted rather than silently trusted.
+    wrong design as passed, so it is counted separately and excluded from the
+    pass count rather than silently trusted.
     """
     if not path.is_file():
         return None, set()
@@ -298,7 +301,10 @@ def _read_successes(
             sequence = (row.get("binder_sequence") or "").strip().upper()
             if sequence:
                 passed.add(sequence)
-    return passed, passed - produced
+    # Only the ones a design row also names. An orphan cannot be attributed to
+    # any design, so counting it would report a hit the run never made and put
+    # n_passed above the number of passing verdicts.
+    return passed & produced, passed - produced
 
 
 def _design_record(

@@ -238,3 +238,71 @@ def test_a_hotspot_on_a_chain_the_structure_lacks_is_refused(tmp_path: Path) -> 
 
     with pytest.raises(ConfigPreflightError, match="B45"):
         load_configs(general, model)
+
+
+# --- the crop, and the keys the image interpolates ---------------------------
+
+
+def test_an_unreadable_crop_is_refused_without_an_epitope(tmp_path: Path) -> None:
+    """`hotspots: []` is the default, so it is the path most runs take.
+
+    Crop validation must not hide behind the epitope check: an unparseable
+    contig otherwise reaches the container and fails after GPU submission.
+    """
+    registry = proteina_registry(target_input="this-is-not-a-contig")
+    general, model = write_proteina_complexa_configs(tmp_path, registry=registry)
+
+    with pytest.raises(ConfigPreflightError, match="cannot read target_input"):
+        load_configs(general, model)
+
+
+def test_a_crop_selecting_nothing_is_refused_without_an_epitope(tmp_path: Path) -> None:
+    """A bare chain the structure does not have selects no residues at all."""
+    registry = proteina_registry(target_input="Z")
+    general, model = write_proteina_complexa_configs(tmp_path, registry=registry)
+
+    with pytest.raises(ConfigPreflightError, match="selects no residues"):
+        load_configs(general, model)
+
+
+def test_a_crop_on_a_chain_the_structure_lacks_names_it(tmp_path: Path) -> None:
+    registry = proteina_registry(target_input="Z1-201")
+    general, model = write_proteina_complexa_configs(tmp_path, registry=registry)
+
+    with pytest.raises(ConfigPreflightError, match="Z1, Z201"):
+        load_configs(general, model)
+
+
+def test_a_crop_running_past_the_structure_is_refused(tmp_path: Path) -> None:
+    registry = proteina_registry(target_input="A1-9999")
+    general, model = write_proteina_complexa_configs(tmp_path, registry=registry)
+
+    with pytest.raises(ConfigPreflightError, match="A1-9999"):
+        load_configs(general, model)
+
+
+@pytest.mark.parametrize(
+    "key", ["source", "target_filename", "pdb_id", "target_input", "binder_length"]
+)
+def test_a_registry_missing_a_key_the_image_interpolates_is_refused(
+    tmp_path: Path, key: str
+) -> None:
+    """binder_generate.yaml interpolates each of these directly.
+
+    A missing one raises InterpolationKeyError while Hydra composes, which
+    happens inside the container after the GPU has been allocated.
+    """
+    registry = proteina_registry()
+    del registry["target_dict_cfg"]["test_target"][key]
+    general, model = write_proteina_complexa_configs(tmp_path, registry=registry)
+
+    with pytest.raises(ConfigPreflightError, match=key):
+        load_configs(general, model)
+
+
+def test_a_null_pdb_id_is_accepted(tmp_path: Path) -> None:
+    """It is interpolated but may legitimately be null; only absence breaks it."""
+    general, model = write_proteina_complexa_configs(tmp_path)
+    loaded = load_configs(general, model)
+
+    assert loaded.preflight.entry["pdb_id"] is None

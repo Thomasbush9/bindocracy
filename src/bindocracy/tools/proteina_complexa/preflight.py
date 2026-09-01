@@ -35,6 +35,20 @@ from bindocracy.tools.proteina_complexa.config import ProteinaComplexaConfig
 # to the file the run actually reads.
 CONTAINER_TARGET = "/mnt/bindocracy_target.pdb"
 
+# Keys `configs/pipeline/binder/binder_generate.yaml` reads straight out of the
+# registry entry. All of them resolve eagerly, `source` and `target_filename`
+# included -- they sit inside the `oc.select` fallback for the target path,
+# which OmegaConf evaluates even when the primary resolves.
+INTERPOLATED_KEYS = (
+    "source",
+    "target_filename",
+    "target_path",
+    "target_input",
+    "hotspot_residues",
+    "binder_length",
+    "pdb_id",
+)
+
 # `A1-201`, `A1-100,B1-50`, or a bare `A` for a whole chain.
 _RANGE = re.compile(r"(?P<chain>[A-Za-z0-9])(?:(?P<start>-?\d+)-(?P<end>-?\d+))?$")
 
@@ -68,11 +82,17 @@ def preflight_proteina_complexa(
     registry = _load_registry(model.registry.template)
     entry = _require_entry(registry, model.registry.task_name, model.registry.template)
 
+    _require_interpolated_keys(entry, model.registry.task_name, model.registry.template)
     _require_bind_point(entry, model.registry.template)
     binder_length = _binder_length(entry, model.registry.template)
     target_input = _target_input(entry, model.registry.template)
+    # Always, not only when an epitope is named. The crop decides which protein
+    # the run designs against, and `hotspot_residues: []` is the documented
+    # default -- so a contig that selects nothing, or cannot be read at all,
+    # would otherwise reach the container and fail after a GPU was allocated.
+    residues, cropped = _resolve_crop(target_input, target_pdb)
     hotspots = _require_hotspots(general, entry, model.registry.template)
-    _require_hotspots_resolve(hotspots, target_input, target_pdb)
+    _require_hotspots_in_crop(hotspots, residues, cropped, target_input, target_pdb)
 
     return ProteinaComplexaPreflight(
         target_sequence=read_single_fasta(general.target.sequence_fasta),
@@ -144,6 +164,31 @@ def _require_entry(registry: dict, task_name: str, path: Path) -> dict:
             f"It defines: {', '.join(sorted(map(str, targets))) or 'nothing'}."
         )
     return entry
+
+
+def _require_interpolated_keys(entry: dict, task_name: str, path: Path) -> None:
+    """Every key `binder_generate.yaml` interpolates out of the entry.
+
+    Each of these is read as `${...target_dict_cfg.<task>.<key>}`, and OmegaConf
+    resolves them eagerly -- including the `oc.select` fallback for the target
+    path, which is why `source` and `target_filename` are needed even though a
+    valid entry never uses them. A missing key raises InterpolationKeyError
+    while Hydra composes, which happens inside the container, after Slurm has
+    allocated the GPU.
+
+    Verified against the installed image by composing the pipeline config
+    against entries with each key removed.
+    """
+    absent = [key for key in INTERPOLATED_KEYS if key not in entry]
+    if absent:
+        raise ConfigPreflightError(
+            f"Proteina-Complexa registry {path} is missing {', '.join(absent)} "
+            f"from target {task_name!r}.\n"
+            "The image's binder_generate.yaml interpolates every one of "
+            f"{', '.join(INTERPOLATED_KEYS)} directly, so an absent key fails "
+            "while Hydra composes -- inside the container, once the GPU is "
+            "already allocated. `pdb_id` may be null, but it must be present."
+        )
 
 
 def _require_bind_point(entry: dict, path: Path) -> None:
@@ -225,8 +270,27 @@ def _require_hotspots(general: GeneralConfig, entry: dict, path: Path) -> tuple[
     return theirs
 
 
-def _require_hotspots_resolve(
-    hotspots: tuple[str, ...], target_input: str, target_pdb: Path
+def _resolve_crop(target_input: str, target_pdb: Path) -> tuple[set[str], set[str]]:
+    """The structure's CA residues, and the subset the contig keeps.
+
+    Run for every config, epitope or not: `target_input` is what decides which
+    protein reaches the model, and nothing downstream re-checks it.
+    """
+    residues = _ca_residues(target_pdb)
+    if not residues:
+        raise ConfigPreflightError(
+            f"no CA atoms found in the target PDB {target_pdb}; "
+            "Proteina-Complexa builds its target from them"
+        )
+    return residues, _select(residues, target_input, target_pdb)
+
+
+def _require_hotspots_in_crop(
+    hotspots: tuple[str, ...],
+    residues: set[str],
+    cropped: set[str],
+    target_input: str,
+    target_pdb: Path,
 ) -> None:
     """Every hotspot must land on a CA atom inside the crop.
 
@@ -236,17 +300,6 @@ def _require_hotspots_resolve(
     against the uncropped structure, produces an all-False mask and a run that
     looks entirely normal.
     """
-    if not hotspots:
-        return
-
-    residues = _ca_residues(target_pdb)
-    if not residues:
-        raise ConfigPreflightError(
-            f"no CA atoms found in the target PDB {target_pdb}; "
-            "Proteina-Complexa resolves its epitope against them"
-        )
-    cropped = _select(residues, target_input, target_pdb)
-
     unresolved = [spot for spot in hotspots if spot not in cropped]
     if unresolved:
         outside = [spot for spot in unresolved if spot in residues]
@@ -297,8 +350,20 @@ def _select(residues: set[str], target_input: str, target_pdb: Path) -> set[str]
         if match.group("start") is None:
             kept |= {spot for spot in residues if spot[:1] == chain}
             continue
-        span = range(int(match.group("start")), int(match.group("end")) + 1)
-        kept |= {f"{chain}{number}" for number in span} & residues
+        start, end = int(match.group("start")), int(match.group("end"))
+        # Both endpoints must exist. A range running past the structure means
+        # the registry was written against a different numbering, which is the
+        # same confusion that puts an epitope on the wrong residues -- and the
+        # tool would silently crop to whatever overlap it found.
+        absent = [f"{chain}{number}" for number in (start, end)
+                  if f"{chain}{number}" not in residues]
+        if absent:
+            raise ConfigPreflightError(
+                f"target_input {part.strip()!r} names {', '.join(absent)}, which "
+                f"{target_pdb} does not contain. A contig written against a "
+                "different numbering crops to whatever happens to overlap."
+            )
+        kept |= {f"{chain}{number}" for number in range(start, end + 1)} & residues
     if not kept:
         raise ConfigPreflightError(
             f"target_input {target_input!r} selects no residues of {target_pdb}"

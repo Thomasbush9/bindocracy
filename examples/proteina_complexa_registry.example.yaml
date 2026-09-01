@@ -3,6 +3,14 @@
 #
 # Every field here is cross-checked against the campaign by preflight, because
 # each one can disagree with it while the run still looks entirely normal.
+#
+# All seven keys below are REQUIRED, `pdb_id` included -- the image's
+# binder_generate.yaml interpolates each one directly, and OmegaConf resolves
+# them eagerly (`source` and `target_filename` sit inside the oc.select
+# fallback for the target path, so they resolve even though a valid entry
+# never uses them). A missing key raises InterpolationKeyError while Hydra
+# composes, inside the container, after Slurm has allocated the GPU.
+# `pdb_id` may be null, but it must be present.
 
 target_dict_cfg:
   # The key must equal `registry.task_name` in the model config.

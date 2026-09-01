@@ -31,14 +31,15 @@ use the login node only to edit inputs, inspect help, and submit jobs.
 
 ## Container guides
 
-Six of these run through the harness today — Mosaic, BoltzGen, Genie 3,
-PXDesign, Protein-Hunter and Proteina-Complexa. The rest are documented images you drive by hand; adding one is
+Seven of these run through the harness today — Mosaic, BoltzGen, Genie 3,
+PXDesign, Protein-Hunter, Proteina-Complexa and FreeBindCraft. The rest are
+documented images you drive by hand; adding one is
 [one package and one line](docs/adding-a-tool.md).
 
 | Tool | Image | Primary use | Harness |
 |---|---|---|---|
 | [Genie 3](docs/containers/genie3.md) | `genie3.sif` | Backbone generation and end-to-end design/evaluation | `tool: genie3` |
-| [FreeBindCraft](docs/containers/freebindcraft.md) | `freebindcraft.sif` | BindCraft-style binder design without PyRosetta | — |
+| [FreeBindCraft](docs/containers/freebindcraft.md) | `freebindcraft.sif` | BindCraft-style binder design without PyRosetta | `tool: freebindcraft` |
 | [Caliby](docs/containers/caliby.md) | `caliby.sif` | Sequence design, scoring, packing, and ensembles | — |
 | [BoltzGen](docs/containers/boltzgen.md) | `boltzgen.sif` | Structure-conditioned protein/peptide design | `tool: boltzgen` |
 | [Protein-Hunter](docs/containers/protein-hunter.md) | `protein_hunter.sif` | Boltz- and Chai-based binder design pipelines | `tool: protein_hunter` |

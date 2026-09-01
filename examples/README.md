@@ -16,6 +16,10 @@ durable record of what a run used.
 | `pxdesign.example.yaml` | `configs/pxdesign/<name>.yaml` |
 | `pxdesign_input.example.yaml` | the file `spec.template` points at |
 | `protein_hunter.example.yaml` | `configs/protein_hunter/<name>.yaml` — no second file; it references none |
+| `proteina_complexa.example.yaml` | `configs/proteina_complexa/<name>.yaml` |
+| `proteina_complexa_registry.example.yaml` | the file `registry.template` points at |
+| `freebindcraft.example.yaml` | `configs/freebindcraft/<name>.yaml` |
+| `freebindcraft_target.example.json` | the file `target.template` points at — the filter set and advanced profile are copies out of the image |
 | `../workflow/campaign.example.yaml` | an execution index beside your runs |
 
 A model config selects its own plugin through its `tool:` field, so adding a

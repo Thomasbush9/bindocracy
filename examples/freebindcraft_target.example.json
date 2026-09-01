@@ -1,0 +1,15 @@
+{
+  "_comment": [
+    "TEMPLATE. BindCraft's target document, minus the three keys the harness",
+    "writes per task: design_path, number_of_final_designs, and",
+    "target_hotspot_residues. Preflight refuses this file if it sets any of",
+    "them -- an authored value would not be the one the run uses.",
+    "starting_pdb must be absolute and must be the campaign's",
+    "target.structure_pdb; chains must be the campaign's target.chain_id.",
+    "BindCraft ignores unknown keys, so this comment is inert."
+  ],
+  "binder_name": "dio3_cut",
+  "starting_pdb": "/absolute/path/to/binder_design/outputs/_shared/dio3_cut.pdb",
+  "chains": "A",
+  "lengths": [65, 150]
+}

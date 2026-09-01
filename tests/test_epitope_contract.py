@@ -13,9 +13,11 @@ from pathlib import Path
 import pytest
 import yaml
 from conftest import (
+    freebindcraft_target,
     pxdesign_spec,
     write_boltzgen_configs,
     write_configs,
+    write_freebindcraft_configs,
     write_genie3_configs,
     write_protein_hunter_configs,
     write_proteina_complexa_configs,
@@ -168,6 +170,72 @@ def test_proteina_complexa_records_the_epitope_it_ran_with(tmp_path: Path) -> No
     assert manifest.workflow["target_input"] == "A1-201"
 
 
+# --- FreeBindCraft writes the epitope rather than reading it ---------------
+
+
+def test_freebindcraft_renders_the_campaign_epitope_onto_the_command(
+    tmp_path: Path,
+) -> None:
+    """The harness owns `target_hotspot_residues`, so it cannot drift.
+
+    BindCraft's hotspots are chain-then-number against the author numbering of
+    the starting PDB, which is exactly how a campaign writes them, so this is a
+    rendering rather than a mapping.
+    """
+    general, model = write_freebindcraft_configs(tmp_path, hotspots=EPITOPE)
+    manifest = plan(load_configs(general, model), tmp_path / "run")
+    argv = launch_spec(manifest, 0).argv
+
+    assert flag(argv, "--hotspots") == "A2,A4"
+    assert manifest.workflow["hotspots"] == ["A2", "A4"]
+
+
+def test_a_hotspot_free_freebindcraft_campaign_says_so(
+    freebindcraft_configs, tmp_path: Path
+) -> None:
+    """Empty is a value: BindCraft reads it as `hotspot=None`, the whole surface."""
+    manifest = plan(load_configs(*freebindcraft_configs), tmp_path / "run")
+
+    assert flag(launch_spec(manifest, 0).argv, "--hotspots") == ""
+    assert manifest.workflow["hotspots"] == []
+
+
+def test_freebindcraft_resolves_the_epitope_against_the_structure(
+    tmp_path: Path,
+) -> None:
+    """ColabDesign asserts on a hotspot that matches no CA atom.
+
+    It is loud, but it is loud inside the container, once Slurm has already
+    allocated a GPU. Checked here instead.
+    """
+    general, model = write_freebindcraft_configs(tmp_path, hotspots=["A2", "A4444"])
+
+    with pytest.raises(ConfigPreflightError, match="4444"):
+        load_configs(general, model)
+
+
+def test_freebindcraft_refuses_an_epitope_on_a_chain_it_does_not_design_against(
+    tmp_path: Path,
+) -> None:
+    general, model = write_freebindcraft_configs(tmp_path, hotspots=["B2", "B4"])
+
+    with pytest.raises(ConfigPreflightError, match="chain A alone"):
+        load_configs(general, model)
+
+
+def test_freebindcraft_refuses_an_authored_epitope(tmp_path: Path) -> None:
+    """One place decides what the epitope is, and it is not the target JSON."""
+    general, model = write_freebindcraft_configs(
+        tmp_path,
+        hotspots=EPITOPE,
+        target=freebindcraft_target(tmp_path / "target.pdb",
+                                    target_hotspot_residues="A2,A4"),
+    )
+
+    with pytest.raises(ConfigPreflightError, match="target_hotspot_residues"):
+        load_configs(general, model)
+
+
 # --- Protein-Hunter maps it onto the flags the pipeline reads --------------
 
 
@@ -272,3 +340,29 @@ def test_the_driver_accepts_the_contact_flags(
     command = protein_hunter_driver.pipeline_command(parsed)
     assert command[command.index("--contact_residues") + 1] == "2,4"
     assert "--no_contact_filter" not in command
+
+
+def test_freebindcraft_records_how_little_an_epitope_enforces(tmp_path: Path) -> None:
+    """A hotspot biases the backbone search and is never checked again.
+
+    It restricts the interface contact loss during hallucination, where a
+    "contact" is two binder residues within 20 A. Nothing after that stage
+    looks at the epitope: no filter mentions it, and this fork's
+    `Trajectory_WrongHotspot` counter is created but never incremented. A run
+    that says only "conditioned on A41,A42,A44" would claim more than it did.
+    """
+    general, model = write_freebindcraft_configs(tmp_path, hotspots=EPITOPE)
+    manifest = plan(load_configs(general, model), tmp_path / "run")
+    enforcement = manifest.workflow["epitope_enforcement"]
+
+    assert enforcement["conditioned"] is True
+    assert enforcement["contact_distance_angstroms"] == 20.0
+    assert enforcement["verified_after_generation"] is False
+
+
+def test_a_hotspot_free_freebindcraft_run_claims_no_conditioning(
+    freebindcraft_configs, tmp_path: Path
+) -> None:
+    manifest = plan(load_configs(*freebindcraft_configs), tmp_path / "run")
+
+    assert manifest.workflow["epitope_enforcement"] == {"conditioned": False}

@@ -925,3 +925,249 @@ def write_proteina_complexa_configs(
 @pytest.fixture
 def proteina_complexa_configs(tmp_path: Path) -> tuple[Path, Path]:
     return write_proteina_complexa_configs(tmp_path)
+
+
+# --- FreeBindCraft -----------------------------------------------------------
+
+FREEBINDCRAFT_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "freebindcraft"
+# The fixture rows are output of the 2026-08-26 benchmark run, sliced to two
+# trajectories. BindCraft stamps the stem of each settings document onto every
+# row it writes, so the test documents carry the run's own names and the
+# fixture never has to be edited. The one edit is `Rank`: a slice of a ranked
+# table is not a ranked table, and BindCraft ranks its whole accepted pool
+# 1..N, so the two surviving rows were renumbered 1 and 2.
+FREEBINDCRAFT_TARGET_NAME = "dio3_cut_target"
+FREEBINDCRAFT_FILTERS_NAME = "relaxed_filters"
+FREEBINDCRAFT_ADVANCED_NAME = "dio3_cut_advanced_max40"
+FREEBINDCRAFT_BINDER = "dio3_cut"
+# 201 aa, chain A, numbered 1..201 -- the campaign target the benchmark ran on.
+FREEBINDCRAFT_TARGET = "".join(["ACDEFGHIKLMNPQRSTVWY"] * 10) + "A"
+
+FREEBINDCRAFT_DRIVER_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "drivers" / "freebindcraft" / "run_freebindcraft.py"
+)
+
+
+def freebindcraft_target(pdb: Path, **overrides) -> dict:
+    """A target document with none of the three keys the driver writes."""
+    document = {
+        "binder_name": FREEBINDCRAFT_BINDER,
+        "starting_pdb": str(pdb),
+        "chains": "A",
+        "lengths": [65, 150],
+    }
+    document.update(overrides)
+    return document
+
+
+def freebindcraft_advanced(**overrides) -> dict:
+    """The keys preflight insists on, with `max_trajectories` unset as shipped."""
+    document = {
+        "design_algorithm": "4stage",
+        "omit_AAs": "C",
+        "use_multimer_design": True,
+        "enable_mpnn": True,
+        "num_seqs": 20,
+        "max_mpnn_sequences": 2,
+        # What "contacting the epitope" means to the hallucination loss.
+        "inter_contact_distance": 20.0,
+        "inter_contact_number": 2,
+        "max_trajectories": False,
+    }
+    document.update(overrides)
+    return document
+
+
+def freebindcraft_filters(**overrides) -> dict:
+    """A filter set thresholding one metric a PyRosetta-free run cannot compute.
+
+    `Average_dG` is one of the eight constants, so a run with this filter set
+    has a non-empty `inert_filters` -- which is the point: every filter file
+    the image ships is like this.
+    """
+    document = {
+        "MPNN_score": {"threshold": None, "higher": False},
+        "Average_pLDDT": {"threshold": 0.8, "higher": True},
+        "1_pLDDT": {"threshold": 0.8, "higher": True},
+        "Average_i_pTM": {"threshold": 0.5, "higher": True},
+        "Average_dG": {"threshold": 0.0, "higher": False},
+        "Average_InterfaceAAs": {"C": {"threshold": 0, "higher": False}},
+    }
+    document.update(overrides)
+    return document
+
+
+def write_freebindcraft_configs(
+    root: Path,
+    *,
+    hotspots: list[str] | None = None,
+    target: dict | None = None,
+    advanced: dict | None = None,
+    filters: dict | None = None,
+    **overrides,
+) -> tuple[Path, Path]:
+    """A general + FreeBindCraft pair, with the PDB it hallucinates against."""
+    fasta = root / "target.fasta"
+    fasta.write_text(f">target\n{FREEBINDCRAFT_TARGET}\n")
+    pdb = write_proteina_target_pdb(root / "target.pdb", FREEBINDCRAFT_TARGET)
+    container = root / "freebindcraft.sif"
+    container.write_bytes(b"fixture")
+    driver = root / "run_freebindcraft.py"
+    driver.write_text(FREEBINDCRAFT_DRIVER_PATH.read_text())
+
+    documents = {
+        f"{FREEBINDCRAFT_TARGET_NAME}.json": (
+            target if target is not None else freebindcraft_target(pdb)
+        ),
+        f"{FREEBINDCRAFT_ADVANCED_NAME}.json": (
+            advanced if advanced is not None else freebindcraft_advanced()
+        ),
+        f"{FREEBINDCRAFT_FILTERS_NAME}.json": (
+            filters if filters is not None else freebindcraft_filters()
+        ),
+    }
+    for name, document in documents.items():
+        (root / name).write_text(json.dumps(document, indent=2))
+
+    general_path = root / "general.yaml"
+    general_path.write_text(yaml.safe_dump({
+        "schema_version": 1,
+        "campaign": {"name": "test-campaign"},
+        "target": {
+            "name": "test-target",
+            "sequence_fasta": str(fasta),
+            "structure_pdb": str(pdb),
+            "chain_id": "A",
+            "hotspots": hotspots or [],
+        },
+        "cluster": {
+            "executor": "slurm",
+            "account": "test-account",
+            "default_partition": "test-gpu",
+        },
+    }, sort_keys=False))
+
+    model = {
+        "schema_version": 1,
+        "name": "freebindcraft-test",
+        "tool": "freebindcraft",
+        "target": {"template": str(root / f"{FREEBINDCRAFT_TARGET_NAME}.json")},
+        "filters": {"template": str(root / f"{FREEBINDCRAFT_FILTERS_NAME}.json")},
+        "advanced": {"template": str(root / f"{FREEBINDCRAFT_ADVANCED_NAME}.json")},
+        "driver": {"script": str(driver)},
+        "sampling": {"jobs": 1, "designs_per_job": 2, "max_trajectories": 4},
+        "runtime": {"container": str(container), "node_tmp_root": str(root / "nodetmp")},
+        "resources": {"gpus": 1, "cpus": 8, "memory_gb": 64, "walltime": "04:00:00"},
+    }
+    for section, values in overrides.items():
+        model[section].update(values)
+    (root / "nodetmp").mkdir(exist_ok=True)
+
+    model_path = root / "freebindcraft.yaml"
+    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
+    return general_path, model_path
+
+
+@pytest.fixture
+def freebindcraft_configs(tmp_path: Path) -> tuple[Path, Path]:
+    return write_freebindcraft_configs(tmp_path)
+
+
+def write_freebindcraft_task(
+    run_dir: Path,
+    task_id: int,
+    *,
+    designs: int | None = None,
+    ranked: bool = True,
+    clashing: int = 1,
+    low_confidence: int = 1,
+    scored: str | None = None,
+    structures: bool = True,
+    status: dict | None = None,
+) -> None:
+    """Lay out one FreeBindCraft task from the committed real-output fixture.
+
+    `ranked=False` leaves `final_design_stats.csv` with a header and no rows,
+    which is exactly what a task that stopped on its trajectory budget writes
+    while `Accepted/` is full.
+    """
+    design_path = run_dir / "tasks" / f"{task_id:04d}" / "bindcraft"
+    design_path.mkdir(parents=True, exist_ok=True)
+
+    def table(name: str, rows: int | None = None) -> list[str]:
+        lines = (FREEBINDCRAFT_FIXTURE / name).read_text().splitlines()
+        header, body = lines[0], lines[1:]
+        if rows is not None:
+            body = body[:rows]
+        (design_path / name).write_text("\n".join([header, *body]) + "\n")
+        return body
+
+    scored_rows = table("mpnn_design_stats.csv", designs)
+    if scored is not None:
+        (design_path / "mpnn_design_stats.csv").write_text(scored)
+        scored_rows = scored.splitlines()[1:]
+    kept = {line.split(",")[0] for line in scored_rows}
+    rejected_rows = table("rejected_mpnn_full_stats.csv")
+    table("trajectory_stats.csv")
+    table("failure_csv.csv")
+
+    final_lines = (FREEBINDCRAFT_FIXTURE / "final_design_stats.csv").read_text().splitlines()
+    final_body = [
+        line for line in final_lines[1:] if line.split(",")[1] in kept
+    ] if ranked else []
+    (design_path / "final_design_stats.csv").write_text(
+        "\n".join([final_lines[0], *final_body]) + "\n"
+    )
+
+    accepted = kept - {line.split(",")[0] for line in rejected_rows}
+    if structures:
+        for directory, names in (
+            ("Accepted", accepted),
+            ("Rejected", kept & {line.split(",")[0] for line in rejected_rows}),
+        ):
+            (design_path / directory).mkdir(exist_ok=True)
+            for name in sorted(names):
+                (design_path / directory / f"{name}_model1.pdb").write_text("ATOM\n")
+    (design_path / "Accepted" / "Ranked").mkdir(parents=True, exist_ok=True)
+
+    # `max_trajectories` counts Relaxed alone; the other two are attempts that
+    # ended before they could be scored.
+    for directory, count in (
+        ("Relaxed", len((FREEBINDCRAFT_FIXTURE / "trajectory_stats.csv")
+                        .read_text().splitlines()) - 1),
+        ("Clashing", clashing),
+        ("LowConfidence", low_confidence),
+    ):
+        path = design_path / "Trajectory" / directory
+        path.mkdir(parents=True, exist_ok=True)
+        for index in range(count):
+            (path / f"{FREEBINDCRAFT_BINDER}_traj_{directory}_{index}.pdb").write_text("ATOM\n")
+
+    if status is not None:
+        # FreeBindCraft writes no status of its own, so this is the shape the
+        # harness writes around it.
+        (run_dir / "tasks" / f"{task_id:04d}" / "status.json").write_text(json.dumps({
+            "task_id": task_id,
+            "status": "succeeded",
+            "started_at": "2026-08-26T23:38:00+00:00",
+            "finished_at": "2026-08-27T07:02:00+00:00",
+            "exit_code": 0,
+            "error": None,
+            "written_by": "harness",
+        } | status))
+    (run_dir / "logs").mkdir(exist_ok=True)
+    (run_dir / "logs" / f"task-{task_id:04d}.log").write_text("freebindcraft log\n")
+
+
+@pytest.fixture
+def freebindcraft_driver():
+    """Import the FreeBindCraft driver, which needs only the stdlib."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "run_freebindcraft", FREEBINDCRAFT_DRIVER_PATH
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module

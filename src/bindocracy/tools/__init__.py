@@ -9,6 +9,7 @@ from importlib import import_module
 
 from bindocracy.tools.base import ToolPlugin
 from bindocracy.tools.boltzgen import BoltzGenPlugin
+from bindocracy.tools.freebindcraft import FreeBindCraftPlugin
 from bindocracy.tools.genie3 import Genie3Plugin
 from bindocracy.tools.mosaic import MosaicPlugin
 from bindocracy.tools.protein_hunter import ProteinHunterPlugin
@@ -33,6 +34,7 @@ register(Genie3Plugin)
 register(PXDesignPlugin)
 register(ProteinHunterPlugin)
 register(ProteinaComplexaPlugin)
+register(FreeBindCraftPlugin)
 
 # A tool does not have to live in this repository. Anything named in
 # BINDOCRACY_PLUGINS (comma-separated importable modules) is imported here and
@@ -44,6 +46,7 @@ for _module in os.environ.get("BINDOCRACY_PLUGINS", "").split(","):
 
 __all__ = [
     "BoltzGenPlugin",
+    "FreeBindCraftPlugin",
     "Genie3Plugin",
     "MosaicPlugin",
     "PXDesignPlugin",

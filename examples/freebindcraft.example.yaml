@@ -1,0 +1,72 @@
+# TEMPLATE. Real configs live outside the repository, beside the campaign
+# data, because their absolute paths belong to one machine. Copy, edit, and
+# point a workflow index at your copy.
+
+schema_version: 1
+name: freebindcraft-binder-run13
+tool: freebindcraft
+
+# The three JSON documents BindCraft is configured by. All three are archived
+# per run, run from the archive, and folded whole into the stored config: the
+# filter set alone is the definition of n_passed and lives nowhere else.
+#
+# The target document must NOT set design_path, number_of_final_designs, or
+# target_hotspot_residues, and the advanced document must leave
+# max_trajectories false. The harness writes all four per task, and preflight
+# refuses an authored value rather than overwriting it.
+target:
+  template: /absolute/path/to/binder_design/configs/freebindcraft/dio3_cut_target.json
+filters:
+  # Copy one out of the FreeBindCraft repository or the image, e.g.
+  # /opt/freebindcraft/settings_filters/relaxed_filters.json. It has to be a
+  # host file: the run archives what it filtered by.
+  template: /absolute/path/to/binder_design/configs/freebindcraft/relaxed_filters.json
+advanced:
+  template: /absolute/path/to/binder_design/configs/freebindcraft/dio3_cut_advanced.json
+
+driver:
+  script: /absolute/path/to/binder_design/bindocracy/drivers/freebindcraft/run_freebindcraft.py
+
+sampling:
+  jobs: 1
+  # ACCEPTED designs, after every filter -- a stopping condition, not a table
+  # size. The loop ends at the first check where at least this many PDBs sit
+  # in Accepted/, so a task can finish with one or two more.
+  designs_per_job: 2
+  # SUCCESSFUL hallucinations, which is the other way the loop ends. It counts
+  # PDBs in Trajectory/Relaxed/ only: attempts that abort as clashing or
+  # low-confidence are moved aside and never counted, so the real number of
+  # attempts is larger. Required, though BindCraft's own value is `false`:
+  # without it a task designs until walltime.
+  #
+  # The 2026-08-26 benchmark landed 41 accepted designs from 34 successful
+  # trajectories (49 attempts) in 7h24m, so budget roughly 10 minutes per
+  # attempted trajectory and expect around one accepted design per successful
+  # one.
+  max_trajectories: 6
+
+runtime:
+  container: /absolute/path/to/binder_design/images/freebindcraft.sif
+  # BindCraft's default. `ipSAE` is this fork's addition and ranks by interface
+  # predicted alignment error instead; it changes the ranked table only.
+  rank_by: i_pTM
+  # An HTML animation and four PNGs per trajectory, zipped at the end into
+  # files nothing here reads. The advanced profiles say true; these turn them
+  # off with --no-plots / --no-animations.
+  save_plots: false
+  save_animations: false
+  # OpenMM's OpenCL JIT writes a dependency file per compiled kernel under
+  # TMPDIR, thousands over a campaign. Not on Lustre; see
+  # docs/known-issues.md section 2.1.
+  node_tmp_root: /tmp
+
+resources:
+  gpus: 1
+  cpus: 8
+  memory_gb: 64
+  # The benchmark run took 7h24m for 49 trajectories at 8.9 GB RSS. Two
+  # designs is two or three successful trajectories plus the attempts that
+  # fail, so two hours is generous and a walltime kill costs nothing: the
+  # design loop skips any trajectory whose PDB already exists, so resubmitting
+  # into the same run directory continues rather than restarts.
+  walltime: "02:00:00"

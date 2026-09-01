@@ -198,22 +198,35 @@ rather than offering a free-form argument list, so a misspelling is refused by
 Pydantic before a GPU is allocated, and the value that ran is in the stored
 config.
 
-### 1.7 Proteina-Complexa reports every ipSAE as exactly 0.0
+### 1.7 Proteina-Complexa reports MOST ipSAE values as 0.0 — **corrected 2026-09-01**
 
-In the benchmark run, all twelve `self_complex_*_ipSAE*` columns of
-`binder_results_*.csv` are `0.0` for all 40 designs, while the scRMSD columns in
-the same file are populated and sensible (median binder scRMSD 0.52 Å, 39/40
-under 2 Å). Interface ipSAE is the metric you would most want for ranking
-binders, so a column of zeros is easy to mistake for "no design has interface
-confidence" rather than "this metric did not run".
+This entry previously said all twelve `self_complex_*_ipSAE*` columns are `0.0`
+for all 40 designs. **The files disagree, and the files are right.** Re-read
+from the archived `dio3_cut_v1` run:
 
-The generation-stage rewards CSV *does* carry real
-`af2folding_avg_ipsae` values, so rank from `rewards_*.csv` until the evaluation
-path is understood. **Not diagnosed** — flagged so it is not read as a result.
+| column | designs at exactly 0.0 | above 0.1 | max |
+|---|---|---|---|
+| `self_complex_avg_ipSAE` | 23 / 40 | 9 | 0.5152 |
+
+So the metric partly ran. The scRMSD figures in the original entry are exactly
+right (median binder scRMSD 0.52 Å, 39/40 under 2 Å); only the ipSAE claim was
+wrong. A majority of zeros is still worth flagging — interface ipSAE is the
+metric you would most want for ranking binders, and 23 zeros beside 9 real
+values is easy to mistake for "no design has interface confidence" rather than
+"this metric did not run for most of them".
+
+The advice to rank from `rewards_*.csv` instead therefore rested on a wrong
+premise and should be re-checked rather than followed. `af2folding_avg_ipsae`
+there is a different measurement (generation-stage reward, not evaluation), so
+the two are not interchangeable.
+
+The harness records `n_zero_avg_ipsae` per task in `runs.count_details`, so this
+is now countable per run rather than asserted. **Still not diagnosed** — flagged
+so it is not read as a result.
 
 ### 1.7b A campaign epitope that a tool never reads
 
-Found 2026-08-31, across three of the five registered tools. `target.hotspots`
+Found 2026-08-31, across three of the then five registered tools. `target.hotspots`
 is campaign-level, and Mosaic, BoltzGen and Protein-Hunter all ignored it. A
 campaign that named an epitope would have run PXDesign and Genie 3 conditioned
 on it and the other three unconstrained, and reported the four sets of designs

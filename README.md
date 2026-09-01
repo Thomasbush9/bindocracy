@@ -31,8 +31,8 @@ use the login node only to edit inputs, inspect help, and submit jobs.
 
 ## Container guides
 
-Five of these run through the harness today — Mosaic, BoltzGen, Genie 3,
-PXDesign and Protein-Hunter. The rest are documented images you drive by hand; adding one is
+Six of these run through the harness today — Mosaic, BoltzGen, Genie 3,
+PXDesign, Protein-Hunter and Proteina-Complexa. The rest are documented images you drive by hand; adding one is
 [one package and one line](docs/adding-a-tool.md).
 
 | Tool | Image | Primary use | Harness |
@@ -42,7 +42,7 @@ PXDesign and Protein-Hunter. The rest are documented images you drive by hand; a
 | [Caliby](docs/containers/caliby.md) | `caliby.sif` | Sequence design, scoring, packing, and ensembles | — |
 | [BoltzGen](docs/containers/boltzgen.md) | `boltzgen.sif` | Structure-conditioned protein/peptide design | `tool: boltzgen` |
 | [Protein-Hunter](docs/containers/protein-hunter.md) | `protein_hunter.sif` | Boltz- and Chai-based binder design pipelines | `tool: protein_hunter` |
-| [Proteina-Complexa](docs/containers/proteina-complexa.md) | `proteina_complexa.sif` | Local multi-stage binder, ligand, AME, and motif workflows | — |
+| [Proteina-Complexa](docs/containers/proteina-complexa.md) | `proteina_complexa.sif` | Local multi-stage binder, ligand, AME, and motif workflows | `tool: proteina_complexa` (binder only) |
 | [PXDesign](docs/containers/pxdesign.md) | `pxdesign.sif` | Diffusion binder design with structure filters | `tool: pxdesign` |
 | [SwitchCraft](docs/containers/switchcraft.md) | `switchcraft.sif` | Multistate and allosteric protein design | — |
 | [Mosaic](docs/containers/mosaic.md) | `mosaic.sif` | Differentiable multi-model binder optimization | `tool: mosaic` |

@@ -104,7 +104,96 @@ Filled in below as runs land. Counts are `n_requested / n_produced / n_passed`
 straight from the `runs` table; `n_passed` is each tool's own verdict and means
 something different for each of them.
 
-<!-- RESULTS -->
+### The counts
+
+Every tool was asked for 50. Every tool succeeded; none needed a retry.
+
+| Tool | produced | passed (its own verdict) | wall |
+|---|---|---|---|
+| Mosaic | 50 | — (it has no filters) | 2h53 |
+| BoltzGen | 50 | 4 | 17 min |
+| Genie 3 | 50 | 1 | 55 min |
+| PXDesign | 50 | 0 | 8 min |
+| Protein-Hunter | 50 | 7 | 9 min |
+| Proteina-Complexa | 50 | 1 | 18 min |
+| FreeBindCraft | **1500** | 14 | 7h52 |
+
+`n_passed` is not comparable across this column — it is each tool's own filter
+set, and PXDesign's 0 of 50 is what its `extended` preset does at this scale
+(upstream needs 10,000+ designs for 10–100 dual-filter passes), while
+Mosaic simply never judges its output.
+
+FreeBindCraft's 1500 is the honest number and the reason its row looks nothing
+like the others: it asked 1500 MPNN sequences to clear its base AF2 filters,
+1443 of them did not, 57 were scored in full and 14 accepted. Both tasks spent
+their 40-trajectory budget (88 and 81 attempts) rather than reaching 25
+designs, which is the `ranked: false` outcome §3 predicted.
+
+### Does anything actually bind the epitope?
+
+Measured from the complexes, because no tool reports it: a heavy atom of the
+binder within 4.5 Å of A110, A112 or A131.
+
+| Tool | complexes kept | ≥1 epitope residue | all three |
+|---|---|---|---|
+| Proteina-Complexa | 50 | **50** | 44 |
+| PXDesign | 50 | **50** | 28 |
+| FreeBindCraft | 57 | **54** | 7 |
+| BoltzGen | 50 | 12 | 5 |
+| Genie 3 | 50 | 5 | 3 |
+| Protein-Hunter | 7 (its hits only) | **0** | 0 |
+| Mosaic | 0 | — | — |
+
+Read the "complexes kept" column before the others: the tools do not keep the
+same things. BoltzGen, PXDesign, Proteina-Complexa and Genie 3 write a
+structure per design; FreeBindCraft writes one for each design that survived
+its base filters (14 accepted plus 43 rejected); Protein-Hunter writes one only
+for designs that cleared its threshold gate; **Mosaic writes none at all**.
+
+Three results fall out of this.
+
+**The one tool that enforces the epitope is the only one that misses it
+entirely.** All 7 of Protein-Hunter's hits satisfy its own gate — CA–CA within
+15 Å for at least 2 of the 3 residues — and not one of them puts a heavy atom
+within 4.5 Å of any of them. 15 Å CA–CA means "in the neighbourhood", not
+"bound". Its resampling filter and its hit gate are doing what they say; what
+they say is much weaker than it sounds.
+
+**Biasing the search beats enforcing a loose criterion.** Proteina-Complexa and
+PXDesign, which only condition their sampling and check nothing afterwards,
+land on the epitope in 50 of 50 designs each. FreeBindCraft's 20 Å `i_con`
+bias gets 54 of 57.
+
+**Mosaic's conditioning cannot be verified at all.** It records sequences and
+one ranking loss and keeps no structure, so there is nothing to measure. The
+epitope reached the loss — the driver logged `epitope: [109, 111, 130]`, which
+is `seqid - 1` for A110/A112/A131 — but whether it changed where the binders
+sit is unanswerable from what the run wrote.
+
+### BoltzGen is still returning ubiquitin
+
+[known-issues §1.4b](../known-issues.md) reproduces exactly. 11 of BoltzGen's
+50 designs are ≥80% identical to human ubiquitin, one of them at 99%. No other
+tool in the run exceeds 18% identity to it. That also explains the bottom of
+the coverage table: a memorised natural protein is not binding the epitope, and
+BoltzGen's 12 of 50 is the arithmetic of roughly a fifth of its output being
+ubiquitin.
+
+### An adapter defect the run exposed — fixed, and re-run
+
+Both FreeBindCraft tasks stopped on their trajectory budget, which is the case
+the adapter claimed leaves `final_design_stats.csv` empty. It does not:
+BindCraft appends a row for every accepted design with the `Rank` column blank
+and fills the ranks in only on the way out. The counts were right either way,
+but the test fixture wrote a shape BindCraft never produces and the adapter
+discarded names it should have been checking.
+
+Fixed in *FreeBindCraft: the ranked table is unranked, not absent*; the names
+are now a third witness against the accepted set. An ingested run cannot be
+re-collected into the same row by design, so `freebindcraft-epitope-run19b` is
+a fresh run collected by the corrected adapter — and, since FreeBindCraft has
+no seed, an honest replicate as well.
+
 
 ---
 

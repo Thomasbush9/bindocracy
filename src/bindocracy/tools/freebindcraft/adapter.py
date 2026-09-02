@@ -19,12 +19,17 @@ shape this parser:
   `final_design_stats.csv`. All three are checked against each other, because
   the run's own verdict is what `n_passed` means.
 
-* **The ranked table is written only on the way out the door.** BindCraft
-  writes `final_design_stats.csv` inside the check that ends the loop, so a
-  task that stops on `max_trajectories` instead leaves it with a header and no
-  rows while `Accepted/` is full. That is a documented outcome, not a failure,
-  so `n_passed` is taken from the tables and the rank decisions are simply
-  absent.
+* **The ranked table is only ranked on the way out the door.** BindCraft
+  appends a row to `final_design_stats.csv` for every design it accepts, with
+  the `Rank` column left **empty**, and rewrites the whole file with ranks
+  filled in only inside the check that ends the loop on having enough designs.
+  A task that stops on `max_trajectories` therefore leaves a table that names
+  exactly the accepted designs and ranks none of them, and an empty
+  `Accepted/Ranked/`. That is a documented outcome, not a failure: `n_passed`
+  comes from the tables either way, the names are still checked against the
+  accepted set, and the rank decisions are simply absent. Measured on run 19,
+  where both tasks spent their trajectory budget and wrote eight and six
+  unranked rows.
 
 * **Eight of the metrics are constants.** With PyRosetta absent,
   `pr_alternative_utils` fills `dG`, `Binder_Energy_Score`, `PackStat`, and the
@@ -188,10 +193,11 @@ class FreeBindCraftOutputAdapter(OutputAdapter):
                 # interface metric was computed. Produced, but not measured.
                 "n_rejected_before_scoring": len(table.unscored),
                 "n_passed": len(table.accepted),
-                # False when the task stopped on its trajectory budget: the
-                # ranked table is written only by the check that ends the loop
-                # on having enough designs.
+                # False when the task stopped on its trajectory budget. The
+                # table still names every accepted design; what it lacks is
+                # the ranks, which the loop fills in only on the way out.
                 "ranked": bool(table.ranks),
+                "n_final_rows": len(table.final_named),
                 # BindCraft's own running tally, which counts trajectory
                 # terminations and design rejections in one table and is
                 # cumulative across a resumed design path.
@@ -334,6 +340,7 @@ class TaskTable:
         unscored: list[dict[str, Any]],
         rejected_failures: dict[str, list[str]],
         ranks: dict[str, int],
+        final_named: set[str],
         trajectories: dict[str, int],
         trajectory_rows: int,
         failures: dict[str, int],
@@ -344,6 +351,10 @@ class TaskTable:
         self.unscored = unscored
         self.rejected_failures = rejected_failures
         self.ranks = ranks
+        # Every design the final table names, ranked or not. Written as each
+        # design is accepted, so it is evidence about the accepted set even
+        # when the run never reached the ranking step.
+        self.final_named = final_named
         self.trajectories = trajectories
         self.trajectory_rows = trajectory_rows
         self.failures = failures
@@ -390,14 +401,20 @@ class TaskTable:
                 f"{len(scored_rejects)} scored designs rejected, "
                 f"{len(rejected_files)} structures in Rejected/"
             )
+        # Checked whether or not the run reached the ranking step: the table
+        # names each design as it is accepted, so a disagreement here is a
+        # third source contradicting the other two.
+        if self.final_named != self.accepted:
+            problems.append(
+                f"the final table names {len(self.final_named)} designs, "
+                f"{len(self.accepted)} were accepted"
+            )
         if self.ranks:
-            if set(self.ranks) != self.accepted:
-                problems.append("the ranked table does not name the accepted designs")
             if sorted(self.ranks.values()) != list(range(1, len(self.ranks) + 1)):
                 problems.append(f"ranks are not 1..{len(self.ranks)}")
         elif len(self.accepted) >= task.n_requested:
-            # The loop writes the ranked table in the same check that ends it,
-            # so enough designs and no ranking means the file is missing.
+            # The loop fills the ranks in inside the check that ends it, so
+            # enough designs and no ranks means it never got there.
             problems.append(
                 f"{len(self.accepted)} designs accepted but nothing was ranked"
             )
@@ -426,12 +443,13 @@ def _read_task(
     rejected_failures, unscored, rejection_counts = _read_rejected(
         task_dir / REJECTED_FILE, task, seen
     )
-    ranks, rank_counts = _read_ranks(task_dir / FINAL_FILE)
+    ranks, final_named, rank_counts = _read_ranks(task_dir / FINAL_FILE)
     return TaskTable(
         scored=scored,
         unscored=unscored,
         rejected_failures=rejected_failures,
         ranks=ranks,
+        final_named=final_named,
         trajectories={
             name: _count_pdbs(task_dir / relative)
             for name, relative in TRAJECTORY_DIRS.items()
@@ -523,23 +541,35 @@ def _read_rejected(
     return failures, unscored, counts
 
 
-def _read_ranks(path: Path) -> tuple[dict[str, int], dict[str, int]]:
-    """`final_design_stats.csv`: the accepted designs, ranked.
+def _read_ranks(path: Path) -> tuple[dict[str, int], set[str], dict[str, int]]:
+    """`final_design_stats.csv`: the accepted designs, ranked or not yet.
 
-    Header-only is the normal shape of a task that stopped on its trajectory
-    budget, so an empty result here is a fact about the run rather than a
-    parse failure.
+    Two things come out of this file and only one of them is the ranking. Every
+    accepted design is appended here as it is accepted, with `Rank` empty; the
+    file is rewritten with ranks only by the check that ends the loop on having
+    enough designs. So the *names* are evidence about what was accepted whether
+    or not the run got that far, and a blank rank is the normal state of a task
+    that stopped on its trajectory budget rather than a malformed row.
     """
-    counts = {"n_unranked": 0}
+    counts = {"n_final_unranked": 0, "n_final_invalid": 0}
     ranks: dict[str, int] = {}
+    named: set[str] = set()
     for row in _rows(path):
         name = (row.get("Design") or "").strip()
-        rank = _number(row.get("Rank"))
-        if not name or rank is None or rank < 1 or rank != int(rank) or name in ranks:
-            counts["n_unranked"] += 1
+        if not name or name in named:
+            counts["n_final_invalid"] += 1
+            continue
+        named.add(name)
+        raw = (row.get("Rank") or "").strip()
+        rank = _number(raw)
+        if not raw:
+            counts["n_final_unranked"] += 1
+            continue
+        if rank is None or rank < 1 or rank != int(rank) or int(rank) in ranks.values():
+            counts["n_final_invalid"] += 1
             continue
         ranks[name] = int(rank)
-    return ranks, counts
+    return ranks, named, counts
 
 
 def _read_failures(path: Path) -> dict[str, int]:

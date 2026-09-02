@@ -1089,9 +1089,10 @@ def write_freebindcraft_task(
 ) -> None:
     """Lay out one FreeBindCraft task from the committed real-output fixture.
 
-    `ranked=False` leaves `final_design_stats.csv` with a header and no rows,
-    which is exactly what a task that stopped on its trajectory budget writes
-    while `Accepted/` is full.
+    `ranked=False` blanks the Rank column rather than dropping the rows, which
+    is what a task that stopped on its trajectory budget actually writes: the
+    table names every accepted design and ranks none of them, and
+    `Accepted/Ranked/` stays empty.
     """
     design_path = run_dir / "tasks" / f"{task_id:04d}" / "bindcraft"
     design_path.mkdir(parents=True, exist_ok=True)
@@ -1114,9 +1115,14 @@ def write_freebindcraft_task(
     table("failure_csv.csv")
 
     final_lines = (FREEBINDCRAFT_FIXTURE / "final_design_stats.csv").read_text().splitlines()
-    final_body = [
-        line for line in final_lines[1:] if line.split(",")[1] in kept
-    ] if ranked else []
+    final_body = [line for line in final_lines[1:] if line.split(",")[1] in kept]
+    if not ranked:
+        # What a task that stopped on its trajectory budget actually leaves:
+        # one row per accepted design, appended as it was accepted, with the
+        # Rank column still empty. BindCraft fills the ranks in only inside the
+        # check that ends the loop on having enough designs, so a header-only
+        # file is a shape it never writes.
+        final_body = ["," + line.split(",", 1)[1] for line in final_body]
     (design_path / "final_design_stats.csv").write_text(
         "\n".join([final_lines[0], *final_body]) + "\n"
     )

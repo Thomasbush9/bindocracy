@@ -163,12 +163,14 @@ def test_a_rejected_design_is_never_ranked(run) -> None:
 def test_a_task_that_ran_out_of_trajectories_still_reports_what_it_accepted(
     tmp_path: Path,
 ) -> None:
-    """BindCraft writes the ranked table only in the check that ends the loop.
+    """BindCraft fills the ranks in only in the check that ends the loop.
 
-    Asked for four designs and given two trajectories, a task stops on the
-    budget with two designs accepted and `final_design_stats.csv` holding a
-    header and nothing else. That is a documented outcome, not a failure, so
-    n_passed comes from the tables rather than from the file that is missing.
+    It appends a row for each design as it accepts it, with `Rank` empty, and
+    rewrites the file with ranks only once it has enough designs. So a task
+    that stops on its trajectory budget leaves a table that names every
+    accepted design and ranks none of them -- measured on run 19, where both
+    tasks did exactly this. The names are still evidence, and n_passed still
+    comes from the tables.
     """
     general, model = write_freebindcraft_configs(
         tmp_path, sampling={"designs_per_job": 4, "max_trajectories": 2}
@@ -177,8 +179,15 @@ def test_a_task_that_ran_out_of_trajectories_still_reports_what_it_accepted(
     write_freebindcraft_task(manifest.directory, 0, ranked=False, status={})
     bundle = collected(manifest)
 
+    task = bundle.run.count_details["tasks"]["0000"]
+
     assert bundle.run.n_passed == 2
-    assert bundle.run.count_details["tasks"]["0000"]["ranked"] is False
+    assert task["ranked"] is False
+    # The rows are there; only the ranks are not, and they still have to name
+    # the designs the other two tables say were accepted.
+    assert task["n_final_rows"] == 2
+    assert task["n_final_unranked"] == 2
+    assert task["shape_problems"] == []
     assert not [d for d in bundle.decisions if d.kind == DecisionKind.RANK]
 
 
@@ -359,3 +368,25 @@ def test_succeeded_asks_only_whether_every_task_scored_something(
 
     write_freebindcraft_task(manifest.directory, 1, status={})
     assert adapter.succeeded(manifest.directory) is True
+
+
+def test_a_final_table_that_names_the_wrong_designs_is_a_shape_problem(
+    freebindcraft_configs, tmp_path: Path
+) -> None:
+    """Three files have to agree about what was accepted, ranked or not.
+
+    The scored and rejected tables partition the designs and `Accepted/` holds
+    the structures; the final table is the third witness, and it names each
+    design as it is accepted rather than only at the end. A table naming
+    something else is a stale file marking the wrong design as passed.
+    """
+    manifest = plan(load_configs(*freebindcraft_configs), tmp_path / "run")
+    write_freebindcraft_task(manifest.directory, 0, status={})
+    table = manifest.directory / "tasks/0000/bindcraft/final_design_stats.csv"
+    lines = table.read_text().splitlines()
+    table.write_text("\n".join(lines[:-1]) + "\n")
+    bundle = collected(manifest)
+
+    problems = bundle.run.count_details["tasks"]["0000"]["shape_problems"]
+    assert any("the final table names" in problem for problem in problems)
+    assert bundle.run.n_passed is None

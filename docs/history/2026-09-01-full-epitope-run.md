@@ -17,6 +17,14 @@ harness designed against the same thing at the same time.
 Configs live beside the campaign data, not here:
 `configs/general_config.epitope.yaml` and `configs/<tool>/*_run19.yaml`.
 
+**Scope: this run tests the tools, not the binders.** Fifty designs is nowhere
+near a design campaign — PXDesign alone needs 10,000+ for 10–100 dual-filter
+passes — and nothing here was meant to be ordered. Every number below is a
+diagnostic of what a tool did, not a measure of design quality, and a low pass
+rate is not a finding on its own. What is worth reading is where a tool
+reported something it did not measure, silently ignored what it was told, or
+returned something that is not a design at all.
+
 ---
 
 ## What did not work

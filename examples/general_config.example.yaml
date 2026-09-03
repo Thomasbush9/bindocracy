@@ -12,8 +12,10 @@ target:
   sequence_fasta: /absolute/path/to/binder_design/mosaic_setup/dio3_cut/dio3_cut.fasta
   msa: /absolute/path/to/binder_design/mosaic_setup/dio3_cut/msa_out/sequences/dio3_cut/msa/DIO3.a3m
   chain_id: A
-  # Produced by legacy/00_target/. Mosaic folds the target from
-  # sequence and ignores this; BoltzGen requires the geometry.
+  # Produced by legacy/00_target/. Mosaic folds the target from sequence but
+  # uses this PDB to map author-numbered hotspots onto FASTA positions.
+  structure_pdb: /absolute/path/to/binder_design/outputs/_shared/dio3_cut.pdb
+  # BoltzGen and PXDesign require the mmCIF geometry.
   structure_cif: /absolute/path/to/binder_design/outputs/_shared/dio3_cut.cif
   hotspots: []
 

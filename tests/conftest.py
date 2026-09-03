@@ -65,6 +65,7 @@ def write_configs(root: Path, *, driver_source: str | None = None, **mosaic_over
                   ) -> tuple[Path, Path]:
     """Write a valid general + Mosaic config pair and everything they reference."""
     fasta = root / "target.fasta"
+    pdb = root / "target.pdb"
     msa = root / "target.a3m"
     driver = root / "hallucinate_binders.py"
     container = root / "mosaic.sif"
@@ -75,6 +76,13 @@ def write_configs(root: Path, *, driver_source: str | None = None, **mosaic_over
     (weights / "boltz").mkdir(parents=True, exist_ok=True)
     scratch.parent.mkdir(parents=True, exist_ok=True)
     fasta.write_text(">target\nACDEFG\n")
+    pdb.write_text("\n".join(
+        f"ATOM  {index:>5d}  CA  {residue} A{index:>4d}    "
+        f"{index:>8.3f}{0.0:>8.3f}{0.0:>8.3f}  1.00  0.00           C"
+        for index, residue in enumerate(
+            ("ALA", "CYS", "ASP", "GLU", "PHE", "GLY"), start=1
+        )
+    ) + "\nEND\n")
     msa.write_text(">target\nACDEFG\n")
     driver.write_text(driver_source or FAKE_DRIVER)
     container.write_bytes(b"fixture")
@@ -88,6 +96,7 @@ def write_configs(root: Path, *, driver_source: str | None = None, **mosaic_over
         "target": {
             "name": "test-target",
             "sequence_fasta": str(fasta),
+            "structure_pdb": str(pdb),
             "msa": str(msa),
             "chain_id": "A",
             "hotspots": [],
@@ -965,16 +974,70 @@ def freebindcraft_target(pdb: Path, **overrides) -> dict:
 def freebindcraft_advanced(**overrides) -> dict:
     """The keys preflight insists on, with `max_trajectories` unset as shipped."""
     document = {
+        "acceptance_rate": 0.01,
+        "af_params_dir": "",
+        "backbone_noise": 0.0,
+        "dalphaball_path": "",
         "design_algorithm": "4stage",
-        "omit_AAs": "C",
-        "use_multimer_design": True,
+        "dssp_path": "",
         "enable_mpnn": True,
-        "num_seqs": 20,
-        "max_mpnn_sequences": 2,
-        # What "contacting the epitope" means to the hallucination loss.
+        "enable_rejection_check": True,
+        "force_reject_AA": False,
+        "greedy_iterations": 15,
+        "greedy_percentage": 1,
+        "hard_iterations": 5,
         "inter_contact_distance": 20.0,
         "inter_contact_number": 2,
+        "intra_contact_distance": 14.0,
+        "intra_contact_number": 2,
+        "max_mpnn_sequences": 2,
         "max_trajectories": False,
+        "model_path": "v_48_020",
+        "mpnn_fix_interface": True,
+        "mpnn_weights": "soluble",
+        "num_recycles_design": 1,
+        "num_recycles_validation": 3,
+        "num_seqs": 20,
+        "omit_AAs": "C",
+        "optimise_beta": True,
+        "optimise_beta_extra_soft": 0,
+        "optimise_beta_extra_temp": 0,
+        "optimise_beta_recycles_design": 3,
+        "optimise_beta_recycles_valid": 3,
+        "predict_bigbang": False,
+        "predict_initial_guess": False,
+        "random_helicity": False,
+        "remove_binder_monomer": True,
+        "remove_unrelaxed_complex": True,
+        "remove_unrelaxed_trajectory": True,
+        "rm_template_sc_design": False,
+        "rm_template_sc_predict": False,
+        "rm_template_seq_design": False,
+        "rm_template_seq_predict": False,
+        "sample_models": True,
+        "sampling_temp": 0.1,
+        "save_design_animations": True,
+        "save_design_trajectory_plots": True,
+        "save_mpnn_fasta": False,
+        "save_trajectory_pickle": False,
+        "soft_iterations": 75,
+        "start_monitoring": 600,
+        "temporary_iterations": 45,
+        "use_i_ptm_loss": True,
+        "use_multimer_design": True,
+        "use_rg_loss": True,
+        "use_termini_distance_loss": False,
+        "weights_con_inter": 1.0,
+        "weights_con_intra": 1.0,
+        "weights_helicity": -0.3,
+        "weights_iptm": 0.05,
+        "weights_pae_inter": 0.1,
+        "weights_pae_intra": 0.4,
+        "weights_plddt": 0.1,
+        "weights_rg": 0.3,
+        "weights_termini_loss": 0.1,
+        "zip_animations": True,
+        "zip_plots": True,
     }
     document.update(overrides)
     return document

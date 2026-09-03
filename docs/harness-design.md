@@ -18,7 +18,7 @@ wanted:
 
 | Representation | Tools |
 |---|---|
-| sequence only | Mosaic, Protein-Hunter |
+| sequence only | Mosaic and Protein-Hunter generation; Mosaic also reads the PDB to map author-numbered hotspots |
 | structure (PDB) | FreeBindCraft, Proteina-Complexa, RFdiffusion, Caliby |
 | structure (mmCIF) | BoltzGen, PXDesign |
 | structure **+ a two-file MSA directory** | PXDesign |

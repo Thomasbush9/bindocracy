@@ -28,19 +28,23 @@ class MosaicPlugin(ToolPlugin):
 
     def tool_plan(self, loaded: LoadedConfigs) -> ToolPlan:
         sampling = loaded.model.sampling
+        inputs = {
+            "target_fasta": loaded.general.target.sequence_fasta,
+            "target_msa": loaded.general.target.msa,
+            "exec_wrapper": loaded.model.runtime.exec_wrapper,
+        }
+        # Planning reads the structure only to map author-numbered hotspots
+        # onto FASTA positions. Record it whenever that mapping was required.
+        if loaded.general.target.hotspots:
+            assert loaded.general.target.structure_pdb is not None
+            inputs["target_structure"] = loaded.general.target.structure_pdb
         return ToolPlan(
             jobs=sampling.jobs,
             designs_per_task=sampling.designs_per_job,
             designs_file=DESIGNS_FILE,
             # The driver is executed, and its content is in no other store.
             archives={"driver": loaded.model.driver.script},
-            # Mosaic folds the target from sequence, so it reads the FASTA and
-            # the MSA and never touches a structure.
-            inputs={
-                "target_fasta": loaded.general.target.sequence_fasta,
-                "target_msa": loaded.general.target.msa,
-                "exec_wrapper": loaded.model.runtime.exec_wrapper,
-            },
+            inputs=inputs,
             container=loaded.model.runtime.container,
             workflow={
                 "target_length": loaded.preflight.target_length,
@@ -82,7 +86,7 @@ def _epitope_enforcement(preflight: MosaicPreflight) -> dict[str, Any]:
         # 0-based into the target sequence, which is what the loss slices by.
         "epitope_idx": list(preflight.epitope_idx),
         "mechanism": "BinderTargetContact restricted to the epitope columns, "
-                     "during hallucination only",
+        "during hallucination only",
         # BinderTargetContact's own default, and not a harness field.
         "contact_distance_angstroms": 20.0,
         "verified_after_generation": False,

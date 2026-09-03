@@ -64,6 +64,15 @@ def test_it_runs_the_archived_driver_not_the_authored_one(planned) -> None:
     assert driver != loaded.model.driver.script
 
 
+def test_a_legacy_manifest_does_not_receive_the_new_epitope_flag(planned) -> None:
+    """Its archived driver predates --epitope and would reject the argument."""
+    _, manifest = planned
+    workflow = {key: value for key, value in manifest.workflow.items() if key != "epitope_idx"}
+    legacy = manifest.model_copy(update={"workflow": workflow})
+
+    assert "--epitope" not in launch_spec(legacy, 0).argv
+
+
 def test_environment_carries_what_the_wrapper_reads(planned) -> None:
     loaded, manifest = planned
 

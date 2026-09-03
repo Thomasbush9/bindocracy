@@ -244,13 +244,12 @@ refuses to start.
 | PXDesign | `hotspots` in the input spec | compared; mismatch refused |
 | BoltzGen | `binding_types` in the design spec | must cover the epitope, else refused |
 | Protein-Hunter | `--contact_residues` | mapped onto residue numbers and passed |
-| Mosaic | `BinderTargetContact(epitope_idx=...)` | **refused for now** — the term is in the loss, the driver builds it without one |
+| Mosaic | `BinderTargetContact(epitope_idx=...)` | author residue numbers mapped through the target PDB and passed to the loss |
 
-Mosaic is the one still owing work rather than done: the loss its driver builds
-already contains `sp.BinderTargetContact()`, and that term takes an
-`epitope_idx` it is never given, so the contact reward is "touch the target
-anywhere". Threading it through is a driver argument and a mapping to 0-based
-indices — index by `seqid - 1`, not by position, or it is section 1.4 again.
+The Mosaic harness driver now threads the epitope into
+`sp.BinderTargetContact()` as 0-based target-sequence indices. Campaign author
+residue numbers are mapped through the target PDB, whose sequence must match
+the FASTA, rather than assuming every chain starts at residue 1.
 
 Protein-Hunter is the one that gained real capability rather than a guard.
 `--contact_residues` is load-bearing in three separate places upstream — a

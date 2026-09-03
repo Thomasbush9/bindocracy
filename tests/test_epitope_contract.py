@@ -74,9 +74,8 @@ def test_mosaic_conditions_its_contact_loss_on_the_campaign_epitope(
 ) -> None:
     """`BinderTargetContact` slices its contact matrix to the epitope columns.
 
-    The indices are 0-based positions in the target sequence, so a campaign
-    A2/A4 becomes [1, 3]. Indexing by enumeration position instead is the bug
-    in docs/known-issues.md section 1.4.
+    The indices are 0-based positions in the target sequence, so PDB residues
+    A2/A4 on this contiguous fixture become [1, 3].
     """
     general, model = write_configs(tmp_path)
     with_hotspots(general, EPITOPE)
@@ -109,11 +108,59 @@ def test_mosaic_records_how_little_its_epitope_enforces(tmp_path: Path) -> None:
 
 
 def test_mosaic_refuses_an_epitope_it_cannot_place(tmp_path: Path) -> None:
-    """The FASTA is six residues; a hotspot past it would slice silently."""
+    """The target PDB is six residues; an absent hotspot would slice silently."""
     general, model = write_configs(tmp_path)
     with_hotspots(general, ["A2", "A900"])
 
-    with pytest.raises(ConfigPreflightError, match="outside the target sequence"):
+    with pytest.raises(ConfigPreflightError, match="absent from target PDB"):
+        load_configs(general, model)
+
+
+def test_mosaic_maps_author_numbers_through_the_target_structure(tmp_path: Path) -> None:
+    """A chain need not start at author residue 1."""
+    general, model = write_configs(tmp_path)
+    pdb = tmp_path / "target.pdb"
+    pdb.write_text(
+        "\n".join(
+            f"ATOM  {index:>5d}  CA  {residue} A{number:>4d}    "
+            f"{index:>8.3f}{0.0:>8.3f}{0.0:>8.3f}  1.00  0.00           C"
+            for index, (number, residue) in enumerate(
+                zip(
+                    range(17, 23),
+                    ("ALA", "CYS", "ASP", "GLU", "PHE", "GLY"),
+                    strict=True,
+                ),
+                start=1,
+            )
+        )
+        + "\nEND\n"
+    )
+    with_hotspots(general, ["A18", "A20"])
+
+    manifest = plan(load_configs(general, model), tmp_path / "run")
+
+    assert manifest.workflow["epitope_idx"] == [1, 3]
+    assert "target_structure" in manifest.inputs
+
+
+def test_mosaic_refuses_to_guess_numbering_without_a_structure(tmp_path: Path) -> None:
+    general, model = write_configs(tmp_path)
+    document = yaml.safe_load(general.read_text())
+    document["target"].pop("structure_pdb")
+    document["target"]["hotspots"] = EPITOPE
+    general.write_text(yaml.safe_dump(document))
+
+    with pytest.raises(ConfigPreflightError, match="needs target.structure_pdb"):
+        load_configs(general, model)
+
+
+def test_mosaic_refuses_a_structure_for_another_sequence(tmp_path: Path) -> None:
+    general, model = write_configs(tmp_path)
+    pdb = tmp_path / "target.pdb"
+    pdb.write_text(pdb.read_text().replace(" CA  CYS A", " CA  ALA A"))
+    with_hotspots(general, EPITOPE)
+
+    with pytest.raises(ConfigPreflightError, match="sequences first differ"):
         load_configs(general, model)
 
 
@@ -125,9 +172,7 @@ def test_mosaic_refuses_an_epitope_on_another_chain(tmp_path: Path) -> None:
         load_configs(general, model)
 
 
-def test_the_mosaic_driver_accepts_and_bounds_the_epitope(
-    driver, tmp_path: Path
-) -> None:
+def test_the_mosaic_driver_accepts_and_bounds_the_epitope(driver, tmp_path: Path) -> None:
     """The connector builds the flag on a login node; the driver parses it.
 
     The bounds check is repeated in the driver because this is the last place
@@ -159,9 +204,7 @@ def test_boltzgen_accepts_a_spec_that_covers_the_epitope(tmp_path: Path) -> None
     with_hotspots(general, EPITOPE)
     spec_path = tmp_path / "binder_spec.yaml"
     spec = yaml.safe_load(spec_path.read_text())
-    spec["entities"][1]["file"]["binding_types"] = [
-        {"chain": {"id": "A", "binding": "1..6"}}
-    ]
+    spec["entities"][1]["file"]["binding_types"] = [{"chain": {"id": "A", "binding": "1..6"}}]
     spec_path.write_text(yaml.safe_dump(spec))
 
     loaded = load_configs(general, model)
@@ -173,9 +216,7 @@ def test_boltzgen_refuses_a_spec_that_binds_somewhere_else(tmp_path: Path) -> No
     with_hotspots(general, EPITOPE)
     spec_path = tmp_path / "binder_spec.yaml"
     spec = yaml.safe_load(spec_path.read_text())
-    spec["entities"][1]["file"]["binding_types"] = [
-        {"chain": {"id": "A", "binding": "5,6"}}
-    ]
+    spec["entities"][1]["file"]["binding_types"] = [{"chain": {"id": "A", "binding": "5,6"}}]
     spec_path.write_text(yaml.safe_dump(spec))
 
     with pytest.raises(ConfigPreflightError, match="does not cover"):
@@ -199,7 +240,6 @@ def test_pxdesign_still_compares_its_specs_epitope(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigPreflightError, match="conditions on residues"):
         load_configs(general, model)
-
 
 
 def test_proteina_complexa_still_compares_its_registrys_epitope(tmp_path: Path) -> None:
@@ -291,8 +331,7 @@ def test_freebindcraft_refuses_an_authored_epitope(tmp_path: Path) -> None:
     general, model = write_freebindcraft_configs(
         tmp_path,
         hotspots=EPITOPE,
-        target=freebindcraft_target(tmp_path / "target.pdb",
-                                    target_hotspot_residues="A2,A4"),
+        target=freebindcraft_target(tmp_path / "target.pdb", target_hotspot_residues="A2,A4"),
     )
 
     with pytest.raises(ConfigPreflightError, match="target_hotspot_residues"):
@@ -315,9 +354,7 @@ def test_protein_hunter_conditions_on_the_campaign_epitope(tmp_path: Path) -> No
     assert "--contact-filter" in argv
 
 
-def test_a_hotspot_free_campaign_passes_no_contact_flags(
-    protein_hunter_configs, tmp_path
-) -> None:
+def test_a_hotspot_free_campaign_passes_no_contact_flags(protein_hunter_configs, tmp_path) -> None:
     """Conditioning on nothing is different from conditioning on everything."""
     manifest = plan(load_configs(*protein_hunter_configs), tmp_path / "run")
     argv = launch_spec(manifest, 0).argv
@@ -386,9 +423,7 @@ def test_an_epitope_past_the_end_of_the_target_is_refused(tmp_path: Path) -> Non
         load_configs(general, model)
 
 
-def test_the_driver_accepts_the_contact_flags(
-    protein_hunter_driver, tmp_path: Path
-) -> None:
+def test_the_driver_accepts_the_contact_flags(protein_hunter_driver, tmp_path: Path) -> None:
     """The connector builds them on the login node; the driver parses them."""
     general, model = write_protein_hunter_configs(tmp_path)
     with_hotspots(general, EPITOPE)

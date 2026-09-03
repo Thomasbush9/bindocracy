@@ -1,11 +1,11 @@
 """Render one task's BindCraft settings, then run BindCraft on what it wrote.
 
-BindCraft's CLI takes three JSON paths and four behaviour flags. The output
-directory, the design count, the epitope and the trajectory budget are all keys
-*inside* those documents, and a run that fans out over tasks needs a different
-value for the first of them per task. So something has to write a settings pair
-per task. This does, from the templates the harness archived, and then runs
-BindCraft on what it wrote.
+BindCraft's CLI takes three JSON paths and a few behaviour flags. The output
+directory, design count, epitope and trajectory budget are all keys *inside*
+those documents, and its plot flags can disable but not enable an authored
+profile. A run that fans out over tasks therefore needs a rendered settings
+pair per task. This writes one from the templates the harness archived and
+then runs BindCraft on it.
 
 The rendered files keep their templates' names, so the `TargetSettings` and
 `AdvancedSettings` columns BindCraft stamps on every row name the authored
@@ -80,9 +80,7 @@ MIN_OPEN_FILES = 65536
 _NOISE = re.compile(r"Failed to read file: .*/dep-[0-9a-fA-F]+\.d")
 
 
-def render_target(
-    template: dict, *, design_path: str, final_designs: int, hotspots: str
-) -> dict:
+def render_target(template: dict, *, design_path: str, final_designs: int, hotspots: str) -> dict:
     """The authored target with this task's three harness-owned keys set.
 
     Nothing else is touched. The harness refuses a template that sets any of
@@ -98,15 +96,25 @@ def render_target(
     return target
 
 
-def render_advanced(template: dict, *, max_trajectories: int) -> dict:
-    """The authored profile with the trajectory budget this task was given.
+def render_advanced(
+    template: dict,
+    *,
+    max_trajectories: int,
+    save_plots: bool,
+    save_animations: bool,
+) -> dict:
+    """The authored profile with this task's harness-owned runtime values.
 
     It caps *successful* hallucinations: BindCraft counts the PDBs in
     `Trajectory/Relaxed/`, and trajectories that abort as clashing or
-    low-confidence are moved aside and never counted.
+    low-confidence are moved aside and never counted. The two output toggles
+    are written in both directions; BindCraft's CLI can disable them but has
+    no corresponding flags that enable a profile where they are false.
     """
     advanced = copy.deepcopy(template)
     advanced["max_trajectories"] = max_trajectories
+    advanced["save_design_trajectory_plots"] = save_plots
+    advanced["save_design_animations"] = save_animations
     return advanced
 
 
@@ -135,11 +143,15 @@ def bindcraft_command(args: argparse.Namespace, settings: Path, advanced: Path) 
     """
     command = [
         BINDCRAFT,
-        "--settings", str(settings),
-        "--advanced", str(advanced),
-        "--filters", str(Path(args.filters).resolve()),
+        "--settings",
+        str(settings),
+        "--advanced",
+        str(advanced),
+        "--filters",
+        str(Path(args.filters).resolve()),
         "--no-pyrosetta",
-        "--rank-by", args.rank_by,
+        "--rank-by",
+        args.rank_by,
     ]
     if not args.plots:
         command.append("--no-plots")
@@ -172,16 +184,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target-template", required=True, help="Archived target JSON.")
     parser.add_argument("--advanced-template", required=True, help="Archived advanced JSON.")
     parser.add_argument("--filters", required=True, help="Archived filter set JSON.")
-    parser.add_argument("--settings-dir", required=True,
-                        help="Where this task's rendered settings are written.")
-    parser.add_argument("--design-path", required=True,
-                        help="This task's BindCraft output directory.")
-    parser.add_argument("--final-designs", type=int, required=True,
-                        help="number_of_final_designs: accepted designs, not candidates.")
-    parser.add_argument("--max-trajectories", type=int, required=True,
-                        help="Successful hallucinations before the loop stops.")
-    parser.add_argument("--hotspots", required=True,
-                        help="target_hotspot_residues; empty means no epitope.")
+    parser.add_argument(
+        "--settings-dir", required=True, help="Where this task's rendered settings are written."
+    )
+    parser.add_argument(
+        "--design-path", required=True, help="This task's BindCraft output directory."
+    )
+    parser.add_argument(
+        "--final-designs",
+        type=int,
+        required=True,
+        help="number_of_final_designs: accepted designs, not candidates.",
+    )
+    parser.add_argument(
+        "--max-trajectories",
+        type=int,
+        required=True,
+        help="Successful hallucinations before the loop stops.",
+    )
+    parser.add_argument(
+        "--hotspots", required=True, help="target_hotspot_residues; empty means no epitope."
+    )
     parser.add_argument("--rank-by", required=True, choices=("i_pTM", "ipSAE"))
     parser.add_argument("--plots", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--animations", action=argparse.BooleanOptionalAction, default=False)
@@ -201,18 +224,32 @@ def main() -> int:
     settings = settings_dir / target_template.name
     advanced = settings_dir / advanced_template.name
 
-    settings.write_text(json.dumps(render_target(
-        json.loads(target_template.read_text()),
-        # BindCraft joins this with every output name, so the trailing
-        # separator its own examples carry is neither required nor harmful.
-        design_path=str(design_path),
-        final_designs=args.final_designs,
-        hotspots=args.hotspots,
-    ), indent=2) + "\n")
-    advanced.write_text(json.dumps(render_advanced(
-        json.loads(advanced_template.read_text()),
-        max_trajectories=args.max_trajectories,
-    ), indent=2) + "\n")
+    settings.write_text(
+        json.dumps(
+            render_target(
+                json.loads(target_template.read_text()),
+                # BindCraft joins this with every output name, so the trailing
+                # separator its own examples carry is neither required nor harmful.
+                design_path=str(design_path),
+                final_designs=args.final_designs,
+                hotspots=args.hotspots,
+            ),
+            indent=2,
+        )
+        + "\n"
+    )
+    advanced.write_text(
+        json.dumps(
+            render_advanced(
+                json.loads(advanced_template.read_text()),
+                max_trajectories=args.max_trajectories,
+                save_plots=args.plots,
+                save_animations=args.animations,
+            ),
+            indent=2,
+        )
+        + "\n"
+    )
 
     print(f"open files: soft limit raised to {raise_open_files()}", flush=True)
 

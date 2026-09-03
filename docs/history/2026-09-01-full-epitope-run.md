@@ -39,14 +39,15 @@ other six designed against a patch.
 
 Fixed in commit *Mosaic: the epitope its loss was always able to take*. The
 driver takes `--epitope` as 0-based indices into the target sequence; preflight
-maps campaign residue numbers with `seqid - 1` and refuses a hotspot on another
-chain or past the end of the FASTA. The bounds check is repeated inside the
-driver, because that is the last place the numbers exist before they become an
-array slice and JAX clips an out-of-range index rather than raising.
+maps campaign author residue numbers through the ordered target PDB chain and
+refuses an ambiguous FASTA/PDB mapping. The bounds check is repeated inside
+the driver, because that is the last place the numbers exist before they
+become an array slice and JAX clips an out-of-range index rather than raising.
 
-Indexing by enumeration position instead of `seqid - 1` is
-[known-issues §1.4](../known-issues.md), which silently conditioned 23 of 26
-epitope entries on the wrong residues. Not repeated.
+The separate cropped-target indexing bug in
+[known-issues §1.4](../known-issues.md) silently conditioned 23 of 26 epitope
+entries on the wrong residues. This mapping is checked against both the PDB
+and FASTA instead of repeating that assumption.
 
 Mosaic was launched from its own index after the fix, rather than restarting
 the six already on the queue: the change touches `tools/mosaic/` and
@@ -175,7 +176,8 @@ bias gets 54 of 57.
 **Mosaic's conditioning cannot be verified at all.** It records sequences and
 one ranking loss and keeps no structure, so there is nothing to measure. The
 epitope reached the loss — the driver logged `epitope: [109, 111, 130]`, which
-is `seqid - 1` for A110/A112/A131 — but whether it changed where the binders
+is where PDB residues A110/A112/A131 map on this contiguous chain — but
+whether it changed where the binders
 sit is unanswerable from what the run wrote.
 
 ### BoltzGen is still returning ubiquitin

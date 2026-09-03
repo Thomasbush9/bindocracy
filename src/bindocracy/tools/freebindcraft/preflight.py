@@ -36,6 +36,7 @@ which of its own thresholds were inert instead.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,6 +55,79 @@ DRIVER_OWNED_TARGET_KEYS = (
     "design_path",
     "number_of_final_designs",
     "target_hotspot_residues",
+)
+
+# Every key is present in every advanced profile shipped by FreeBindCraft, and
+# the upstream implementation reads each of them by subscript on at least one
+# normal execution path. Keeping the complete document contract here turns a
+# late container KeyError into an immediate, actionable config error.
+ADVANCED_REQUIRED_KEYS = frozenset(
+    {
+        "acceptance_rate",
+        "af_params_dir",
+        "backbone_noise",
+        "dalphaball_path",
+        "design_algorithm",
+        "dssp_path",
+        "enable_mpnn",
+        "enable_rejection_check",
+        "force_reject_AA",
+        "greedy_iterations",
+        "greedy_percentage",
+        "hard_iterations",
+        "inter_contact_distance",
+        "inter_contact_number",
+        "intra_contact_distance",
+        "intra_contact_number",
+        "max_mpnn_sequences",
+        "max_trajectories",
+        "model_path",
+        "mpnn_fix_interface",
+        "mpnn_weights",
+        "num_recycles_design",
+        "num_recycles_validation",
+        "num_seqs",
+        "omit_AAs",
+        "optimise_beta",
+        "optimise_beta_extra_soft",
+        "optimise_beta_extra_temp",
+        "optimise_beta_recycles_design",
+        "optimise_beta_recycles_valid",
+        "predict_bigbang",
+        "predict_initial_guess",
+        "random_helicity",
+        "remove_binder_monomer",
+        "remove_unrelaxed_complex",
+        "remove_unrelaxed_trajectory",
+        "rm_template_sc_design",
+        "rm_template_sc_predict",
+        "rm_template_seq_design",
+        "rm_template_seq_predict",
+        "sample_models",
+        "sampling_temp",
+        "save_design_animations",
+        "save_design_trajectory_plots",
+        "save_mpnn_fasta",
+        "save_trajectory_pickle",
+        "soft_iterations",
+        "start_monitoring",
+        "temporary_iterations",
+        "use_i_ptm_loss",
+        "use_multimer_design",
+        "use_rg_loss",
+        "use_termini_distance_loss",
+        "weights_con_inter",
+        "weights_con_intra",
+        "weights_helicity",
+        "weights_iptm",
+        "weights_pae_inter",
+        "weights_pae_intra",
+        "weights_plddt",
+        "weights_rg",
+        "weights_termini_loss",
+        "zip_animations",
+        "zip_plots",
+    }
 )
 
 # Metrics `functions/pr_alternative_utils.py` fills with fixed constants when
@@ -76,9 +150,7 @@ _MODEL_PREFIX = re.compile(r"^(?:Average|[1-5])_")
 
 # `A56`, `56`, `A56-60`, `56-60`, or a bare chain letter meaning the whole
 # chain. This is what ColabDesign's `prep_pos` accepts, comma separated.
-_SEGMENT = re.compile(
-    r"(?P<chain>[A-Za-z])?(?P<start>\d+)(?:-(?:[A-Za-z])?(?P<end>\d+))?$"
-)
+_SEGMENT = re.compile(r"(?P<chain>[A-Za-z])?(?P<start>\d+)(?:-(?:[A-Za-z])?(?P<end>\d+))?$")
 
 
 @dataclass(frozen=True)
@@ -188,9 +260,7 @@ def _load_json(path: Path, described_as: str) -> dict:
             f"cannot read FreeBindCraft {described_as} {path}: {error}"
         ) from error
     if not isinstance(document, dict):
-        raise ConfigPreflightError(
-            f"FreeBindCraft {described_as} must be a JSON object: {path}"
-        )
+        raise ConfigPreflightError(f"FreeBindCraft {described_as} must be a JSON object: {path}")
     return document
 
 
@@ -255,9 +325,7 @@ def _require_campaign_structure(target: dict, path: Path, campaign: Path) -> Non
     """
     starting = target.get("starting_pdb")
     if not isinstance(starting, str) or not starting.strip():
-        raise ConfigPreflightError(
-            f"FreeBindCraft target settings {path} has no `starting_pdb`"
-        )
+        raise ConfigPreflightError(f"FreeBindCraft target settings {path} has no `starting_pdb`")
     structure = Path(starting.strip())
     if not structure.is_absolute():
         raise ConfigPreflightError(
@@ -285,6 +353,13 @@ def _require_campaign_chain(target: dict, path: Path, chain_id: str) -> None:
 
 def _require_advanced(advanced: dict, path: Path) -> None:
     """The advanced profile: no trajectory budget of its own, and MPNN on."""
+    missing = sorted(ADVANCED_REQUIRED_KEYS - advanced.keys())
+    if missing:
+        raise ConfigPreflightError(
+            f"FreeBindCraft advanced settings {path} are missing "
+            f"{', '.join(missing)}. BindCraft reads these keys by subscript, "
+            "so an absent one is a KeyError inside the container."
+        )
     budget = advanced.get("max_trajectories")
     if "max_trajectories" not in advanced or budget is not False:
         raise ConfigPreflightError(
@@ -299,21 +374,6 @@ def _require_advanced(advanced: dict, path: Path) -> None:
             "enable_mpnn false BindCraft hallucinates trajectories and writes "
             "nothing to mpnn_design_stats.csv, never accepts a design, and "
             "produces no output this harness can collect."
-        )
-    missing = [
-        key
-        for key in ("design_algorithm", "num_seqs", "max_mpnn_sequences",
-                    "use_multimer_design", "omit_AAs",
-                    # The two that define what "contacting the epitope" means
-                    # to the hallucination loss, and so what an epitope buys.
-                    "inter_contact_distance", "inter_contact_number")
-        if key not in advanced
-    ]
-    if missing:
-        raise ConfigPreflightError(
-            f"FreeBindCraft advanced settings {path} are missing "
-            f"{', '.join(missing)}. BindCraft reads every advanced key by "
-            "subscript, so an absent one is a KeyError inside the container."
         )
 
 
@@ -334,17 +394,56 @@ def _filter_names(filters: dict, path: Path) -> tuple[tuple[str, ...], tuple[str
             )
         if key.endswith("InterfaceAAs"):
             # Per-amino-acid caps, one nested object per residue type.
-            if any(
-                isinstance(value, dict) and value.get("threshold") is not None
-                for value in condition.values()
-            ):
+            nested_active = False
+            for amino_acid, value in condition.items():
+                nested_active = (
+                    _active_filter_condition(value, f"{key}.{amino_acid}", path) or nested_active
+                )
+            if nested_active:
                 active.add(_metric_of(key))
             continue
-        if condition.get("threshold") is not None:
+        if _active_filter_condition(condition, key, path):
             active.add(_metric_of(key))
 
     inert = tuple(sorted(active & set(PLACEHOLDER_METRICS)))
     return tuple(sorted(active)), inert
+
+
+def _active_filter_condition(condition: object, label: str, path: Path) -> bool:
+    """Validate one threshold object and say whether it is active."""
+    if not isinstance(condition, dict):
+        raise ConfigPreflightError(
+            f"FreeBindCraft filter set {path} has a non-object condition for "
+            f'{label!r}; expected {{"threshold": ..., "higher": ...}}'
+        )
+    if "threshold" not in condition:
+        raise ConfigPreflightError(
+            f"FreeBindCraft filter set {path} condition {label!r} is missing "
+            "`threshold`; BindCraft reads it by subscript."
+        )
+    threshold = condition["threshold"]
+    if threshold is None:
+        if "higher" in condition and not isinstance(condition["higher"], bool):
+            raise ConfigPreflightError(
+                f"FreeBindCraft filter set {path} condition {label!r} must set "
+                "`higher` to true or false."
+            )
+        return False
+    if (
+        isinstance(threshold, bool)
+        or not isinstance(threshold, (int, float))
+        or not math.isfinite(float(threshold))
+    ):
+        raise ConfigPreflightError(
+            f"FreeBindCraft filter set {path} condition {label!r} has a "
+            f"non-numeric threshold {threshold!r}."
+        )
+    if not isinstance(condition.get("higher"), bool):
+        raise ConfigPreflightError(
+            f"FreeBindCraft filter set {path} condition {label!r} must set "
+            "`higher` to true or false when its threshold is active."
+        )
+    return True
 
 
 def _metric_of(column: str) -> str:
@@ -412,8 +511,7 @@ def _chain_residues(pdb: Path, chain_id: str) -> set[int]:
             residues.add(int(number))
     if not residues:
         raise ConfigPreflightError(
-            f"no CA atoms of chain {chain_id} found in {pdb}; BindCraft builds "
-            "its target from them"
+            f"no CA atoms of chain {chain_id} found in {pdb}; BindCraft builds its target from them"
         )
     return residues
 

@@ -18,28 +18,39 @@ def mosaic_launch_spec(
     # moved on since this run was planned.
     driver = run_dir / manifest.provenance["driver"].path
 
-    argv = (
+    argv = [
         str(mosaic.runtime.exec_wrapper),
         "python",
         str(driver),
-        "--target-fasta", str(general.target.sequence_fasta),
-        "--target-msa", str(general.target.msa),
-        "--binder-length", str(mosaic.sampling.binder_length),
-        "--task-id", str(task.task_id),
-        "--seed-base", str(mosaic.sampling.seed_base),
-        "--n-designs", str(task.n_requested),
-        "--max-runtime", str(mosaic.sampling.max_runtime_hours),
-        "--save-dir", str(run_dir / task.directory),
-        "--soft-steps", str(mosaic.sampling.optimizer.soft_steps),
-        "--sharpen-steps", str(mosaic.sampling.optimizer.sharpen_steps),
-        "--final-steps", str(mosaic.sampling.optimizer.final_steps),
-        # The campaign epitope, mapped at planning and carried in the manifest
-        # so the launch cannot re-derive it differently from what was recorded.
-        # Empty is a value: it is the loss with no epitope at all.
-        "--epitope", _epitope(manifest),
-    )
+        "--target-fasta",
+        str(general.target.sequence_fasta),
+        "--target-msa",
+        str(general.target.msa),
+        "--binder-length",
+        str(mosaic.sampling.binder_length),
+        "--task-id",
+        str(task.task_id),
+        "--seed-base",
+        str(mosaic.sampling.seed_base),
+        "--n-designs",
+        str(task.n_requested),
+        "--max-runtime",
+        str(mosaic.sampling.max_runtime_hours),
+        "--save-dir",
+        str(run_dir / task.directory),
+        "--soft-steps",
+        str(mosaic.sampling.optimizer.soft_steps),
+        "--sharpen-steps",
+        str(mosaic.sampling.optimizer.sharpen_steps),
+        "--final-steps",
+        str(mosaic.sampling.optimizer.final_steps),
+    ]
+    # Keep the archived driver's CLI and its manifest in lockstep. Drivers
+    # archived before epitope_idx was introduced do not accept this flag.
+    if "epitope_idx" in manifest.workflow:
+        argv.extend(("--epitope", _epitope(manifest)))
     return LaunchSpec(
-        argv=argv,
+        argv=tuple(argv),
         env=_environment(mosaic),
         resources=slurm_resources(general.cluster, mosaic.resources),
         log=run_dir / task.log,
@@ -50,8 +61,8 @@ def mosaic_launch_spec(
 def _epitope(manifest: RunManifest) -> str:
     """The epitope indices this run was planned with, from the manifest alone.
 
-    A run planned before the epitope was recorded carries no key at all, and
-    reads as the unconditioned loss it actually was.
+    Called only for a manifest that records the key. Empty is still a value:
+    it names the unconditioned loss in a current driver.
     """
     indices = manifest.workflow.get("epitope_idx") or ()
     return ",".join(str(int(index)) for index in indices)

@@ -153,9 +153,7 @@ class FreeBindCraftOutputAdapter(OutputAdapter):
     def collect(self, run_dir: Path, run: RunRecord) -> CollectedRun:
         manifest = read_manifest(run_dir)
         if manifest.run_id != run.run_id:
-            raise CollectionError(
-                f"run {run.run_id} does not match manifest run {manifest.run_id}"
-            )
+            raise CollectionError(f"run {run.run_id} does not match manifest run {manifest.run_id}")
         expected = Expectations.of(manifest)
 
         designs: list[DesignRecord] = []
@@ -171,7 +169,11 @@ class FreeBindCraftOutputAdapter(OutputAdapter):
             status = read_task_status(run_dir / task.status)
             table = _read_task(run_dir, task, seen, expected)
             problems = table.shape_problems(task)
-            complete = not problems and bool(table.scored)
+            # Early AF2 rejections are still evaluated designs. A task may
+            # legitimately finish with no fully scored rows and a real zero
+            # passes, so completeness depends on consistent output and at
+            # least one produced sequence, not on surviving the first gate.
+            complete = not problems and bool(table.scored or table.unscored)
             evaluated = evaluated and complete
             passed += len(table.accepted)
 
@@ -212,45 +214,61 @@ class FreeBindCraftOutputAdapter(OutputAdapter):
                 designs.append(design)
                 if row.get(DESIGN) in table.scored_names:
                     metrics.extend(_metric_records(run.run_id, design, row))
-                decisions.extend(_decision_records(run.run_id, design, row, task, table))
-                artifacts.extend(
-                    _design_artifact(run_dir, run.run_id, task, design, row, table)
+                decisions.extend(
+                    _decision_records(
+                        run.run_id,
+                        design,
+                        row,
+                        task,
+                        table,
+                        positive_verdicts_verified=complete,
+                    )
                 )
+                artifacts.extend(_design_artifact(run_dir, run.run_id, task, design, row, table))
             artifacts.extend(_task_artifacts(run_dir, run.run_id, task))
 
-        artifacts.extend(provenance_artifacts(run_dir, run.run_id, manifest, {
-            "driver": "driver",
-            "target": "target_settings",
-            "filters": "filter_set",
-            "advanced": "advanced_settings",
-        }))
+        artifacts.extend(
+            provenance_artifacts(
+                run_dir,
+                run.run_id,
+                manifest,
+                {
+                    "driver": "driver",
+                    "target": "target_settings",
+                    "filters": "filter_set",
+                    "advanced": "advanced_settings",
+                },
+            )
+        )
         statuses = [read_task_status(run_dir / task.status) for task in manifest.tasks]
         started, finished = run_window(statuses)
 
-        collected_run = run.model_copy(update={
-            "status": run_status(len(designs), statuses, complete=evaluated),
-            "n_requested": manifest.designs_per_task * len(manifest.tasks),
-            # Every MPNN sequence the run predicted, whether or not it was
-            # scored. The trajectories behind them are in count_details: they
-            # are candidate backbones, not candidate designs, and a single
-            # number mixing the two would answer neither question.
-            "n_attempted": len(designs),
-            "n_produced": len(designs),
-            # Taken from the tables rather than from the ranked file, which a
-            # task that exhausted its trajectory budget never writes.
-            "n_passed": passed if evaluated else None,
-            "count_details": {
-                # PyRosetta is not in this image, so eight interface metrics
-                # are constants and any threshold on them was inert. Recorded
-                # here because it is the difference between a filter that
-                # rejected nothing and a filter that measured nothing.
-                "pyrosetta": manifest.workflow.get("pyrosetta"),
-                "inert_filters": list(manifest.workflow.get("inert_filters") or ()),
-                "tasks": per_task,
-            },
-            "started_at": started,
-            "finished_at": finished,
-        })
+        collected_run = run.model_copy(
+            update={
+                "status": run_status(len(designs), statuses, complete=evaluated),
+                "n_requested": manifest.designs_per_task * len(manifest.tasks),
+                # Every MPNN sequence the run predicted, whether or not it was
+                # scored. The trajectories behind them are in count_details: they
+                # are candidate backbones, not candidate designs, and a single
+                # number mixing the two would answer neither question.
+                "n_attempted": len(designs),
+                "n_produced": len(designs),
+                # Taken from the tables rather than from the ranked file, which a
+                # task that exhausted its trajectory budget never writes.
+                "n_passed": passed if evaluated else None,
+                "count_details": {
+                    # PyRosetta is not in this image, so eight interface metrics
+                    # are constants and any threshold on them was inert. Recorded
+                    # here because it is the difference between a filter that
+                    # rejected nothing and a filter that measured nothing.
+                    "pyrosetta": manifest.workflow.get("pyrosetta"),
+                    "inert_filters": list(manifest.workflow.get("inert_filters") or ()),
+                    "tasks": per_task,
+                },
+                "started_at": started,
+                "finished_at": finished,
+            }
+        )
         return CollectedRun(
             run=collected_run,
             designs=tuple(designs),
@@ -264,7 +282,7 @@ class FreeBindCraftOutputAdapter(OutputAdapter):
         expected = Expectations.of(manifest)
         for task in manifest.tasks:
             table = _read_task(run_dir, task, set(), expected)
-            if not table.scored:
+            if not (table.scored or table.unscored) or table.shape_problems(task):
                 return False
         return True
 
@@ -415,9 +433,7 @@ class TaskTable:
         elif len(self.accepted) >= task.n_requested:
             # The loop fills the ranks in inside the check that ends it, so
             # enough designs and no ranks means it never got there.
-            problems.append(
-                f"{len(self.accepted)} designs accepted but nothing was ranked"
-            )
+            problems.append(f"{len(self.accepted)} designs accepted but nothing was ranked")
         if self.trajectory_rows != self.trajectories["successful"]:
             problems.append(
                 f"{self.trajectory_rows} trajectory rows, "
@@ -431,17 +447,21 @@ class TaskTable:
         return problems
 
 
-def _read_task(
-    run_dir: Path, task: TaskPlan, seen: set[str], expected: Expectations
-) -> TaskTable:
+def _read_task(run_dir: Path, task: TaskPlan, seen: set[str], expected: Expectations) -> TaskTable:
     """Everything one task wrote, parsed and cross-checked."""
     task_dir = run_dir / task.directory
     # Scored first: a design that failed the base AF2 filters is in the
     # rejected table alone, one that failed later is in both, and only the
     # first kind is a design this run has nowhere else.
-    scored, scored_counts = _read_scored(task_dir / DESIGNS_FILE, task, seen, expected)
+    scored, scored_names, scored_counts = _read_scored(
+        task_dir / DESIGNS_FILE, task, seen, expected
+    )
     rejected_failures, unscored, rejection_counts = _read_rejected(
-        task_dir / REJECTED_FILE, task, seen
+        task_dir / REJECTED_FILE,
+        task,
+        seen,
+        scored_names=scored_names,
+        admit_unscored=scored_counts["n_foreign"] == 0,
     )
     ranks, final_named, rank_counts = _read_ranks(task_dir / FINAL_FILE)
     return TaskTable(
@@ -451,8 +471,7 @@ def _read_task(
         ranks=ranks,
         final_named=final_named,
         trajectories={
-            name: _count_pdbs(task_dir / relative)
-            for name, relative in TRAJECTORY_DIRS.items()
+            name: _count_pdbs(task_dir / relative) for name, relative in TRAJECTORY_DIRS.items()
         },
         trajectory_rows=_count_rows(task_dir / TRAJECTORY_FILE),
         failures=_read_failures(task_dir / FAILURE_FILE),
@@ -466,7 +485,7 @@ def _read_task(
 
 def _read_scored(
     path: Path, task: TaskPlan, seen: set[str], expected: Expectations
-) -> tuple[list[dict[str, Any]], dict[str, int]]:
+) -> tuple[list[dict[str, Any]], set[str], dict[str, int]]:
     """`mpnn_design_stats.csv`: one row per fully scored design.
 
     A row is rejected rather than fatal, so one malformed line does not cost
@@ -474,9 +493,14 @@ def _read_scored(
     """
     counts = {"n_invalid": 0, "n_foreign": 0}
     rows: list[dict[str, Any]] = []
+    names: set[str] = set()
     for row in _rows(path):
         name = (row.get("Design") or "").strip()
         sequence = (row.get("Sequence") or "").strip().upper()
+        if name:
+            # Even a malformed or foreign scored row proves that the rejected
+            # table's row with this name is not an early-only design.
+            names.add(name)
         # Designs are numbered per trajectory and trajectory seeds are drawn at
         # random, so two tasks can produce the same name. Qualify them, or the
         # second task collects as duplicates of the first.
@@ -497,11 +521,16 @@ def _read_scored(
             continue
         seen.add(native_id)
         rows.append({**row, NATIVE_ID: native_id, DESIGN: name})
-    return rows, counts
+    return rows, names, counts
 
 
 def _read_rejected(
-    path: Path, task: TaskPlan, seen: set[str]
+    path: Path,
+    task: TaskPlan,
+    seen: set[str],
+    *,
+    scored_names: set[str],
+    admit_unscored: bool,
 ) -> tuple[dict[str, list[str]], list[dict[str, Any]], dict[str, int]]:
     """`rejected_mpnn_full_stats.csv`: every design BindCraft turned down.
 
@@ -515,7 +544,7 @@ def _read_rejected(
     the base filters are all single-word, but it means an absent flag is not
     evidence a filter passed.
     """
-    counts = {"n_rejected_invalid": 0}
+    counts = {"n_rejected_invalid": 0, "n_rejected_unverifiable": 0}
     failures: dict[str, list[str]] = {}
     unscored: list[dict[str, Any]] = []
     for row in _rows(path):
@@ -530,12 +559,16 @@ def _read_rejected(
             if column not in REJECTED_KEYS and str(value).strip() == "1"
         ]
         native_id = f"task-{task.task_id:04d}-{name}"
-        if (
-            native_id not in seen
-            and sequence
-            and _SEQUENCE.fullmatch(sequence) is not None
-            and "X" not in sequence
-        ):
+        candidate_is_valid = (
+            sequence and _SEQUENCE.fullmatch(sequence) is not None and "X" not in sequence
+        )
+        if name not in scored_names and candidate_is_valid and not admit_unscored:
+            # Rejected-only rows carry no settings or hotspot stamps. Once the
+            # scored table proves this directory contains foreign output,
+            # their provenance cannot be established safely.
+            counts["n_rejected_unverifiable"] += 1
+            continue
+        if name not in scored_names and native_id not in seen and candidate_is_valid:
             unscored.append({**row, NATIVE_ID: native_id, DESIGN: name})
             seen.add(native_id)
     return failures, unscored, counts
@@ -623,21 +656,15 @@ def _design_record(run_id: str, row: dict[str, Any], created_at: datetime) -> De
     )
 
 
-def _metric_records(
-    run_id: str, design: DesignRecord, row: dict[str, Any]
-) -> list[MetricRecord]:
+def _metric_records(run_id: str, design: DesignRecord, row: dict[str, Any]) -> list[MetricRecord]:
     """Every measured score on one design; the eight constants are left out."""
     records = []
     for name, direction in SINGLE_METRICS.items():
         records.extend(_metric(run_id, design, name, row.get(name), direction, 0))
     for name, direction in AVERAGED_METRICS.items():
-        records.extend(
-            _metric(run_id, design, name, row.get(f"Average_{name}"), direction, 0)
-        )
+        records.extend(_metric(run_id, design, name, row.get(f"Average_{name}"), direction, 0))
     for name, direction in REPLICATED_METRICS.items():
-        records.extend(
-            _metric(run_id, design, name, row.get(f"Average_{name}"), direction, 0)
-        )
+        records.extend(_metric(run_id, design, name, row.get(f"Average_{name}"), direction, 0))
         for model in MODELS:
             # A multimer design run predicts with two of the five models, so
             # three of these are empty on every row.
@@ -660,9 +687,7 @@ def _metric(
         return []
     return [
         MetricRecord(
-            metric_id=stable_id(
-                "metric", run_id, design.design_id, name, str(replicate)
-            ),
+            metric_id=stable_id("metric", run_id, design.design_id, name, str(replicate)),
             run_id=run_id,
             design_id=design.design_id,
             name=f"freebindcraft_{name}",
@@ -682,29 +707,38 @@ def _decision_records(
     row: dict[str, Any],
     task: TaskPlan,
     table: TaskTable,
+    *,
+    positive_verdicts_verified: bool,
 ) -> list[DecisionRecord]:
     """BindCraft's verdict on one design, and where it ranked among its siblings."""
     name = row[DESIGN]
     scored = name in table.scored_names
     failed = table.rejected_failures.get(name)
-    records = [
-        DecisionRecord(
-            decision_id=stable_id("decision", run_id, design.design_id, FILTER_NAME),
-            run_id=run_id,
-            design_id=design.design_id,
-            kind=DecisionKind.FILTER,
-            name=FILTER_NAME,
-            passed=failed is None,
-            reason=None if failed is None else {
-                # Which gate turned it down. The base filters run on the AF2
-                # prediction alone and stop the design before any interface
-                # metric is computed; the rest run on the full scored row.
-                "stage": "interface_filters" if scored else "af2_base",
-                "failed": failed,
-            },
-            created_at=design.created_at,
+    records = []
+    # A row in the rejected table directly proves failure. Absence from that
+    # table proves success only after every independent output agrees; on a
+    # partial task, silence may simply mean the table was truncated or absent.
+    if failed is not None or positive_verdicts_verified:
+        records.append(
+            DecisionRecord(
+                decision_id=stable_id("decision", run_id, design.design_id, FILTER_NAME),
+                run_id=run_id,
+                design_id=design.design_id,
+                kind=DecisionKind.FILTER,
+                name=FILTER_NAME,
+                passed=failed is None,
+                reason=None
+                if failed is None
+                else {
+                    # Which gate turned it down. The base filters run on the AF2
+                    # prediction alone and stop the design before any interface
+                    # metric is computed; the rest run on the full scored row.
+                    "stage": "interface_filters" if scored else "af2_base",
+                    "failed": failed,
+                },
+                created_at=design.created_at,
+            )
         )
-    ]
     rank = table.ranks.get(name)
     if rank is not None:
         records.append(
@@ -749,8 +783,11 @@ def _design_artifact(
         if filename is None:
             continue
         record = artifact(
-            run_dir, run_id, f"{task.directory}/{directory}/{filename}",
-            "design_complex", design_id=design.design_id,
+            run_dir,
+            run_id,
+            f"{task.directory}/{directory}/{filename}",
+            "design_complex",
+            design_id=design.design_id,
         )
         return [record] if record is not None else []
     return []
@@ -795,9 +832,7 @@ def _count_pdbs(directory: Path) -> int:
     if not directory.is_dir():
         return 0
     return sum(
-        1
-        for path in directory.iterdir()
-        if path.suffix == ".pdb" and not path.name.startswith(".")
+        1 for path in directory.iterdir() if path.suffix == ".pdb" and not path.name.startswith(".")
     )
 
 

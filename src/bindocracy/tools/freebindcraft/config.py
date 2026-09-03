@@ -1,18 +1,20 @@
 """FreeBindCraft's authored configuration.
 
-BindCraft is driven by three JSON documents and no useful flags: a **target**
+BindCraft is driven primarily by three JSON documents: a **target**
 (what to design against, how long, how many), a **filter set** (what counts as
 a design worth keeping), and an **advanced** profile (the 4-stage schedule, the
-MPNN settings, the trajectory budget). Only four of its command-line arguments
-are not paths, and none of them is the output directory, the design count, the
-trajectory budget, or a seed.
+MPNN settings, the trajectory budget). Its CLI can disable plots and
+animations, but cannot enable a profile where they are false, and it has no
+flags for the output directory, design count, trajectory budget, or a seed.
 
-So three keys are harness-owned and written per task by the driver --
+Four experiment settings are harness-owned and written per task by the driver --
 `design_path`, `number_of_final_designs`, and `target_hotspot_residues` in the
 target document, and `max_trajectories` in the advanced one -- and preflight
 refuses a template that sets any of them itself. Two answers to "how many
 designs did this run ask for" is worse than none, and an authored epitope is
-one more thing that can drift away from the campaign's.
+one more thing that can drift away from the campaign's. The runtime plot and
+animation switches are deliberately written over their advanced-profile
+values in either direction, so the typed config is authoritative.
 
 All three documents are folded into the stored config. They are the science:
 the filter set alone is the definition of `n_passed`, and it lives in no other
@@ -82,8 +84,8 @@ class FreeBindCraftRuntimeConfig(ConfigModel):
     rank_by: Literal["i_pTM", "ipSAE"] = "i_pTM"
     # Off by default: an HTML animation and four PNGs per trajectory are tens
     # of megabytes and minutes of wall time, and the run zips them at the end
-    # into files nothing here reads. The advanced profile's own values say
-    # true, so these are passed as `--no-plots` / `--no-animations`.
+    # into files nothing here reads. The driver writes these values into the
+    # rendered advanced profile, including when a user explicitly enables one.
     save_plots: bool = False
     save_animations: bool = False
     # Node-local scratch root. TMPDIR must NOT be on Lustre; see

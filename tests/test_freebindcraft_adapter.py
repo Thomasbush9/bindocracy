@@ -45,9 +45,7 @@ def design(bundle, native: str):
 
 
 def decision(bundle, design_id: str, kind: DecisionKind):
-    return next(
-        d for d in bundle.decisions if d.design_id == design_id and d.kind == kind
-    )
+    return next(d for d in bundle.decisions if d.design_id == design_id and d.kind == kind)
 
 
 # --- the counts -------------------------------------------------------------
@@ -258,10 +256,28 @@ def test_a_row_stamped_with_another_runs_settings_is_dropped(
 
     assert task["n_foreign"] == 7
     assert task["n_scored"] == 0
+    assert task["n_rejected_before_scoring"] == 0
+    assert task["n_rejected_unverifiable"] == 2
+    assert bundle.run.n_produced == 0
     # Nothing is reported as having passed, and the structures BindCraft kept
     # say plainly that the table did not describe this run.
     assert bundle.run.n_passed is None
     assert task["shape_problems"]
+
+
+def test_a_missing_rejected_table_never_implies_that_designs_passed(
+    freebindcraft_configs, tmp_path: Path
+) -> None:
+    manifest = plan(load_configs(*freebindcraft_configs), tmp_path / "run")
+    write_freebindcraft_task(manifest.directory, 0, status={})
+    (manifest.directory / "tasks/0000/bindcraft/rejected_mpnn_full_stats.csv").unlink()
+
+    bundle = collected(manifest)
+    filter_decisions = [record for record in bundle.decisions if record.kind == DecisionKind.FILTER]
+
+    assert bundle.run.status == RunStatus.PARTIAL
+    assert bundle.run.n_passed is None
+    assert not filter_decisions
 
 
 def test_a_row_reporting_the_wrong_epitope_is_dropped(
@@ -279,9 +295,7 @@ def test_a_row_reporting_the_wrong_epitope_is_dropped(
     assert collected(manifest).run.count_details["tasks"]["0000"]["n_foreign"] == 7
 
 
-def test_a_truncated_table_costs_only_its_broken_row(
-    freebindcraft_configs, tmp_path: Path
-) -> None:
+def test_a_truncated_table_costs_only_its_broken_row(freebindcraft_configs, tmp_path: Path) -> None:
     manifest = plan(load_configs(*freebindcraft_configs), tmp_path / "run")
     write_freebindcraft_task(manifest.directory, 0, status={})
     table = manifest.directory / "tasks/0000/bindcraft/mpnn_design_stats.csv"
@@ -330,8 +344,12 @@ def test_a_task_whose_every_trajectory_died_is_a_failed_run(
     manifest = plan(load_configs(*freebindcraft_configs), tmp_path / "run")
     write_freebindcraft_task(manifest.directory, 0, structures=False, status={})
     design_path = manifest.directory / "tasks/0000/bindcraft"
-    for name in ("mpnn_design_stats.csv", "rejected_mpnn_full_stats.csv",
-                 "final_design_stats.csv", "trajectory_stats.csv"):
+    for name in (
+        "mpnn_design_stats.csv",
+        "rejected_mpnn_full_stats.csv",
+        "final_design_stats.csv",
+        "trajectory_stats.csv",
+    ):
         table = design_path / name
         table.write_text(table.read_text().splitlines()[0] + "\n")
     bundle = collected(manifest)
@@ -339,6 +357,26 @@ def test_a_task_whose_every_trajectory_died_is_a_failed_run(
     assert bundle.run.n_produced == 0
     assert bundle.run.n_passed is None
     assert bundle.run.status == RunStatus.FAILED
+
+
+def test_a_task_whose_every_sequence_failed_the_base_filters_is_complete(
+    freebindcraft_configs, tmp_path: Path
+) -> None:
+    """Early rejections are evaluated designs and can establish a real zero."""
+    manifest = plan(load_configs(*freebindcraft_configs), tmp_path / "run")
+    header = Path(__file__).parent / "fixtures/freebindcraft/mpnn_design_stats.csv"
+    scored = header.read_text().splitlines()[0] + "\n"
+    write_freebindcraft_task(manifest.directory, 0, scored=scored, status={})
+
+    bundle = collected(manifest)
+
+    assert bundle.run.status == RunStatus.SUCCEEDED
+    assert bundle.run.n_produced == 7
+    assert bundle.run.n_passed == 0
+    assert all(
+        record.passed is False for record in bundle.decisions if record.kind == DecisionKind.FILTER
+    )
+    assert FreeBindCraftOutputAdapter().succeeded(manifest.directory) is True
 
 
 def test_only_the_scored_table_says_which_designs_were_measured(
@@ -355,10 +393,10 @@ def test_only_the_scored_table_says_which_designs_were_measured(
     assert design(bundle, REJECTED).candidate_type == CandidateType.COMPLEX
 
 
-def test_succeeded_asks_only_whether_every_task_scored_something(
+def test_succeeded_requires_consistent_output_from_every_task(
     tmp_path: Path,
 ) -> None:
-    """A task whose every trajectory died leaves nothing to parse."""
+    """A missing task fails the check; a complete, consistent task passes."""
     general, model = write_freebindcraft_configs(tmp_path, sampling={"jobs": 2})
     manifest = plan(load_configs(general, model), tmp_path / "run")
     adapter = FreeBindCraftOutputAdapter()

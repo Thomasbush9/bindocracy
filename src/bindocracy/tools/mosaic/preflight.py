@@ -1,14 +1,15 @@
 """Filesystem checks Mosaic needs before any GPU work starts.
 
-Plus the one content check: Mosaic folds the target from its sequence and
+Plus the content checks: Mosaic folds the target from its sequence and
 conditions on the epitope by *index into that sequence*, so the mapping from a
-campaign residue number to a loss argument happens here, where it can be
+campaign structure residue to a loss argument happens here, where it can be
 refused, rather than inside a GPU job where it would be an array slice.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from bindocracy.config.models import GeneralConfig
 from bindocracy.config.preflight import (
@@ -17,6 +18,16 @@ from bindocracy.config.preflight import (
     read_single_fasta,
 )
 from bindocracy.tools.mosaic.config import MosaicConfig
+
+_THREE_TO_ONE = {
+    "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
+    "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
+    "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
+    "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
+    # Common PDB residue names that have an unambiguous FASTA representation.
+    "MSE": "M", "SEC": "U", "PYL": "O", "ASX": "B", "GLX": "Z",
+    "UNK": "X",
+}
 
 
 @dataclass(frozen=True)
@@ -36,12 +47,11 @@ def _epitope_indices(general: GeneralConfig, target_sequence: str) -> tuple[int,
     """Map the campaign epitope onto `BinderTargetContact(epitope_idx=...)`.
 
     The term slices its binder-by-target contact matrix down to these columns,
-    so they are 0-based positions in the target sequence and the mapping is
-    `seqid - 1`. Indexing by enumeration position instead is the bug in
-    docs/known-issues.md section 1.4, which silently conditioned 23 of 26
-    epitope entries on the wrong residues; the campaign FASTA is the whole
-    chain, numbered from 1, so `seqid - 1` is the mapping and the bounds check
-    below is what makes that assumption fail loudly if it ever stops holding.
+    so they are 0-based positions in the target sequence. Campaign hotspots,
+    however, use the author residue numbers of the target structure. Map them
+    through the ordered PDB chain rather than assuming that author residue N
+    is always FASTA position N: chains may start above 1 or contain numbering
+    gaps, and both cases otherwise condition on the wrong residues silently.
 
     Everything that cannot be mapped is refused. Designing unconstrained while
     another tool in the same campaign uses the epitope is the comparison
@@ -52,9 +62,7 @@ def _epitope_indices(general: GeneralConfig, target_sequence: str) -> tuple[int,
 
     hotspots = parse_hotspots(general.target.hotspots)
     chain = general.target.chain_id.upper()
-    elsewhere = sorted(
-        {spot.chain for spot in hotspots if spot.chain and spot.chain != chain}
-    )
+    elsewhere = sorted({spot.chain for spot in hotspots if spot.chain and spot.chain != chain})
     if elsewhere:
         raise ConfigPreflightError(
             f"campaign hotspots name chain(s) {', '.join(elsewhere)}, but the "
@@ -62,15 +70,89 @@ def _epitope_indices(general: GeneralConfig, target_sequence: str) -> tuple[int,
             "from its sequence and cannot condition on another."
         )
 
-    length = len(target_sequence)
-    outside = sorted(spot.number for spot in hotspots if not 1 <= spot.number <= length)
-    if outside:
+    structure = general.target.structure_pdb
+    if structure is None:
         raise ConfigPreflightError(
-            f"campaign hotspots {outside} fall outside the target sequence, "
-            f"which is {length} residues. Mosaic conditions by position in that "
-            "sequence, so a residue it does not contain cannot be expressed."
+            "Mosaic needs target.structure_pdb to map campaign hotspot residue "
+            "numbers onto the target FASTA; residue numbers are not necessarily "
+            "1-based sequence positions."
         )
-    return tuple(sorted({spot.number - 1 for spot in hotspots}))
+    if not structure.is_file():
+        raise ConfigPreflightError(f"Mosaic target PDB does not exist: {structure}")
+
+    residues = _chain_residues(structure, chain)
+    if len(residues) != len(target_sequence):
+        raise ConfigPreflightError(
+            f"Mosaic cannot map the target PDB chain {chain} onto the FASTA: "
+            f"the PDB has {len(residues)} CA residues and the FASTA has "
+            f"{len(target_sequence)} residues. Provide a structure containing "
+            "exactly the chain represented by the FASTA."
+        )
+    structure_sequence = "".join(amino_acid for _, amino_acid in residues)
+    if structure_sequence != target_sequence:
+        mismatch = next(
+            index for index, pair in enumerate(zip(structure_sequence, target_sequence))
+            if pair[0] != pair[1]
+        )
+        raise ConfigPreflightError(
+            f"Mosaic cannot map target PDB chain {chain} onto the FASTA: their "
+            f"sequences first differ at position {mismatch + 1} "
+            f"({structure_sequence[mismatch]} in the PDB, "
+            f"{target_sequence[mismatch]} in the FASTA)."
+        )
+    positions = {number: index for index, (number, _) in enumerate(residues)}
+    absent = sorted({spot.number for spot in hotspots} - positions.keys())
+    if absent:
+        raise ConfigPreflightError(
+            f"campaign hotspots {absent} are absent from target PDB chain {chain}; "
+            "Mosaic cannot map them onto the target sequence."
+        )
+    return tuple(sorted({positions[spot.number] for spot in hotspots}))
+
+
+def _chain_residues(pdb: Path, chain: str) -> tuple[tuple[int, str], ...]:
+    """Author residue numbers and amino acids in sequence order for one chain.
+
+    One CA atom represents one sequence position. Insertion codes make an
+    integer-only campaign hotspot ambiguous, so refuse them instead of choosing
+    one residue under the same number.
+    """
+    residues: list[tuple[int, str]] = []
+    seen: set[tuple[int, str]] = set()
+    numbers: set[int] = set()
+    for line in pdb.read_text().splitlines():
+        if not line.startswith(("ATOM  ", "HETATM")) or line[12:16].strip() != "CA":
+            continue
+        if line[21:22].strip().upper() != chain:
+            continue
+        raw_number = line[22:26].strip()
+        insertion = line[26:27].strip()
+        if not raw_number.lstrip("-").isdigit():
+            continue
+        residue_name = line[17:20].strip().upper()
+        amino_acid = _THREE_TO_ONE.get(residue_name)
+        if amino_acid is None:
+            raise ConfigPreflightError(
+                f"Mosaic cannot map PDB residue {chain}{raw_number}{insertion}: "
+                f"unknown residue name {residue_name!r}."
+            )
+        number = int(raw_number)
+        identity = (number, insertion)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if insertion or number in numbers:
+            raise ConfigPreflightError(
+                f"Mosaic cannot map PDB residue {chain}{number}{insertion}: "
+                "campaign hotspots do not express insertion codes."
+            )
+        numbers.add(number)
+        residues.append((number, amino_acid))
+    if not residues:
+        raise ConfigPreflightError(
+            f"Mosaic found no CA residues for chain {chain} in target PDB {pdb}"
+        )
+    return tuple(residues)
 
 
 def preflight_mosaic(general: GeneralConfig, mosaic: MosaicConfig) -> MosaicPreflight:
@@ -110,5 +192,3 @@ def preflight_mosaic(general: GeneralConfig, mosaic: MosaicConfig) -> MosaicPref
         target_sequence=target_sequence,
         epitope_idx=_epitope_indices(general, target_sequence),
     )
-
-

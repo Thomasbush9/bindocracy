@@ -51,8 +51,9 @@ runtime:
   # predicted alignment error instead; it changes the ranked table only.
   rank_by: i_pTM
   # An HTML animation and four PNGs per trajectory, zipped at the end into
-  # files nothing here reads. The advanced profiles say true; these turn them
-  # off with --no-plots / --no-animations.
+  # files nothing here reads. These override the advanced profile in either
+  # direction, so setting one true really enables it even in a profile where
+  # it was authored false.
   save_plots: false
   save_animations: false
   # OpenMM's OpenCL JIT writes a dependency file per compiled kernel under

@@ -129,6 +129,17 @@ def test_an_advanced_profile_without_mpnn_is_refused(tmp_path: Path) -> None:
         load_configs(general, model)
 
 
+def test_an_advanced_profile_missing_an_upstream_subscript_is_refused(
+    tmp_path: Path,
+) -> None:
+    advanced = freebindcraft_advanced()
+    advanced.pop("weights_rg")
+    general, model = write_freebindcraft_configs(tmp_path, advanced=advanced)
+
+    with pytest.raises(ConfigPreflightError, match="weights_rg"):
+        load_configs(general, model)
+
+
 def test_a_campaign_without_a_pdb_is_refused(tmp_path: Path) -> None:
     general, model = write_freebindcraft_configs(tmp_path)
     document = yaml.safe_load(general.read_text())
@@ -178,6 +189,35 @@ def test_a_null_threshold_is_not_a_filter(tmp_path: Path) -> None:
     assert "i_pTM" not in load_configs(general, model).preflight.active_filters
 
 
+def test_an_active_filter_without_a_direction_is_refused(tmp_path: Path) -> None:
+    general, model = write_freebindcraft_configs(
+        tmp_path, filters={"Average_pLDDT": {"threshold": 0.8}}
+    )
+
+    with pytest.raises(ConfigPreflightError, match="higher"):
+        load_configs(general, model)
+
+
+def test_a_nested_amino_acid_filter_is_validated(tmp_path: Path) -> None:
+    general, model = write_freebindcraft_configs(
+        tmp_path,
+        filters={"Average_InterfaceAAs": {"C": {"threshold": 0}}},
+    )
+
+    with pytest.raises(ConfigPreflightError, match="higher"):
+        load_configs(general, model)
+
+
+def test_a_non_numeric_filter_threshold_is_refused(tmp_path: Path) -> None:
+    general, model = write_freebindcraft_configs(
+        tmp_path,
+        filters={"Average_pLDDT": {"threshold": "high", "higher": True}},
+    )
+
+    with pytest.raises(ConfigPreflightError, match="non-numeric"):
+        load_configs(general, model)
+
+
 # --- the plan ---------------------------------------------------------------
 
 
@@ -202,9 +242,7 @@ def test_the_run_records_that_it_cannot_be_reproduced(
     assert manifest.workflow["reproducible"] is False
 
 
-def test_every_consumed_document_is_archived(
-    freebindcraft_configs, tmp_path: Path
-) -> None:
+def test_every_consumed_document_is_archived(freebindcraft_configs, tmp_path: Path) -> None:
     manifest = plan(load_configs(*freebindcraft_configs), tmp_path / "run")
 
     assert sorted(manifest.provenance) == ["advanced", "driver", "filters", "target"]
@@ -214,9 +252,7 @@ def test_every_consumed_document_is_archived(
 # --- one task's command -----------------------------------------------------
 
 
-def test_the_command_runs_the_archived_driver(
-    freebindcraft_configs, tmp_path: Path
-) -> None:
+def test_the_command_runs_the_archived_driver(freebindcraft_configs, tmp_path: Path) -> None:
     manifest = plan(load_configs(*freebindcraft_configs), tmp_path / "run")
     spec = launch_spec(manifest, 0)
 
@@ -240,10 +276,7 @@ def test_each_task_gets_its_own_design_path(
     general, model = write_freebindcraft_configs(tmp_path, sampling={"jobs": 2})
     manifest = plan(load_configs(general, model), tmp_path / "run")
 
-    paths = {
-        flag(launch_spec(manifest, task_id).argv, "--design-path")
-        for task_id in (0, 1)
-    }
+    paths = {flag(launch_spec(manifest, task_id).argv, "--design-path") for task_id in (0, 1)}
     assert len(paths) == 2
 
 
@@ -277,7 +310,7 @@ def test_the_driver_accepts_what_the_launcher_builds(
     """The two never meet at runtime: one runs on a login node, one in the image."""
     manifest = plan(load_configs(*freebindcraft_configs), tmp_path / "run")
     argv = list(launch_spec(manifest, 0).argv)
-    parsed = freebindcraft_driver.parse_args(argv[argv.index("bindcraft-python") + 2:])
+    parsed = freebindcraft_driver.parse_args(argv[argv.index("bindcraft-python") + 2 :])
 
     assert parsed.final_designs == 2
     assert parsed.max_trajectories == 4
@@ -307,18 +340,28 @@ def test_the_driver_writes_an_empty_epitope_rather_than_omitting_it(
     """An absent key is a KeyError; an empty one is `hotspot=None`, on purpose."""
     rendered = freebindcraft_driver.render_target(
         freebindcraft_target(tmp_path / "target.pdb"),
-        design_path="/task", final_designs=1, hotspots="",
+        design_path="/task",
+        final_designs=1,
+        hotspots="",
     )
 
     assert rendered["target_hotspot_residues"] == ""
 
 
-def test_the_driver_gives_the_task_its_trajectory_budget(freebindcraft_driver) -> None:
+def test_the_driver_gives_the_task_its_runtime_values(freebindcraft_driver) -> None:
     rendered = freebindcraft_driver.render_advanced(
-        freebindcraft_advanced(), max_trajectories=7
+        freebindcraft_advanced(
+            save_design_trajectory_plots=False,
+            save_design_animations=False,
+        ),
+        max_trajectories=7,
+        save_plots=True,
+        save_animations=True,
     )
 
     assert rendered["max_trajectories"] == 7
+    assert rendered["save_design_trajectory_plots"] is True
+    assert rendered["save_design_animations"] is True
 
 
 def test_the_driver_drops_the_opencl_jits_noise(freebindcraft_driver) -> None:
@@ -333,9 +376,7 @@ def test_the_driver_refuses_a_descriptor_limit_it_cannot_raise(
     freebindcraft_driver, monkeypatch
 ) -> None:
     """Below 65,536 the run fails hours in, looking like something else."""
-    monkeypatch.setattr(
-        freebindcraft_driver.resource, "getrlimit", lambda _: (1024, 4096)
-    )
+    monkeypatch.setattr(freebindcraft_driver.resource, "getrlimit", lambda _: (1024, 4096))
 
     with pytest.raises(SystemExit, match="4096"):
         freebindcraft_driver.raise_open_files()

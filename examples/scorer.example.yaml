@@ -1,0 +1,81 @@
+# A scoring run: one model, one protocol, one frozen design set.
+#
+# A scorer is an ordinary tool, so this is an ordinary model config and pairs
+# with the same general_config.yaml every generation run uses. Load it the same
+# way:
+#
+#   uv run bindocracy config load campaign.duckdb \
+#     --general configs/general_config.epitope.yaml \
+#     --model   configs/scoring/boltz2_smoke.yaml
+#
+# WHY THE PROTOCOL FIELDS HAVE NO DEFAULTS. mosaic_setup/benchmark documents
+# six knobs that move model-to-model correlations more than the model
+# differences being measured. Two are traps that only bite through defaults:
+# Protenix's sampler defaults to 2 steps against Boltz's 25, and OpenFold3 and
+# ESMFold2 each add a trunk pass internally. Every one of them is required
+# here, so a run that omits one is refused rather than quietly running a
+# different experiment.
+
+schema_version: 1
+name: boltz2-complex-smoke
+tool: scorer
+
+# The frozen candidate set, written through runs.designset.DesignSet.
+# A `bindocracy designset build` CLI command is not implemented yet.
+# The filename is the digest of its members and their order, so this path names
+# exactly which designs were scored -- and re-running the query after new
+# designs land produces a different path rather than silently a different set.
+design_set: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/design_sets/f7f900960c1a196d.json
+
+model:
+  # boltz2 | boltz1 | af2 | esmfold2 | of3 | protenix
+  name: boltz2
+
+  # Trunk passes, as a person means them. Backends that add one internally are
+  # normalised by the driver, so this number means the same thing for every
+  # model. That is the point of stating it rather than inheriting it.
+  recycling_steps: 3
+
+  # Diffusion steps. Required for every sampler-bearing backend and refused for
+  # af2, which has none. 25 is what the matched benchmark used.
+  sampling_steps: 25
+
+  # Independent samples per design. Each becomes one `replicate` row; nothing
+  # is averaged at write time, so the choice between mean and min stays open.
+  # Start at 1 for a smoke test; the matched benchmark used 6.
+  num_samples: 1
+
+  seed: 42
+
+  # The campaign's target alignment (3,032 sequences for dio3-cut). Explicit
+  # rather than inferred: "the model ignored the MSA I gave it" is invisible in
+  # the output and changes every cross-family number.
+  # To generate it first, run `bindocracy target prepare-msa`; see
+  # docs/scoring-stage.md section 9. No search happens during scoring.
+  use_target_msa: true
+
+# The enabled readers currently implemented are complex and monomer.
+# Epitope and inverse-folding configuration fields are reserved; keep them false.
+readers:
+  complex: true            # the 13 interface metrics
+  monomer: false           # 4 more, and a second (cheaper) fold
+  epitope: false           # not implemented
+  inverse_folding: false   # not implemented
+
+sharding:
+  # A task count, not a batch size. Entries are ordered by binder length and
+  # cut into contiguous blocks, so more tasks means less wall clock without
+  # each task paying a wider spread of JIT recompilations.
+  jobs: 1
+
+runtime:
+  container: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/images/mosaic.sif
+  weights: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup/weights
+  exec_wrapper: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup/mosaic/singularity/mosaic-exec.sh
+  scratch: /tmp/mosaic-scoring
+
+resources:
+  gpus: 1
+  cpus: 16
+  memory_gb: 64
+  walltime: "02:00:00"

@@ -27,6 +27,7 @@ from bindocracy.tools.registry import (
     resources,
     unregister,
 )
+from bindocracy.tools.scorer import ScorerPlugin
 
 register(MosaicPlugin)
 register(BoltzGenPlugin)
@@ -35,6 +36,7 @@ register(PXDesignPlugin)
 register(ProteinHunterPlugin)
 register(ProteinaComplexaPlugin)
 register(FreeBindCraftPlugin)
+register(ScorerPlugin)
 
 # A tool does not have to live in this repository. Anything named in
 # BINDOCRACY_PLUGINS (comma-separated importable modules) is imported here and
@@ -52,6 +54,7 @@ __all__ = [
     "PXDesignPlugin",
     "ProteinHunterPlugin",
     "ProteinaComplexaPlugin",
+    "ScorerPlugin",
     "ToolPlugin",
     "UnknownToolError",
     "collect_run",

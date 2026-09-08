@@ -61,6 +61,12 @@ class ToolPlan:
     # MSA, BoltzGen reads the structure and ignores both. Digested so the run
     # records the bytes it used, and verified before the tool starts.
     inputs: dict[str, Path] = field(default_factory=dict)
+    # What kind of run this is. Defaults to generation, so every existing
+    # plugin keeps its behaviour without being touched. A scorer sets
+    # RunKind.EVALUATE, which is the whole of what the manifest needs to know
+    # about it -- the fan-out, the launch command and the adapter are already
+    # the plugin's business and none of them care which kind it is.
+    kind: RunKind = RunKind.GENERATE
 
 
 class ManifestError(RuntimeError):
@@ -227,7 +233,7 @@ def plan_run(
         run_id=new_id(),
         name=name or loaded.model.name,
         tool=loaded.model.tool,
-        kind=RunKind.GENERATE,
+        kind=tool_plan.kind,
         general_config_id=config.general_config_id,
         model_config_id=config.model_config_id,
         created_at=utc_now(),

@@ -30,7 +30,7 @@ from bindocracy.tools import (
 def test_every_built_in_tool_is_registered() -> None:
     assert registered_tools() == (
         "boltzgen", "freebindcraft", "genie3", "mosaic", "protein_hunter",
-        "proteina_complexa", "pxdesign",
+        "proteina_complexa", "pxdesign", "scorer",
     )
 
 

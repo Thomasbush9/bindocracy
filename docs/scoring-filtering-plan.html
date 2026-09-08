@@ -1,0 +1,600 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bindocracy scoring, filtering, diversity, and ranking plan</title>
+  <style>
+    :root {
+      --ink: #182321;
+      --muted: #61716d;
+      --paper: #f7f4ed;
+      --card: #fffdf8;
+      --line: #d8d2c4;
+      --teal: #087f75;
+      --teal-dark: #075e57;
+      --amber: #bf6b10;
+      --red: #a43e32;
+      --blue: #245f8f;
+      --violet: #6e4b87;
+      --code: #102724;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 92% 2%, rgba(8,127,117,.12), transparent 24rem),
+        linear-gradient(180deg, #f3efe5 0, var(--paper) 28rem);
+      font: 16px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: var(--teal-dark); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+    a:hover { color: var(--teal); }
+    code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    code { font-size: .9em; background: #eee9dd; padding: .12rem .3rem; border-radius: .25rem; }
+    pre {
+      margin: 1rem 0;
+      padding: 1rem 1.1rem;
+      color: #eef9f6;
+      background: var(--code);
+      border-radius: .65rem;
+      overflow: auto;
+      font-size: .84rem;
+      line-height: 1.5;
+    }
+    pre code { padding: 0; color: inherit; background: none; }
+    header.hero {
+      padding: 4.5rem max(1.5rem, calc((100vw - 1180px) / 2)) 3.2rem;
+      color: #f7fffd;
+      background: linear-gradient(125deg, #0e2724, #084f49 62%, #087f75);
+      border-bottom: 5px solid #e9a33b;
+    }
+    .eyebrow { margin: 0 0 .8rem; color: #acdcd5; font-size: .78rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+    h1 { max-width: 920px; margin: 0; font-size: clamp(2.25rem, 5vw, 4.5rem); line-height: .98; letter-spacing: -.045em; }
+    .lede { max-width: 850px; margin: 1.35rem 0 1.6rem; color: #d7eeea; font-size: 1.18rem; }
+    .stamp { display: flex; flex-wrap: wrap; gap: .55rem; }
+    .pill { display: inline-flex; align-items: center; gap: .4rem; padding: .35rem .7rem; border: 1px solid rgba(255,255,255,.28); border-radius: 999px; color: #e8f8f4; font-size: .8rem; background: rgba(255,255,255,.07); }
+    .layout { display: grid; grid-template-columns: 235px minmax(0, 1fr); gap: 2.3rem; max-width: 1240px; margin: 0 auto; padding: 2.3rem 1.5rem 5rem; }
+    nav { position: sticky; top: 1rem; align-self: start; padding: 1rem; background: rgba(255,253,248,.9); border: 1px solid var(--line); border-radius: .8rem; backdrop-filter: blur(8px); }
+    nav strong { display: block; margin-bottom: .6rem; font-size: .76rem; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+    nav a { display: block; padding: .28rem .35rem; color: #31413e; text-decoration: none; border-left: 2px solid transparent; font-size: .88rem; }
+    nav a:hover { border-color: var(--teal); color: var(--teal-dark); }
+    main { min-width: 0; }
+    section { scroll-margin-top: 1rem; margin-bottom: 2.7rem; }
+    h2 { margin: 0 0 1rem; font-size: clamp(1.65rem, 3vw, 2.35rem); line-height: 1.1; letter-spacing: -.025em; }
+    h3 { margin: 1.5rem 0 .65rem; font-size: 1.12rem; line-height: 1.25; }
+    h4 { margin: 1.2rem 0 .35rem; font-size: .98rem; }
+    p { margin: .55rem 0 .9rem; }
+    ul, ol { padding-left: 1.3rem; }
+    li { margin: .28rem 0; }
+    .card, .callout { padding: 1.15rem 1.3rem; background: var(--card); border: 1px solid var(--line); border-radius: .75rem; box-shadow: 0 8px 24px rgba(43,50,45,.05); }
+    .callout { border-left: 5px solid var(--teal); }
+    .callout.warn { border-left-color: var(--amber); }
+    .callout.stop { border-left-color: var(--red); }
+    .callout.blue { border-left-color: var(--blue); }
+    .callout h3 { margin-top: 0; }
+    .grid2, .grid3 { display: grid; gap: 1rem; }
+    .grid2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .kpi { padding: 1rem; background: #fff; border: 1px solid var(--line); border-radius: .65rem; }
+    .kpi b { display: block; color: var(--teal-dark); font-size: 1.8rem; line-height: 1; }
+    .kpi span { color: var(--muted); font-size: .8rem; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: .7rem; background: var(--card); }
+    table { width: 100%; border-collapse: collapse; font-size: .86rem; }
+    th, td { padding: .68rem .72rem; text-align: left; vertical-align: top; border-bottom: 1px solid #e6e0d4; }
+    th { color: #40504c; background: #f0ece2; font-size: .73rem; letter-spacing: .045em; text-transform: uppercase; }
+    tr:last-child td { border-bottom: 0; }
+    .yes { color: var(--teal-dark); font-weight: 700; }
+    .maybe { color: var(--amber); font-weight: 700; }
+    .no { color: var(--red); font-weight: 700; }
+    .small { color: var(--muted); font-size: .84rem; }
+    .flow { display: grid; grid-template-columns: repeat(7, minmax(105px,1fr)); gap: .55rem; align-items: stretch; margin: 1.2rem 0; }
+    .node { position: relative; min-height: 112px; padding: .75rem; background: #fff; border: 1px solid var(--line); border-top: 4px solid var(--teal); border-radius: .55rem; font-size: .77rem; }
+    .node::after { content: "→"; position: absolute; right: -.47rem; top: 39%; z-index: 2; color: var(--amber); font-size: 1.2rem; font-weight: 800; }
+    .node:last-child::after { display: none; }
+    .node b { display: block; margin-bottom: .3rem; color: var(--teal-dark); font-size: .86rem; }
+    .node.holdout { border-top-color: var(--violet); }
+    .node.optimize { border-top-color: var(--blue); }
+    .node.select { border-top-color: var(--amber); }
+    .phase { display: grid; grid-template-columns: 95px 1fr; gap: 1rem; padding: 1rem 0; border-bottom: 1px solid var(--line); }
+    .phase:last-child { border-bottom: 0; }
+    .phase .num { color: var(--teal); font-weight: 850; font-size: 1.65rem; line-height: 1; }
+    .phase h3 { margin: 0 0 .3rem; }
+    details { margin: .65rem 0; border: 1px solid var(--line); border-radius: .55rem; background: var(--card); }
+    summary { cursor: pointer; padding: .8rem 1rem; font-weight: 700; }
+    details > div { padding: 0 1rem .9rem; }
+    .decision { display: grid; grid-template-columns: 1.2rem 1fr; gap: .6rem; margin: .55rem 0; }
+    .decision::before { content: "✓"; color: var(--teal); font-weight: 900; }
+    .footer-note { padding-top: 1.2rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .82rem; }
+    @media (max-width: 1000px) {
+      .layout { grid-template-columns: 1fr; }
+      nav { position: static; columns: 2; }
+      nav strong { column-span: all; }
+      .flow { grid-template-columns: repeat(2, minmax(0,1fr)); }
+      .node::after { display: none; }
+    }
+    @media (max-width: 700px) {
+      .grid2, .grid3 { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: 1fr; }
+      nav { columns: 1; }
+      .phase { grid-template-columns: 58px 1fr; }
+    }
+    @media print {
+      body { background: #fff; font-size: 10pt; }
+      header.hero { padding: 2rem; background: #103b36 !important; print-color-adjust: exact; }
+      .layout { display: block; max-width: none; padding: 1.5rem; }
+      nav { display: none; }
+      section { break-inside: avoid; margin-bottom: 1.5rem; }
+      .card, .callout, .table-wrap { box-shadow: none; }
+      a { color: inherit; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <p class="eyebrow">Bindocracy architecture review</p>
+    <h1>Scoring, filtering, diversity &amp; final ranking</h1>
+    <p class="lede">A staged plan for turning the generated library into an auditable candidate funnel—without confusing model confidence with binding affinity, or letting a scorer silently become an optimizer.</p>
+    <div class="stamp">
+      <span class="pill">Analysis date: 4 September 2026</span>
+      <span class="pill">Repository: bindocracy @ 1745913</span>
+      <span class="pill">Scope: plan only</span>
+      <span class="pill">No installs or model jobs performed</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav aria-label="Document sections">
+      <strong>Contents</strong>
+      <a href="#recommendation">Recommendation</a>
+      <a href="#current">Current state</a>
+      <a href="#inventory">Installed inventory</a>
+      <a href="#questions">What each score answers</a>
+      <a href="#models">Model disposition</a>
+      <a href="#funnel">Proposed funnel</a>
+      <a href="#metrics">Metric contract</a>
+      <a href="#diversity">Diversity</a>
+      <a href="#harness">Harness changes</a>
+      <a href="#calibration">Calibration &amp; rollout</a>
+      <a href="#acceptance">Acceptance criteria</a>
+      <a href="#decisions">Decisions requested</a>
+      <a href="#sources">Sources</a>
+    </nav>
+
+    <main>
+      <section id="recommendation">
+        <h2>Recommendation in one page</h2>
+        <div class="callout">
+          <h3>Build a scorer layer, not a single score</h3>
+          <p>The right v1 is a cascade of immutable candidate snapshots and separate <code>evaluate</code>, <code>filter</code>, <code>cluster</code>, <code>select</code>, <code>optimize</code>, and <code>rank</code> runs. Raw metrics remain available; every verdict records the exact protocol that produced it.</p>
+        </div>
+        <div class="grid2" style="margin-top:1rem">
+          <div class="card">
+            <h3>Use now</h3>
+            <ul>
+              <li>Mosaic as the first fixed-sequence folding/cofolding driver.</li>
+              <li>Boltz-2 for the broad first structural screen.</li>
+              <li>AF2-multimer or OpenFold3 as a model-family cross-check.</li>
+              <li>ProteinMPNN and ESM-C as separate sequence-compatibility critics.</li>
+              <li>Caliby as a static/ensemble-backbone evaluator first.</li>
+              <li>ESMFold2 only after optimization, as the sealed holdout.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Do not do</h3>
+            <ul>
+              <li>Do not run every expensive model on every raw candidate.</li>
+              <li>Do not call OpenFold3 “AlphaFold 3”; they are distinct models and weights.</li>
+              <li>Do not let inverse folding rewrite a sequence inside an evaluation run.</li>
+              <li>Do not add raw, differently scaled model outputs into one universal score.</li>
+              <li>Do not call ipTM, ipSAE, PAE, Rosetta energy, or Caliby <code>U</code> a measured affinity.</li>
+              <li>Do not let diversity rescue a candidate that fails minimum quality gates.</li>
+            </ul>
+          </div>
+        </div>
+        <h3>Recommended operation graph</h3>
+        <div class="flow" aria-label="Recommended scoring workflow">
+          <div class="node"><b>Generated library</b>Freeze design IDs, sequences, source runs and artifacts.</div>
+          <div class="node"><b>Cheap QC</b>Validity, composition, ESM-C, exact/near duplicates.</div>
+          <div class="node"><b>Primary screen</b>Fixed-sequence binder fold + target/binder cofold.</div>
+          <div class="node"><b>Consensus</b>Independent model + inverse-folding robustness.</div>
+          <div class="node select"><b>Diversity select</b>Quality gates first, then cluster quotas / farthest point.</div>
+          <div class="node optimize"><b>Optimize</b>Create child designs; never overwrite parents.</div>
+          <div class="node holdout"><b>Final holdout</b>ESMFold2, then Pareto/robust rank and export.</div>
+        </div>
+        <p class="small">The full named-model matrix belongs in the calibration pilot. The production panel should be selected from measured complementarity, failure rate and cost—not from the length of the model list.</p>
+      </section>
+
+      <section id="current">
+        <h2>What the current harness already gets right—and what is missing</h2>
+        <div class="grid3">
+          <div class="kpi"><b>3,302</b><span>stored designs, all with distinct exact sequences</span></div>
+          <div class="kpi"><b>66</b><span>native metric names already normalized into long form</span></div>
+          <div class="kpi"><b>0</b><span>standalone evaluate/filter/cluster/rank runs in the campaign DB</span></div>
+        </div>
+        <p>The DuckDB schema is already conceptually aligned with the goal: a run can be <code>evaluate</code>, <code>filter</code>, <code>cluster</code>, <code>optimize</code>, or <code>rank</code>; metrics are long-form and tied to evaluator runs; decisions are separate from numeric observations; ranks require a scope. This foundation should be retained.</p>
+        <p>The execution layer is still generation-only. <code>workflow/Snakefile</code> has a fixed <code>prepare → generate → collect → ingest</code> graph, <code>plan_run()</code> hard-codes <code>RunKind.GENERATE</code>, the manifest assumes every task produces designs, and no run currently has a parent. A scorer cannot yet consume existing design IDs without masquerading as a generator.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Generator</th><th>Produced</th><th>Native passes</th><th>Native pass rate</th><th>Length range</th></tr></thead>
+            <tbody>
+              <tr><td>FreeBindCraft</td><td>2,957</td><td>40</td><td>1.35%</td><td>65–149</td></tr>
+              <tr><td>Mosaic</td><td>75</td><td>0</td><td>0%</td><td>70–80</td></tr>
+              <tr><td>BoltzGen</td><td>70</td><td>5</td><td>7.14%</td><td>71–90</td></tr>
+              <tr><td>Genie 3</td><td>50</td><td>1</td><td>2%</td><td>60–120</td></tr>
+              <tr><td>Protein-Hunter</td><td>50</td><td>7</td><td>14%</td><td>75–117</td></tr>
+              <tr><td>Proteina-Complexa</td><td>50</td><td>1</td><td>2%</td><td>71–110</td></tr>
+              <tr><td>PXDesign</td><td>50</td><td>0</td><td>0%</td><td>80</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout warn" style="margin-top:1rem">
+          <h3>Calibration must be stratified</h3>
+          <p>FreeBindCraft contributes 89.55% of the library. A random pilot would mostly measure that generator. Balance by generator, length, and native pass/fail status, and report all distributions by source before pooling them.</p>
+        </div>
+        <h3>Existing prototype: useful, but not the production contract</h3>
+        <p>Mosaic’s <code>screen_proposals.py</code> already demonstrates model-agnostic fixed-sequence cofolding. However, its default inverse-fold step changes the proposed sequence, it exposes only ipTM/binder pLDDT/interface PAE, and it immediately sorts by <code>ipTM + pLDDT/100 − interfacePAE/30</code>. The production driver should preserve the raw sequence, emit a richer metric bundle, never rank, and make inverse-fold redesign a separate optimization run.</p>
+      </section>
+
+      <section id="inventory">
+        <h2>Read-only inventory of available assets</h2>
+        <p>Presence is not the same as a successful H100 smoke test. The statuses below mean “found on disk and inspected,” not “validated end-to-end.”</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Asset</th><th>What is present</th><th>Readiness conclusion</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>ProtForge Boltz</td>
+                <td><code>protforge-assets/sifs/boltz.sif</code>, 4.2 GB, built 2026-05-29. Definition uses unpinned <code>pip install "boltz[cuda]"</code>.</td>
+                <td><span class="maybe">Probe first.</span> Exact Boltz package version and offline weights are not established by the image metadata. No <code>boltz2_aff.ckpt</code> was found in the inspected host weight roots.</td>
+              </tr>
+              <tr>
+                <td>ProtForge OpenFold3</td>
+                <td><code>openfold.sif</code>, 9.0 GB, OCI OpenFold3 0.4 lineage; <code>of3-p2-145k.pt</code> and <code>of3-p2-155k.pt</code> (~2.29 GB each).</td>
+                <td><span class="yes">Strong candidate.</span> Pin the exact image digest and checkpoint; the upstream warns that parameter compatibility changes across releases.</td>
+              </tr>
+              <tr>
+                <td>ProtForge ESM</td>
+                <td><code>esm.sif</code>, 9.6 GB; Biohub ESM commit <code>c94ed8d</code>; ESMFold2 full and Fast snapshots; ESM-C 300M/600M/6B caches.</td>
+                <td><span class="yes">Available for holdout.</span> Use the full Sept-2021-cutoff checkpoint for final scoring; do not use the Fast or 2025-cutoff variants as an unlabelled substitute.</td>
+              </tr>
+              <tr>
+                <td>Mosaic</td>
+                <td><code>mosaic.sif</code>; Boltz-1/2 confidence weights, five AF2-multimer parameter sets, OpenFold3 JAX weights, Protenix Mini v0.5, ESM-C, ESMFold2, and embedded ProteinMPNN variants.</td>
+                <td><span class="yes">Best bootstrap path.</span> The local Mosaic working tree has relevant modifications, so archive/digest the actual driver and imported code, not only the Git commit.</td>
+              </tr>
+              <tr>
+                <td>Caliby</td>
+                <td><code>caliby.sif</code>, 14 GB, source checkout at commit <code>41d3156</code>; public scoring API exposes global <code>U</code> and per-position <code>U_i</code> for a structure or conformer ensemble.</td>
+                <td><span class="maybe">Evaluator first.</span> Host-visible checkpoint readiness was not proven by this inventory; verify inside the image during the approved probe phase.</td>
+              </tr>
+              <tr>
+                <td>Chai / RF3</td>
+                <td>Protein-Hunter contains Chai-oriented code and an image, but no generic Chai scorer asset was verified. No RF3 asset was found in the inspected roots.</td>
+                <td><span class="maybe">Optional additions.</span> Chai-1 is the first suggested addition; RF3 is a later research track because its inference API is still stabilizing.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout blue" style="margin-top:1rem">
+          <h3>Naming corrections that matter for provenance</h3>
+          <p><strong>Protenix</strong> is “Protein + X”; “Proteinx” should not become a plugin identifier. <strong>OpenFold3</strong> is an open reproduction in the AlphaFold3 lineage, not DeepMind AlphaFold 3. If actual AF3 is added later, register it independently as <code>alphafold3_deepmind</code> with its own non-commercial code/weight terms.</p>
+        </div>
+      </section>
+
+      <section id="questions">
+        <h2>What can be scored?</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Question</th><th>Input</th><th>Useful signals</th><th>Interpretation</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><strong>Is the binder sequence plausible?</strong></td>
+                <td>Binder sequence only</td>
+                <td>ESM-C pseudo-likelihood/perplexity; composition, charge, hydrophobicity, low-complexity and motif checks</td>
+                <td>Sequence naturalness/developability screen. It says nothing direct about the target or binding.</td>
+              </tr>
+              <tr>
+                <td><strong>Does the binder fold alone?</strong></td>
+                <td>Binder sequence</td>
+                <td>Monomer pLDDT, pTM, PAE; sample consistency; compactness; self-consistency RMSD</td>
+                <td>Unbound foldability and confidence. Useful for rejecting target-dependent collapse.</td>
+              </tr>
+              <tr>
+                <td><strong>Is the sequence compatible with its backbone?</strong></td>
+                <td>Sequence + predicted or generated backbone</td>
+                <td>ProteinMPNN NLL/PLL or recovery; Caliby binder-local <code>U_i</code>; ensemble mean/worst quantile</td>
+                <td>Inverse-folding compatibility. Run on binder-only and on the binder slice of a complex, with target sequence fixed.</td>
+              </tr>
+              <tr>
+                <td><strong>Does it cofold with the target?</strong></td>
+                <td>Target + binder sequences, fixed target MSA policy, optional target-only template policy</td>
+                <td>ipTM, directional interface PAE/ipSAE, interface pLDDT, contacts, hotspot coverage, clashes, target distortion, bound/unbound binder RMSD</td>
+                <td>Predicted complex confidence and pose plausibility. Multi-seed/sample robustness matters more than a single best draw.</td>
+              </tr>
+              <tr>
+                <td><strong>What is its binding affinity?</strong></td>
+                <td>Experiment, or a validated/calibrated predictor for this molecular class</td>
+                <td>Wet-lab <em>K</em><sub>d</sub>/<em>K</em><sub>D</sub>; later calibrated PPI model; physics-based interface energies as exploratory features</td>
+                <td><span class="no">Not available as a trustworthy absolute PPI affinity from the proposed models.</span> Keep a “binding proxy” label until experimental calibration exists.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout stop" style="margin-top:1rem">
+          <h3>Boltz-2 affinity is not the answer for protein binders</h3>
+          <p>The released Boltz-2 affinity head is documented and trained for protein–small-molecule affinity. Its CLI example marks a ligand chain as the affinity binder. Do not apply that value to a protein-binder chain or report it as a PPI <em>K</em><sub>d</sub>. For v1, use cofold confidence, interface geometry, and optional Rosetta/FoldX/PRODIGY-like exploratory features—clearly labelled as proxies, never as measured affinity.</p>
+        </div>
+        <h3>How to use Mosaic for the three inverse/sequence critics</h3>
+        <ul>
+          <li><strong>ProteinMPNN:</strong> already implemented in JAX with vanilla, soluble and antibody weights. Expose raw per-residue likelihood and replicate variability. Sequence recovery is useful but should not be the only statistic.</li>
+          <li><strong>ESM-C:</strong> already implemented at 300M/600M/6B. For scoring, return pseudo-log-likelihood and pseudo-perplexity without the optimizer’s clipping transform. Record whether the generator already used ESM-C, because it is then diagnostic rather than independent.</li>
+          <li><strong>Caliby:</strong> not currently a Mosaic loss. Use Caliby’s native scorer as a separate evaluator on fixed structures/ensembles. If optimization use is later desired, the safe first experiment is a JAX Potts-energy term over precomputed <code>h,J</code>; a fully dynamic loss would require porting or differentiating through Caliby’s backbone encoder and is a distinct engineering project.</li>
+        </ul>
+      </section>
+
+      <section id="models">
+        <h2>Disposition of each folding/cofolding model</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Model</th><th>Role in v1</th><th>Why / caveat</th><th>Local status</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Boltz-2</strong></td><td>Primary broad cofold screen</td><td>Best existing default and good interface model; use multiple samples for survivors. Same-family leakage must be flagged for Boltz-driven generators/optimizers.</td><td>Mosaic confidence weights present; ProtForge image present.</td></tr>
+              <tr><td><strong>Boltz-1</strong></td><td>Regression and disagreement panel</td><td>Same lineage and superseded by Boltz-2. It adds little routine independence; valuable for diagnosing version sensitivity.</td><td>Mosaic weights present.</td></tr>
+              <tr><td><strong>AlphaFold2-multimer</strong></td><td>Primary independent cross-check</td><td>Different generation from AF3-like models and historically useful for binder validation. Mosaic wrapper currently cannot use the target MSA; record that protocol difference explicitly.</td><td>Five multimer parameter sets present.</td></tr>
+              <tr><td><strong>AlphaFold 3 (DeepMind)</strong></td><td>Optional future, separate plugin</td><td>Do not synthesize it from OpenFold3 code/weights. Actual AF3 code and gated weights have separate terms; add only if the lab has authorized access and wants the licensing constraints.</td><td>Not found in inspected roots.</td></tr>
+              <tr><td><strong>OpenFold3 preview</strong></td><td>Secondary cofold consensus</td><td>Open AF3 reproduction; useful, but correlated with other AF3-style models. Pin model version/checkpoint because formats have changed.</td><td>Standalone image + two checkpoints; Mosaic JAX checkpoint.</td></tr>
+              <tr><td><strong>Protenix</strong></td><td>Fast first-pass candidate, benchmark before adoption</td><td>The staged Mini v0.5 is cheap, but upstream now offers substantially newer v1/v2 families. Do not upgrade until the existing asset is measured in the common pilot.</td><td>Mini v0.5 staged in Mosaic; PXDesign also emits Protenix metrics.</td></tr>
+              <tr><td><strong>ESMFold2 full</strong></td><td>Final sealed holdout</td><td>New, open, supports complexes and confidence outputs. Keep its metrics unavailable to filter/optimization configuration until the final stage.</td><td>Full and Fast checkpoints + image present.</td></tr>
+              <tr><td><strong>Chai-1</strong></td><td>Suggested addition after v1</td><td>Open Apache-2.0 code/weights, supports multimolecular complexes, and adds ESM-embedding behavior. It is the best immediate addition if the pilot shows AF2/AF3-lineage correlation is too high.</td><td>Some Chai-oriented assets exist via Protein-Hunter; generic readiness unverified.</td></tr>
+              <tr><td><strong>RoseTTAFold3 (RF3)</strong></td><td>Suggested research addition</td><td>Independent RoseTTAFold lineage and all-atom complex support. Upstream still labels the inference API/confidence outputs as stabilizing, so defer until the core contract is solid.</td><td>Not found in inspected roots.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="small">A model used to generate or optimize a design may still provide useful metrics, but cannot be the only gate and must not be presented as independent confirmation. Store lineage tags such as <code>af2</code>, <code>af3_like_boltz</code>, <code>af3_like_openfold</code>, <code>af3_like_protenix</code>, <code>esmfold2</code>, and <code>rf3</code> in scorer metadata.</p>
+      </section>
+
+      <section id="funnel">
+        <h2>The proposed scoring funnel</h2>
+        <div class="card">
+          <div class="phase">
+            <div class="num">00</div>
+            <div><h3>Freeze a candidate snapshot</h3><p>Resolve an explicit list of <code>design_id</code>, source run, exact sequence hash, optional source structure artifact and generator metadata. This manifest—not a live SQL query—is what every downstream task consumes.</p></div>
+          </div>
+          <div class="phase">
+            <div class="num">01</div>
+            <div><h3>Deterministic, cheap prefilter</h3><p>Validate canonical amino acids and length; calculate composition, net-charge proxy, hydrophobic fraction/patch proxy, low complexity, longest homopolymer, cysteine count and configurable expression liabilities. Compute ESM-C scores and exact/near sequence clusters. Hard-fail only invalid inputs and campaign-specific forbidden motifs; treat other properties as measured features until calibrated.</p></div>
+          </div>
+          <div class="phase">
+            <div class="num">02</div>
+            <div><h3>Primary fixed-sequence structural screen</h3><p>For every surviving design, predict the binder alone and the target–binder complex with Boltz-2 (or the calibrated fast Protenix path). Use a fixed target MSA, no binder MSA, explicit template policy, at least one seed/sample, and no sequence rewriting. Emit structures plus raw confidence and geometry metrics.</p></div>
+          </div>
+          <div class="phase">
+            <div class="num">03</div>
+            <div><h3>Survivor consensus and robustness</h3><p>On a smaller pool, run multiple seeds/samples and a second model family—prefer AF2-multimer for independence, with OpenFold3 as another view. Summarize median, lower quantile, success fraction and model disagreement. Run ProteinMPNN and Caliby on the same registered backbones/ensembles, scoring the original sequence.</p></div>
+          </div>
+          <div class="phase">
+            <div class="num">04</div>
+            <div><h3>Protocol-versioned filtering</h3><p>Apply interpretable gates to normalized metric names. Missing required metrics fail closed. Store one filter decision per design with threshold, comparator, source metric IDs, aggregation rule and protocol version in <code>reason</code>. Use “at least two model lineages pass” only after the pilot defines what pass means per model.</p></div>
+          </div>
+          <div class="phase">
+            <div class="num">05</div>
+            <div><h3>Diversity-aware selection before optimization</h3><p>Cluster the quality-qualified pool in sequence, binder fold and binding pose spaces. Apply source/length/topology caps and choose representatives by a quality-constrained farthest-point or per-cluster quota policy. Record cluster and selection decisions separately.</p></div>
+          </div>
+          <div class="phase">
+            <div class="num">06</div>
+            <div><h3>Optimization creates child designs</h3><p>Each changed sequence is a new <code>DesignRecord</code> with <code>parent_design_id</code>. MPNN redesign, Caliby-guided sequence changes, and Mosaic gradient optimization are <code>optimize</code> runs—not evaluation side effects.</p></div>
+          </div>
+          <div class="phase">
+            <div class="num">07</div>
+            <div><h3>Re-score and open the ESMFold2 holdout</h3><p>Re-run the required non-held-out panel on optimized children, then evaluate the finalists with ESMFold2 full. No threshold tuning against those holdout results inside the same campaign round. Final ranking uses robust normalized ranks/Pareto fronts plus diversity constraints; raw holdout scores remain visible.</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="metrics">
+        <h2>Metric contract and default panel</h2>
+        <p>Use canonical metric names; evaluator identity, checkpoint, seed, MSA/template policy and parameters live on the evaluation run and in metric details. Do not encode a model name into every new canonical metric. Existing generator-native names remain unchanged for backward compatibility.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Scope</th><th>Canonical v1 metrics</th><th>Replicate summary</th></tr></thead>
+            <tbody>
+              <tr><td>Sequence</td><td><code>sequence_esmc_pll_per_residue</code>, <code>sequence_esmc_pseudo_perplexity</code>, <code>sequence_low_complexity_fraction</code>, charge/hydrophobic/composition features</td><td>Deterministic where possible; model checkpoint is part of protocol.</td></tr>
+              <tr><td>Binder fold</td><td><code>binder_plddt_mean</code>, <code>binder_ptm</code>, <code>binder_pae_mean</code>, <code>binder_radius_gyration</code>, <code>binder_sample_success</code></td><td>Store raw seeds/samples; expose median and p10/worst-tail summary.</td></tr>
+              <tr><td>Cofold confidence</td><td><code>complex_iptm</code>, <code>interface_pae_binder_target</code>, <code>interface_pae_target_binder</code>, <code>interface_ipsae_binder_target</code>, <code>interface_ipsae_target_binder</code>, <code>interface_ipsae_min</code></td><td>Median, p10 for “higher is better”, p90 for “lower is better”, pass fraction.</td></tr>
+              <tr><td>Pose / geometry</td><td><code>interface_contact_count</code>, <code>hotspot_coverage</code>, <code>interface_dsasa</code>, <code>interface_clash_count</code>, <code>target_rmsd_ca</code>, <code>binder_bound_unbound_rmsd_ca</code></td><td>Calculate per structure sample; never only on an arbitrary sample 0.</td></tr>
+              <tr><td>Inverse folding</td><td><code>mpnn_nll_per_residue</code>, <code>mpnn_pseudo_perplexity</code>, <code>mpnn_recovery_fraction</code>, <code>caliby_u_per_binder_residue</code>, <code>caliby_ensemble_u_mean</code>, <code>caliby_ensemble_u_worst_q</code></td><td>Multiple MPNN decoding orders; Caliby across conformer ensemble. Slice to binder residues so the fixed target does not dominate.</td></tr>
+              <tr><td>Agreement</td><td><code>model_pose_tm</code>, <code>model_pose_rmsd_after_target_align</code>, <code>model_interface_contact_jaccard</code>, confidence-rank dispersion</td><td>Pairwise across evaluator families, not model samples from the same family.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>Replicates and summaries</h3>
+        <ul>
+          <li>Keep each seed/sample as a metric replicate. Deterministic IDs must include run, design, metric name and replicate.</li>
+          <li>Emit separately named aggregates such as <code>complex_iptm_median</code> and <code>complex_iptm_p10</code>; never overload replicate 0 as both a raw value and an aggregate.</li>
+          <li>Record failed/missing samples. “One excellent result out of five crashes” is not the same as five consistent predictions.</li>
+          <li>Use per-model thresholds or within-protocol percentiles. Raw ipTM values from different model implementations are not guaranteed to be calibrated on one scale.</li>
+        </ul>
+        <h3>Filtering versus ranking</h3>
+        <p>A filter establishes minimum evidence; a rank orders an explicitly named pool. Keep both as <code>DecisionRecord</code>s in their own runs. A composite may be useful after calibration, but its formula, transforms and missing-value policy belong in the rank decision’s reason JSON. Preserve the Pareto front across foldability, interface confidence, sequence plausibility, robustness and diversity.</p>
+      </section>
+
+      <section id="diversity">
+        <h2>Diversity is three spaces, not one percentage</h2>
+        <div class="grid3">
+          <div class="card"><h3>1. Sequence</h3><p>Global-alignment identity with coverage; nearest-neighbor identity; MMseqs2/CD-HIT-style clusters at protocol-defined thresholds; per-position entropy for fixed-length families; ESM-C embedding distance as optional support.</p></div>
+          <div class="card"><h3>2. Fold</h3><p>Binder-backbone TM-score/RMSD clusters using Foldseek or US-align. Align binder-to-binder for topology diversity, separately from confidence. Compare the same state (unbound or bound) consistently.</p></div>
+          <div class="card"><h3>3. Binding pose</h3><p>Align targets first, then compare binder placement, interface-contact Jaccard, epitope residues, orientation and hotspot coverage. Two unrelated sequences can still propose the same pose.</p></div>
+        </div>
+        <h3>Report these pool-level summaries</h3>
+        <ul>
+          <li>Exact unique count, cluster counts at at least two sequence thresholds, singleton fraction and median nearest-neighbor identity.</li>
+          <li>Effective cluster count, <code>exp(Shannon entropy)</code>, so one giant cluster plus many singletons is not mistaken for a balanced library.</li>
+          <li>Fold-cluster count and effective fold count among quality-qualified candidates.</li>
+          <li>Pose-cluster count, effective epitope count and epitope coverage map.</li>
+          <li>Generator/source contribution before and after every gate, length distribution and topology distribution.</li>
+        </ul>
+        <div class="callout warn">
+          <h3>Selection rule</h3>
+          <p>First define the eligible set with quality gates. Then select with per-cluster/source caps and greedy farthest-point sampling, breaking ties by a robust quality rank. This prevents 89.55%-dominant FreeBindCraft output—or any single prolific family—from consuming the optimization budget. Store cluster assignments and selected representatives so the policy is reproducible.</p>
+        </div>
+        <p class="small">Exact sequence uniqueness is already 3,302/3,302, but that says almost nothing about useful diversity. The observed length range is 60–149, so coverage-aware alignment and length/topology strata are essential.</p>
+      </section>
+
+      <section id="harness">
+        <h2>Harness changes required before adding scorer plugins</h2>
+        <div class="callout">
+          <h3>Least-disruptive design</h3>
+          <p>Keep all seven generation plugins working. Add an evaluator contract alongside <code>ToolPlugin</code>, then generalize planning/manifests around run kind and candidate inputs. Host-side filter/cluster/rank operations can use the same immutable snapshot and serialized ingest boundary.</p>
+        </div>
+        <h3>1. Schema v4: snapshot downstream inputs</h3>
+        <p>The metrics and decisions tables can already refer to designs created by older runs. What is missing is durable membership/provenance for multi-source pools; a single <code>parent_run_id</code> cannot express “evaluate designs from seven generation runs.” Add:</p>
+        <pre><code>run_dependencies (
+  run_id, source_run_id, role,
+  PRIMARY KEY (run_id, source_run_id, role)
+)
+
+run_candidates (
+  run_id, design_id, ordinal,
+  sequence_sha256, source_structure_artifact_id,
+  PRIMARY KEY (run_id, design_id)
+)</code></pre>
+        <p>Keep <code>parent_run_id</code> for simple one-parent lineage. <code>run_candidates</code> is the exact input snapshot and makes partial/restarted evaluation auditable.</p>
+        <h3>2. Manifest: describe operations, not generated designs</h3>
+        <ul>
+          <li>Stop hard-coding <code>RunKind.GENERATE</code> in <code>plan_run()</code>.</li>
+          <li>Replace generation-only <code>designs_per_task</code> assumptions with generic task items, expected output bundle, run kind and candidate-manifest digest.</li>
+          <li>Define count semantics per kind: for evaluation, <code>n_requested</code> candidates, <code>n_attempted</code> launched, <code>n_produced</code> with a complete required metric bundle, and <code>n_passed</code> left null until a filter run.</li>
+          <li>Archive the driver and digest every runtime-consumed file, model checkpoint, container and target/MSA/template input. For symlinked weights, digest the resolved file.</li>
+        </ul>
+        <h3>3. Add a separate <code>EvaluatorPlugin</code> seam</h3>
+        <pre><code>class EvaluatorPlugin(ABC):
+    tool: str
+    config_type: type[EvaluatorConfig]
+
+    def preflight(self, general, model, candidates): ...
+    def evaluation_plan(self, loaded, snapshot) -&gt; EvaluationPlan: ...
+    def launch_spec(self, manifest, task_id) -&gt; LaunchSpec: ...
+    def collect(self, run_dir, run) -&gt; CollectedRun: ...
+</code></pre>
+        <p>An evaluator emits no <code>DesignRecord</code>s. Its metrics/artifacts use the evaluation run ID and the existing candidate design IDs. An optimizer has a separate contract and emits child designs.</p>
+        <h3>4. Separate workflows, one single-writer boundary</h3>
+        <p>Initially add <code>workflow/evaluate.smk</code> and host-side operations rather than making the stable generation Snakefile dynamic in one jump:</p>
+        <pre><code>materialize_candidates
+       │
+       ├── evaluate[shard=0..N] ── collect_evaluation ── ingest
+       │
+       ├── filter ── ingest
+       ├── cluster ── ingest
+       ├── select ── ingest
+       └── export_selection</code></pre>
+        <p>All database writes still pass through the existing serialized <code>db_writer=1</code> resource. Once this is proven, a campaign-stage index can connect generation, evaluation, selection and optimization DAGs.</p>
+        <h3>5. A first scorer package</h3>
+        <p>Implement <code>src/bindocracy/evaluators/mosaic_fold/</code> with config, preflight, launch, adapter and driver. The driver should borrow Mosaic’s model factory but:</p>
+        <ul>
+          <li>accept a shard of registered design IDs and sequences;</li>
+          <li>run binder-only and/or complex modes explicitly;</li>
+          <li>never inverse-fold or rank;</li>
+          <li>emit append-safe JSONL per design/sample, structures and status;</li>
+          <li>make chain roles explicit and validate target sequence/length;</li>
+          <li>require local MSA/weights and refuse silent server fallback;</li>
+          <li>continue after one malformed candidate and preserve partial output.</li>
+        </ul>
+        <h3>6. Policy layer</h3>
+        <p>Add versioned YAML for filter and rank protocols, a metric-definition registry (name, unit, direction, scope, version), scorer lineage tags, and a holdout guard. The guard must reject any workflow that references ESMFold2 metrics in pre-optimization filters or optimization objectives.</p>
+      </section>
+
+      <section id="calibration">
+        <h2>Calibration and rollout—after this plan is approved</h2>
+        <div class="card">
+          <div class="phase"><div class="num">A</div><div><h3>Contract work, no GPU</h3><p>Schema migration and tests; immutable candidate snapshots; evaluator manifest; mock evaluator; filter/cluster/rank records; holdout guard; generation regression suite.</p></div></div>
+          <div class="phase"><div class="num">B</div><div><h3>Capability probes</h3><p>One candidate per installed backend on the target GPU class. Record exact package/checkpoint/container digests, backend, peak memory, runtime, output fields and offline behavior. A help/import check is insufficient.</p></div></div>
+          <div class="phase"><div class="num">C</div><div><h3>Balanced model-matrix pilot</h3><p>Use roughly 200–300 candidates: balanced across seven generators and length strata, including every native pass plus random and near-threshold failures. Run all proposed folding models and sequence critics here, with enough replicates to measure variance.</p></div></div>
+          <div class="phase"><div class="num">D</div><div><h3>Choose the production panel</h3><p>Compare failure rates, cost/design, metric correlation, model disagreement, source/length bias and ability to enrich native passes. Retain complementary models. Freeze v1 threshold and aggregation protocols before evaluating the full library.</p></div></div>
+          <div class="phase"><div class="num">E</div><div><h3>Full pre-optimization funnel</h3><p>Run cheap QC on all 3,302; primary folding on survivors; expensive consensus only on the reduced set; quality gates; three-space diversity selection; export an optimization-ready candidate manifest.</p></div></div>
+          <div class="phase"><div class="num">F</div><div><h3>Optimization and final holdout</h3><p>Create child designs, repeat the frozen non-held-out screen, then open ESMFold2 for finalists. Produce a final report with raw metrics, uncertainty, Pareto membership, cluster coverage and provenance.</p></div></div>
+        </div>
+        <h3>What the pilot must answer before thresholds are approved</h3>
+        <ul>
+          <li>Which metrics are stable across seeds and which require 3–5 samples?</li>
+          <li>Does Protenix Mini v0.5 provide a useful cheap filter, or is it too outdated/bias-prone?</li>
+          <li>Does AF2 add independent enrichment beyond Boltz-2/OpenFold3 despite the Mosaic wrapper’s no-MSA behavior?</li>
+          <li>Are MPNN and Caliby scores complementary once normalized per binder residue and backbone state?</li>
+          <li>How much selection changes when quality is summarized by median/worst-tail instead of best-of-N?</li>
+          <li>How many sequence, fold and pose families survive, and what generator families are lost at each gate?</li>
+        </ul>
+        <p class="small">Without wet-lab labels, v1 thresholds are operational heuristics. Preserve continuous values and rejected candidates so future assay data can recalibrate the funnel without rerunning every model.</p>
+      </section>
+
+      <section id="acceptance">
+        <h2>Acceptance criteria for the implementation</h2>
+        <div class="grid2">
+          <div class="card">
+            <h3>Harness correctness</h3>
+            <ul>
+              <li>An evaluator ingests metrics for existing designs and creates zero new designs.</li>
+              <li>A multi-generator snapshot is deterministic and survives relocation/recollection.</li>
+              <li>A changed sequence, target, MSA, template, driver, image or resolved weight is detected before launch.</li>
+              <li>Partial shards retain complete candidates and mark failed/missing metrics correctly.</li>
+              <li>Rerunning collection is byte-identical and ingestion is idempotent.</li>
+              <li>All seven existing generation plugins and workflow tests remain green.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Scientific correctness</h3>
+            <ul>
+              <li>Binder/target chain roles are explicit and tested for each backend.</li>
+              <li>The sequence entering an evaluation is byte-identical to the registered design.</li>
+              <li>Raw replicates, aggregates, failures and units are distinguishable.</li>
+              <li>Model lineage and generator/optimizer overlap are visible.</li>
+              <li>No PPI proxy is named affinity or <em>K</em><sub>d</sub>.</li>
+              <li>ESMFold2 metrics cannot influence pre-optimization selection by configuration.</li>
+            </ul>
+          </div>
+        </div>
+        <h3>Tests that must exist</h3>
+        <p>Evaluation-only database bundle; multi-parent candidate pool; duplicate candidate ID; mismatched sequence hash; target-chain swap; missing sample; truncated JSONL; metric replicate uniqueness; filter missing-policy; cluster scope; rank scope; inverse-fold mutation refusal; offline-MSA refusal; ESMFold2 holdout violation; schema v3→v4 migration with existing 3,302-design-style relationships.</p>
+      </section>
+
+      <section id="decisions">
+        <h2>Decisions for review before any install or model run</h2>
+        <div class="decision"><div><strong>Approve the operation split:</strong> fixed-sequence evaluation cannot redesign; redesign is an optimize run that creates child designs.</div></div>
+        <div class="decision"><div><strong>Approve the v1 bootstrap panel:</strong> Boltz-2 primary, AF2-multimer or OpenFold3 consensus, MPNN + ESM-C critics, Caliby evaluator, ESMFold2 final holdout.</div></div>
+        <div class="decision"><div><strong>Confirm the AF3 choice:</strong> treat OpenFold3 as OpenFold3 and omit actual DeepMind AF3 for v1 unless separate authorized weights are intentionally supplied.</div></div>
+        <div class="decision"><div><strong>Confirm the holdout rule:</strong> ESMFold2 full (Sept-2021 cutoff), never Fast/2025-cutoff by silent substitution, and no pre-optimization access.</div></div>
+        <div class="decision"><div><strong>Confirm the affinity language:</strong> v1 reports PPI binding/structure proxies only; no absolute affinity claim.</div></div>
+        <div class="decision"><div><strong>Approve schema v4:</strong> add multi-run dependencies and immutable run-candidate membership before scorer implementation.</div></div>
+        <div class="decision"><div><strong>Choose optional additions:</strong> Chai-1 after v1 calibration if model independence is insufficient; RF3 later when its API stabilizes.</div></div>
+        <div class="callout warn" style="margin-top:1rem">
+          <h3>Recommended first implementation slice</h3>
+          <p>Schema/manifest support → mock evaluator → Mosaic fixed-sequence Boltz-2 evaluator → versioned filter → sequence clustering/selection → balanced pilot. This slice proves the end-to-end harness seam before multiplying backends.</p>
+        </div>
+      </section>
+
+      <section id="sources">
+        <h2>Evidence and source notes</h2>
+        <h3>Local sources inspected</h3>
+        <ul>
+          <li><a href="harness-design.md">Harness design findings</a>, <a href="database.md">database contract</a>, <a href="../workflow/Snakefile">generation workflow</a>, <a href="../src/bindocracy/store/schema.py">schema v3</a>, and <a href="../src/bindocracy/runs/manifest.py">run manifest</a>.</li>
+          <li>Mosaic source, model/loss catalog, <code>screen_proposals.py</code>, screen logs, weights and Singularity definitions under <code>/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup/</code>.</li>
+          <li>Caliby source and API docs under <code>/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/caliby/</code>.</li>
+          <li>ProtForge images and model cache under <code>/n/holylfs06/LABS/bsabatini_lab/Everyone/protforge-assets/</code>; binder-design images and campaign DuckDB under <code>/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/</code>.</li>
+        </ul>
+        <h3>Primary/upstream sources checked</h3>
+        <ul>
+          <li><a href="https://github.com/jwohlwend/boltz">Boltz official repository</a> and its <a href="https://github.com/jwohlwend/boltz/blob/main/examples/affinity.yaml">affinity input example</a>.</li>
+          <li><a href="https://github.com/aqlaboratory/openfold-3">OpenFold3 official repository</a> and <a href="https://github.com/aqlaboratory/openfold-3/releases">release compatibility notes</a>.</li>
+          <li><a href="https://github.com/google-deepmind/alphafold3">DeepMind AlphaFold 3 repository and terms</a>.</li>
+          <li><a href="https://github.com/bytedance/Protenix">Protenix official repository</a> and <a href="https://github.com/bytedance/Protenix/blob/main/docs/supported_models.md">supported models</a>.</li>
+          <li><a href="https://huggingface.co/biohub/ESMFold2">Biohub ESMFold2 model card</a>.</li>
+          <li><a href="https://github.com/chaidiscovery/chai-lab">Chai-1 official repository</a>.</li>
+          <li><a href="https://github.com/RosettaCommons/foundry/blob/production/models/rf3/README.md">RoseTTAFold3 / Foundry inference documentation</a>.</li>
+          <li><a href="https://github.com/pylelab/USalign">US-align</a> and <a href="https://github.com/steineggerlab/foldseek">Foldseek</a> for structural diversity.</li>
+        </ul>
+        <p class="footer-note">This is an architecture and experimental-design plan, not a claim that any computational score establishes binding. All predictions remain hypotheses requiring experimental validation. Inventory checks were read-only; no container inference, GPU job, package installation, weight download, or database mutation was performed.</p>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

@@ -10,6 +10,9 @@ campaign:
 target:
   name: dio3-cut
   sequence_fasta: /absolute/path/to/binder_design/mosaic_setup/dio3_cut/dio3_cut.fasta
+  # Supply an existing A3M, or set an absolute output path and run
+  # `bindocracy target prepare-msa` before loading configs / scoring.
+  # See docs/scoring-stage.md section 9 for the ProtForge search command.
   msa: /absolute/path/to/binder_design/mosaic_setup/dio3_cut/msa_out/sequences/dio3_cut/msa/DIO3.a3m
   chain_id: A
   # Produced by legacy/00_target/. Mosaic folds the target from sequence but

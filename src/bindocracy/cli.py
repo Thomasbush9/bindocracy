@@ -18,8 +18,11 @@ from bindocracy.config import (
     ConfigPreflightError,
     recover_config_yaml,
 )
+from bindocracy.config.load import load_yaml
+from bindocracy.config.models import GeneralConfig, ResourceConfig
 from bindocracy.runs import ingest_bundle, write_collected
 from bindocracy.runs.inputs import TargetDigest
+from bindocracy.runs.msa import prepare_target_msa
 from bindocracy.store import (
     CampaignStore,
     IngestConflictError,
@@ -35,6 +38,37 @@ app = typer.Typer(
 )
 config_app = typer.Typer(help="Validate and load campaign configuration.")
 app.add_typer(config_app, name="config")
+target_app = typer.Typer(help="Prepare shared target inputs before planning runs.")
+app.add_typer(target_app, name="target")
+
+
+@target_app.command("prepare-msa")
+def prepare_msa(
+    general: Annotated[Path, typer.Option("--general", help="General campaign YAML.")],
+    script: Annotated[Path, typer.Option(
+        "--script", help="Imported Mosaic singularity/msa-search.sbatch from ProtForge.",
+    )],
+    image: Annotated[Path, typer.Option("--image", help="ProtForge msa.sif image.")],
+    database: Annotated[Path, typer.Option("--database", help="Local ColabFold/MMseqs2 database.")],
+    cpus: Annotated[int, typer.Option("--cpus", min=1)] = 8,
+    memory_gb: Annotated[int, typer.Option("--memory-gb", min=1)] = 64,
+    walltime: Annotated[str, typer.Option("--walltime")] = "08:00:00",
+) -> None:
+    """Generate target.msa on SLURM and wait, or reuse a matching existing A3M.
+
+    Run before config load or Snakemake; no GPU scoring job is submitted here.
+    Account and partition come from the campaign's cluster configuration.
+    """
+    try:
+        config = load_yaml(general, GeneralConfig)
+        output = prepare_target_msa(
+            config, script=script, image=image, database=database,
+            resources=ResourceConfig(gpus=1, cpus=cpus, memory_gb=memory_gb, walltime=walltime),
+        )
+    except (ConfigLoadError, ConfigPreflightError, ValidationError, OSError) as error:
+        typer.echo(f"Target preparation error:\n{error}", err=True)
+        raise typer.Exit(code=2) from error
+    typer.echo(output)
 
 
 @app.callback()

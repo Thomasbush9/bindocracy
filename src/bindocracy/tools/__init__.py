@@ -7,6 +7,7 @@ Removing one: delete both. Nothing else in the harness names a tool.
 import os
 from importlib import import_module
 
+from bindocracy.tools.af3 import AF3Plugin
 from bindocracy.tools.base import ToolPlugin
 from bindocracy.tools.boltzgen import BoltzGenPlugin
 from bindocracy.tools.chai1 import Chai1Plugin
@@ -39,6 +40,7 @@ register(ProteinaComplexaPlugin)
 register(FreeBindCraftPlugin)
 register(ScorerPlugin)
 register(Chai1Plugin)
+register(AF3Plugin)
 
 # A tool does not have to live in this repository. Anything named in
 # BINDOCRACY_PLUGINS (comma-separated importable modules) is imported here and
@@ -49,6 +51,7 @@ for _module in os.environ.get("BINDOCRACY_PLUGINS", "").split(","):
         import_module(_module.strip())
 
 __all__ = [
+    "AF3Plugin",
     "BoltzGenPlugin",
     "Chai1Plugin",
     "FreeBindCraftPlugin",

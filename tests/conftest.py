@@ -1449,3 +1449,84 @@ def write_chai1_configs(root: Path, **overrides) -> tuple[Path, Path]:
 @pytest.fixture
 def chai1_config_files(tmp_path: Path) -> tuple[Path, Path]:
     return write_chai1_configs(tmp_path)
+
+
+# --- AlphaFold 3 -------------------------------------------------------------
+
+AF3_DRIVER_PATH = (
+    Path(__file__).resolve().parents[1] / "drivers" / "af3" / "score_af3.py"
+)
+
+
+def write_af3_configs(root: Path, **overrides) -> tuple[Path, Path]:
+    """A general + af3 YAML pair with every referenced path present."""
+    target_fasta = root / "af3_target.fasta"
+    target_fasta.write_text(f">dio3\n{CHAI1_TARGET}\n")
+    msa = root / "af3_target.a3m"
+    msa.write_text(f">dio3\n{CHAI1_TARGET}\n>hom\n{CHAI1_TARGET}\n")
+    container = root / "af3.sif"
+    container.write_bytes(b"fixture")
+    models = root / "af3_models"
+    models.mkdir(parents=True, exist_ok=True)
+    # Not the real 1 GB file: preflight checks presence, not contents.
+    (models / "af3.bin.zst").write_bytes(b"fixture-weights")
+    driver = root / "score_af3.py"
+    driver.write_text(AF3_DRIVER_PATH.read_text())
+    (root / "af3_work").mkdir(parents=True, exist_ok=True)
+
+    manifest = _write_chai1_design_set(
+        root / "af3_set", ["ACDEFGHIKL", "MNPQRSTVWY", "ACDEFGHIKM"]
+    )
+
+    general_path = root / "af3_general.yaml"
+    general_path.write_text(yaml.safe_dump({
+        "schema_version": 1,
+        "campaign": {"name": "test-campaign"},
+        "target": {"name": "dio3-cut", "sequence_fasta": str(target_fasta),
+                   "msa": str(msa), "chain_id": "A", "hotspots": []},
+        "cluster": {"executor": "slurm", "account": "a", "default_partition": "p"},
+    }, sort_keys=False))
+
+    af3 = {
+        "schema_version": 1, "name": "af3-test", "tool": "af3",
+        "design_set": str(manifest), "driver_script": str(driver),
+        "protocol": {"num_trunk_recycles": 3, "num_diffn_timesteps": 200,
+                     "num_diffn_samples": 5, "seed": 0, "use_target_msa": True},
+        "readers": {"complex": True},
+        "sharding": {"jobs": 1},
+        "runtime": {"container": str(container), "model_dir": str(models),
+                    "work_root": str(root / "af3_work" / "run")},
+        "resources": {"gpus": 1, "cpus": 8, "memory_gb": 128, "walltime": "12:00:00"},
+    }
+    for section, values in overrides.items():
+        af3[section].update(values)
+    model_path = root / "af3.yaml"
+    model_path.write_text(yaml.safe_dump(af3, sort_keys=False))
+    return general_path, model_path
+
+
+@pytest.fixture
+def af3_config_files(tmp_path: Path) -> tuple[Path, Path]:
+    return write_af3_configs(tmp_path)
+
+
+@pytest.fixture
+def af3_configs(af3_config_files):
+    from bindocracy.config.load import load_yaml
+    from bindocracy.config.models import GeneralConfig
+    from bindocracy.tools.af3.config import AF3Config
+
+    general_path, model_path = af3_config_files
+    return load_yaml(general_path, GeneralConfig), load_yaml(model_path, AF3Config)
+
+
+@pytest.fixture
+def af3_loaded(af3_configs):
+    from bindocracy.config.load import LoadedConfigs
+    from bindocracy.tools.af3.preflight import preflight_af3
+
+    general, model = af3_configs
+    return LoadedConfigs(
+        general=general, model=model, preflight=preflight_af3(general, model),
+        general_path=Path("general.yaml"), model_path=Path("af3.yaml"),
+    )

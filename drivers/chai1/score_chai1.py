@@ -142,6 +142,13 @@ def _relative(path: Path, save_dir: Path) -> str:
         return str(path)
 
 
+def write_chai_fasta_monomer(path: Path, sequence: str) -> None:
+    """One chain, no target. Chai-1's analogue of the mosaic scorer's monomer
+    reader: it folds the sequence alone, which is what a "does this model
+    produce the right fold" check needs."""
+    path.write_text(f">protein|name=monomer\n{sequence}\n")
+
+
 def write_chai_fasta(path: Path, target_sequence: str, binder_sequence: str) -> None:
     """Target first, binder second.
 
@@ -153,6 +160,23 @@ def write_chai_fasta(path: Path, target_sequence: str, binder_sequence: str) -> 
         f">protein|name=target\n{target_sequence}\n"
         f">protein|name=binder\n{binder_sequence}\n"
     )
+
+
+def metrics_from_monomer(candidates, i: int) -> dict:
+    """A single-chain fold. Only the whole-chain numbers exist -- there is no
+    interface, so no ipTM, no directional PAE and no clash-between-chains.
+    Emitting those as zero would read as a measured bad interface rather than
+    an absent one."""
+    import torch
+
+    ranking = candidates.ranking_data[i]
+    plddt = candidates.plddt[i].to(torch.float32)
+    pae = candidates.pae[i].to(torch.float32)
+    return {
+        "mono_plddt": float(plddt.mean().item()),
+        "mono_ptm": float(ranking.ptm_scores.complex_ptm.reshape(-1)[0].item()),
+        "mono_pae": float(pae.mean().item()),
+    }
 
 
 def metrics_from_candidate(candidates, i: int, n_target: int, n_binder: int) -> dict:
@@ -254,6 +278,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--msa-directory", type=Path, default=None)
     p.add_argument("--no-esm-embeddings", action="store_true")
     p.add_argument("--low-memory", action="store_true")
+    p.add_argument("--monomer", action="store_true",
+                   help="fold each sequence alone, with no target chain")
     return p
 
 
@@ -291,7 +317,10 @@ def main() -> int:
                         child.unlink() if child.is_file() else child.rmdir()
                 fold_dir.mkdir(parents=True, exist_ok=True)
                 fasta = args.work_dir / f"design-{index:06d}.fasta"
-                write_chai_fasta(fasta, target_sequence, binder_sequence)
+                if args.monomer:
+                    write_chai_fasta_monomer(fasta, binder_sequence)
+                else:
+                    write_chai_fasta(fasta, target_sequence, binder_sequence)
 
                 candidates = run_inference(
                     fasta_file=fasta,
@@ -312,15 +341,20 @@ def main() -> int:
                 # collapsed here: the mean of six samples and one sample that
                 # happened to look good are different facts.
                 for replicate in range(len(candidates.cif_paths)):
-                    values = metrics_from_candidate(
-                        candidates, replicate, len(target_sequence), len(binder_sequence)
+                    values = (
+                        metrics_from_monomer(candidates, replicate)
+                        if args.monomer
+                        else metrics_from_candidate(
+                            candidates, replicate,
+                            len(target_sequence), len(binder_sequence),
+                        )
                     )
                     sink.write(
                         json.dumps(
                             {
                                 "index": index,
                                 "replicate": replicate,
-                                "condition": "complex",
+                                "condition": "monomer" if args.monomer else "complex",
                                 "metrics": values,
                                 "seconds": round(time.time() - began, 2),
                                 # Relative to the task directory, matching the

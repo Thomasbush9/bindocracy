@@ -69,6 +69,21 @@ def read_single_fasta(path: Path) -> str:
     )
 
 
+def fold_input_monomer(name: str, sequence: str, seed: int) -> dict:
+    """One chain, no target and no alignment. AF3's analogue of the mosaic
+    scorer's monomer reader."""
+    return {
+        "name": name,
+        "modelSeeds": [seed],
+        "sequences": [
+            {"protein": {"id": "A", "sequence": sequence,
+                         "unpairedMsa": "", "pairedMsa": "", "templates": []}},
+        ],
+        "dialect": "alphafold3",
+        "version": 1,
+    }
+
+
 def fold_input(name: str, target: str, binder: str, target_a3m: str, seed: int) -> dict:
     """Target as chain A, binder as chain B.
 
@@ -167,7 +182,7 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Score a design-set shard with AlphaFold 3")
     p.add_argument("--design-set", type=Path, required=True)
     p.add_argument("--target-fasta", type=Path, required=True)
-    p.add_argument("--target-msa", type=Path, required=True,
+    p.add_argument("--target-msa", type=Path, default=None,
                    help="ColabFold a3m for the target; passed as unpairedMsa")
     p.add_argument("--model-dir", type=Path, required=True)
     p.add_argument("--work-dir", type=Path, required=True)
@@ -177,6 +192,8 @@ def main() -> int:
     p.add_argument("--task-id", type=int, required=True)
     p.add_argument("--seed", type=int, required=True)
     p.add_argument("--num-diffn-samples", type=int, default=5)
+    p.add_argument("--monomer", action="store_true",
+                   help="fold each sequence alone, with no target chain")
     args = p.parse_args()
 
     args.save_dir.mkdir(parents=True, exist_ok=True)
@@ -186,7 +203,7 @@ def main() -> int:
     status_path = args.save_dir / "status.json"
 
     target = read_single_fasta(args.target_fasta)
-    target_a3m = args.target_msa.read_text()
+    target_a3m = args.target_msa.read_text() if args.target_msa else ""
     print(f"target {len(target)} aa, a3m {target_a3m.count('>')} sequences", flush=True)
 
     entries = shard_of(read_fasta_entries(args.design_set), args.shard, args.num_shards)
@@ -207,9 +224,12 @@ def main() -> int:
                     raise ValueError(f"non-standard residues {bad}")
                 job.mkdir(parents=True, exist_ok=True)
                 json_path = job / "fold_input.json"
-                json_path.write_text(
-                    json.dumps(fold_input(name, target, binder, target_a3m, args.seed))
+                job_spec = (
+                    fold_input_monomer(name, binder, args.seed)
+                    if args.monomer
+                    else fold_input(name, target, binder, target_a3m, args.seed)
                 )
+                json_path.write_text(json.dumps(job_spec))
                 out_dir = job / "out"
                 result = subprocess.run(
                     [sys.executable, RUN_ALPHAFOLD,
@@ -238,12 +258,18 @@ def main() -> int:
                         kept = structures / f"{name}_s{replicate}.cif"
                         shutil.copyfile(cif, kept)
                         relative = str(kept.relative_to(args.save_dir))
-                    values = metrics_from_summary(
-                        json.loads(summary_path.read_text()), complex_plddt, binder_plddt
+                    summary = json.loads(summary_path.read_text())
+                    values = (
+                        {"mono_plddt": complex_plddt,
+                         "mono_ptm": summary.get("ptm")}
+                        if args.monomer
+                        else metrics_from_summary(summary, complex_plddt, binder_plddt)
                     )
                     values = {k: v for k, v in values.items() if v is not None}
                     sink.write(json.dumps({
-                        "index": index, "condition": "complex", "replicate": replicate,
+                        "index": index,
+                        "condition": "monomer" if args.monomer else "complex",
+                        "replicate": replicate,
                         "metrics": values, "seconds": round(time.time() - began, 2),
                         "structure": relative,
                     }) + "\n")
@@ -264,7 +290,9 @@ def main() -> int:
         "status": "succeeded" if ok else ("partial" if produced else "failed"),
         "n_requested": len(entries), "n_attempted": attempted,
         "n_produced": len(produced),
-        "produced_by_reader": {"complex": len(produced)},
+        "produced_by_reader": {
+            ("monomer" if args.monomer else "complex"): len(produced)
+        },
         "failures": failures, "output_file": "metrics.jsonl",
         "started_at": started, "finished_at": now(),
         "seconds": round(time.time() - t_start, 2),

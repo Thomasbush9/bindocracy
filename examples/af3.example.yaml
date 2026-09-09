@@ -1,0 +1,47 @@
+# AlphaFold 3 co-folding scorer.
+#
+# Two things differ from every other scorer here, both deliberate:
+#
+#   * The model parameters are NOT in the container. WEIGHTS_TERMS_OF_USE.md
+#     restricts distribution, so af3.def binds them read-only and this config
+#     must name where they live. Preflight refuses the run if af3.bin.zst is
+#     not there, rather than letting run_alphafold fail confusingly.
+#
+#   * AF3's data pipeline is never run. Its own MSA search wants ~630 GB of
+#     genetic databases; the campaign already has an alignment and AF3 takes it
+#     inline as `unpairedMsa`, so the driver always passes
+#     --norun_data_pipeline. That is not a knob: making it one would let a run
+#     search a database that is not installed.
+schema_version: 1
+name: af3-smoke
+tool: af3
+
+design_set: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/bindocracy/design_sets/<digest>.json
+driver_script: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/bindocracy/drivers/af3/score_af3.py
+
+protocol:
+  num_trunk_recycles: 3
+  # AF3's own default. Stated rather than inherited -- the sampler budgets
+  # across this panel span 2 (Protenix mini) to 200.
+  num_diffn_timesteps: 200
+  num_diffn_samples: 5
+  seed: 0
+  use_target_msa: true
+
+readers:
+  complex: true
+
+sharding:
+  jobs: 1
+
+runtime:
+  container: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/images/af3.sif
+  # Holds af3.bin.zst. Bound read-only at /models inside the container.
+  model_dir: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/af3_models
+  work_root: /n/netscratch/bsabatini_lab/Everyone/tbush/af3
+
+resources:
+  gpus: 1
+  cpus: 8
+  memory_gb: 128
+  walltime: "12:00:00"

@@ -1,0 +1,53 @@
+# Chai-1 co-folding scorer. A second scorer beside the mosaic one, over the
+# same design set and the same metric registry.
+#
+# Before the first run:
+#   1. Build the alignment Chai can read. It wants .aligned.pqt keyed by a
+#      sha256 of the sequence, NOT the campaign's .a3m:
+#        mkdir -p /tmp/a3m && cp <target>.a3m /tmp/a3m/uniref90.a3m
+#        singularity run --cleanenv images/chai1.sif \
+#          a3m-to-pqt /tmp/a3m --output-directory <msa_directory>
+#      Preflight resolves the filename by Chai's own hash and refuses the run
+#      if it is absent -- Chai itself only warns, then folds single-sequence.
+#   2. Freeze a design set (see docs/scoring-stage.md section 2).
+schema_version: 1
+name: chai1-smoke
+tool: chai1
+
+design_set: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/bindocracy/design_sets/<digest>.json
+driver_script: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/bindocracy/drivers/chai1/score_chai1.py
+
+# Every knob that changes the number is required. Chai's own defaults are
+# num_diffn_timesteps=200 and num_diffn_samples=5, which are much larger
+# budgets than the mosaic scorer's smoke runs used -- state them, do not
+# inherit them.
+protocol:
+  num_trunk_recycles: 3
+  num_diffn_timesteps: 200
+  num_diffn_samples: 5
+  num_trunk_samples: 1
+  recycle_msa_subsample: 0
+  seed: 0
+  use_esm_embeddings: true
+  use_target_msa: true
+  low_memory: true
+
+readers:
+  complex: true
+
+sharding:
+  jobs: 1
+
+runtime:
+  container: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/images/chai1.sif
+  msa_directory: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/chai_msas/dio3_cut
+  scratch: /n/netscratch/bsabatini_lab/Everyone/tbush/chai1
+
+# num_trunk_samples * num_diffn_samples structures per design, each a metric
+# replicate. Five samples at 200 diffusion steps is not a cheap fold; size the
+# walltime against the design count per shard, not against one fold.
+resources:
+  gpus: 1
+  cpus: 8
+  memory_gb: 96
+  walltime: "12:00:00"

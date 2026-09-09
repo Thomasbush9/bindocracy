@@ -109,8 +109,8 @@ def toy_run(configs, tmp_path: Path) -> Path:
 
 def test_the_built_in_tools_are_registered() -> None:
     assert registered_tools() == (
-        "boltzgen", "freebindcraft", "genie3", "mosaic", "protein_hunter",
-        "proteina_complexa", "pxdesign", "scorer",
+        "boltzgen", "chai1", "freebindcraft", "genie3", "mosaic",
+        "protein_hunter", "proteina_complexa", "pxdesign", "scorer",
     )
     assert isinstance(plugin_for("mosaic").adapter(), MosaicOutputAdapter)
 

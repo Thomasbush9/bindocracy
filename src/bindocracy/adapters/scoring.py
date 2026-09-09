@@ -81,6 +81,24 @@ COMPLEX_METRICS: tuple[MetricSpec, ...] = (
     _min("bt_pae", "mean binder-to-target predicted aligned error", "angstrom"),
     _min("tb_pae", "mean target-to-binder predicted aligned error", "angstrom"),
     _min("ptm_energy", "pTM energy, lower is a better interface"),
+    # Reported by co-folding backends that publish a whole-complex pTM and
+    # their own ranking composite. `rank_composite` above is mosaic's formula
+    # and is not interchangeable with a model's native aggregate, so the two
+    # are separate keys rather than one column holding two definitions.
+    _max("complex_ptm", "pTM over the whole complex"),
+    _max("aggregate_score", "the model's own ranking composite, as it defines it"),
+    # Chai-1 reports steric clashes alongside confidence. A clashing interface
+    # can still score well on ipTM, so this is stored rather than folded into
+    # a confidence number.
+    _min("has_clashes", "1 if any inter-chain steric clash was detected, else 0"),
+    _min("n_clashing_chain_pairs", "distinct chain pairs with inter-chain clashes"),
+    _min("binder_intra_clashes", "steric clashes of the binder with itself"),
+    # ipTM is directional: the score restricting to chain c against everything
+    # else depends on which chain is the query. Chai's `interface_ptm` is the
+    # MAX over chains, so it is optimistic by construction. Both directions and
+    # their minimum are stored for the same reason `ipsae_min` exists.
+    _max("tb_iptm", "target-to-binder ipTM"),
+    _max("iptm_min", "the lower of the two directional ipTM values"),
 )
 
 MONOMER_METRICS: tuple[MetricSpec, ...] = (

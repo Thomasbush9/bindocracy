@@ -11,3 +11,9 @@ wheels/
 .pytest_cache
 # Snakemake's per-invocation metadata and logs
 .snakemake
+# Run artifacts: smoke-test logs, predicted structures, frozen design sets.
+# A design set is content-addressed and rebuildable from its recorded query
+# (docs/scoring-stage.md section 2), so the campaign's sets live beside the
+# database rather than in the repository.
+build-logs/
+design_sets/

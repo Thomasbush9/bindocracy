@@ -1241,3 +1241,211 @@ def freebindcraft_driver():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+# --- Chai-1 -----------------------------------------------------------------
+
+CHAI1_DRIVER_PATH = (
+    Path(__file__).resolve().parents[1] / "drivers" / "chai1" / "score_chai1.py"
+)
+# The campaign's real DIO3 target, so the fixture's alignment filename is the
+# one the container actually computes. See tests/test_chai1.py.
+CHAI1_TARGET = (
+    "DDNRLCTLASLKAVWHGQKLDFFKQAHEGGPAPNSEVVLPDGFQSQHILDYAQGNRPLVLNFGSCTCPPFMARMSAFQR"
+    "LVTKYQRDVDFLIIYIEEAHPSDGWVTTDSPYIIPQHRSLEDRVSAARVLQQGAPGCALVLDTMANSSSSAYGAYFERL"
+    "YVIQSGTIMYQGGRGPDGYQVSELRTWLERYDEQLHGARPRRV"
+)
+
+
+def _write_chai1_design_set(root: Path, sequences: list[str]) -> Path:
+    """Freeze a design set the way the CLI would, returning its manifest path."""
+    from datetime import UTC, datetime
+
+    from bindocracy.runs.designset import build_design_set, write_design_set
+    from bindocracy.store.query import DesignQuery, DesignRow
+
+    rows = [
+        DesignRow(
+            design_id=f"design-{index:03d}",
+            run_id="run-fixture",
+            tool="mosaic",
+            run_name="fixture",
+            native_id=f"n{index}",
+            candidate_type="binder",
+            sequence=sequence,
+            length=len(sequence),
+            metadata={},
+        )
+        for index, sequence in enumerate(sequences)
+    ]
+    design_set = build_design_set(
+        rows,
+        database="fixture.duckdb",
+        query=DesignQuery(),
+        created_at=datetime(2026, 9, 9, tzinfo=UTC),
+    )
+    _, manifest = write_design_set(design_set, root / "design_sets")
+    return manifest
+
+
+@pytest.fixture
+def write_design_set(tmp_path: Path):
+    """Freeze an arbitrary set of sequences; returns the manifest path."""
+
+    def build(sequences: list[str]) -> Path:
+        return _write_chai1_design_set(tmp_path / "extra", sequences)
+
+    return build
+
+
+@pytest.fixture
+def chai1_configs(tmp_path: Path):
+    """A validated (GeneralConfig, Chai1Config) pair with every path present."""
+    from bindocracy.config.models import GeneralConfig
+    from bindocracy.tools.chai1.config import Chai1Config
+    from bindocracy.tools.chai1.preflight import expected_pqt_basename
+
+    target_fasta = tmp_path / "target.fasta"
+    target_fasta.write_text(f">dio3\n{CHAI1_TARGET}\n")
+
+    msa_dir = tmp_path / "chai_msas"
+    msa_dir.mkdir()
+    (msa_dir / expected_pqt_basename(CHAI1_TARGET)).write_bytes(b"parquet-fixture")
+
+    container = tmp_path / "chai1.sif"
+    container.write_bytes(b"fixture")
+    driver = tmp_path / "score_chai1.py"
+    driver.write_text("# fixture\n")
+    scratch = tmp_path / "scratch" / "chai1"
+    scratch.parent.mkdir(parents=True, exist_ok=True)
+
+    manifest = _write_chai1_design_set(tmp_path, ["ACDEFGHIKL", "MNPQRSTVWY", "ACDEFGHIKM"])
+
+    general = GeneralConfig.model_validate({
+        "schema_version": 1,
+        "campaign": {"name": "test-campaign"},
+        "target": {
+            "name": "dio3-cut",
+            "sequence_fasta": str(target_fasta),
+            "chain_id": "A",
+            "hotspots": [],
+        },
+        "cluster": {
+            "executor": "slurm",
+            "account": "test-account",
+            "default_partition": "test-gpu",
+        },
+    })
+    model = Chai1Config.model_validate({
+        "schema_version": 1,
+        "name": "chai1-test",
+        "tool": "chai1",
+        "design_set": str(manifest),
+        "driver_script": str(driver),
+        "protocol": {
+            "num_trunk_recycles": 3,
+            "num_diffn_timesteps": 200,
+            "num_diffn_samples": 5,
+            "num_trunk_samples": 1,
+            "recycle_msa_subsample": 0,
+            "seed": 0,
+        },
+        "sharding": {"jobs": 1},
+        "runtime": {
+            "container": str(container),
+            "msa_directory": str(msa_dir),
+            "scratch": str(scratch),
+        },
+        "resources": {"gpus": 1, "cpus": 8, "memory_gb": 96, "walltime": "12:00:00"},
+    })
+    return general, model
+
+
+@pytest.fixture
+def chai1_loaded(chai1_configs):
+    """What `plugin.load()` would hand `tool_plan`, without the YAML round trip."""
+    from bindocracy.config.load import LoadedConfigs
+    from bindocracy.tools.chai1.preflight import preflight_chai1
+
+    general, model = chai1_configs
+    return LoadedConfigs(
+        general=general,
+        model=model,
+        preflight=preflight_chai1(general, model),
+        general_path=Path("general.yaml"),
+        model_path=Path("chai1.yaml"),
+    )
+
+
+def write_chai1_configs(root: Path, **overrides) -> tuple[Path, Path]:
+    """Write a valid general + chai1 YAML pair and everything they reference."""
+    from bindocracy.tools.chai1.preflight import expected_pqt_basename
+
+    target_fasta = root / "target.fasta"
+    target_fasta.write_text(f">dio3\n{CHAI1_TARGET}\n")
+    msa_dir = root / "chai_msas"
+    msa_dir.mkdir(parents=True, exist_ok=True)
+    (msa_dir / expected_pqt_basename(CHAI1_TARGET)).write_bytes(b"parquet-fixture")
+    container = root / "chai1.sif"
+    container.write_bytes(b"fixture")
+    # The real driver, so the argv the connector builds is parsed by the parser
+    # that will actually receive it.
+    driver = root / "score_chai1.py"
+    driver.write_text(CHAI1_DRIVER_PATH.read_text())
+    (root / "scratch").mkdir(parents=True, exist_ok=True)
+
+    manifest = _write_chai1_design_set(
+        root, ["ACDEFGHIKL", "MNPQRSTVWY", "ACDEFGHIKM", "WYVTSRQPNM"]
+    )
+
+    general_path = root / "general.yaml"
+    general_path.write_text(yaml.safe_dump({
+        "schema_version": 1,
+        "campaign": {"name": "test-campaign"},
+        "target": {
+            "name": "dio3-cut",
+            "sequence_fasta": str(target_fasta),
+            "chain_id": "A",
+            "hotspots": [],
+        },
+        "cluster": {
+            "executor": "slurm",
+            "account": "test-account",
+            "default_partition": "test-gpu",
+        },
+    }, sort_keys=False))
+
+    chai1 = {
+        "schema_version": 1,
+        "name": "chai1-test",
+        "tool": "chai1",
+        "design_set": str(manifest),
+        "driver_script": str(driver),
+        "protocol": {
+            "num_trunk_recycles": 3,
+            "num_diffn_timesteps": 200,
+            "num_diffn_samples": 5,
+            "num_trunk_samples": 1,
+            "recycle_msa_subsample": 0,
+            "seed": 0,
+        },
+        "readers": {"complex": True},
+        "sharding": {"jobs": 2},
+        "runtime": {
+            "container": str(container),
+            "msa_directory": str(msa_dir),
+            "scratch": str(root / "scratch" / "chai1"),
+        },
+        "resources": {"gpus": 1, "cpus": 8, "memory_gb": 96, "walltime": "12:00:00"},
+    }
+    for section, values in overrides.items():
+        chai1[section].update(values)
+
+    model_path = root / "chai1.yaml"
+    model_path.write_text(yaml.safe_dump(chai1, sort_keys=False))
+    return general_path, model_path
+
+
+@pytest.fixture
+def chai1_config_files(tmp_path: Path) -> tuple[Path, Path]:
+    return write_chai1_configs(tmp_path)

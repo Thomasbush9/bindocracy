@@ -124,6 +124,16 @@ CPU build allocation with network access for OS/Python packages:
 singularity build --fakeroot ../images/chai1.sif chai1.def
 ```
 
+Build correction: the first definition omitted a compiler. The locked
+`ihm==2.4` ships as a source distribution and compiles `ihm._format`, so its
+installation failed with `No such file or directory: 'cc'`. The recipe now
+installs `build-essential` before resolving Python packages. Managed CPython
+already provides the matching Python headers. Verified with a fresh, uncached
+`ihm==2.4` source build and native-extension import in a temporary sandbox using
+the exact pinned CUDA base and CPython 3.11.11. This checks the reported failure,
+not the complete Chai image; the earlier host-only install check had masked the
+missing compiler.
+
 After building, on a GPU allocation with writable input/output storage:
 
 ```bash

@@ -155,7 +155,8 @@ def read_fasta(path: Path) -> list[tuple[str, str]]:
 BINDER_FEATURE_PATH = {"promera"}
 
 
-def build_features(model, *, name, seq, target, msa_path, condition):
+def build_features(model, *, name, seq, target, msa_path, condition,
+                   monomer_msa=None):
     """One feature pack, with the binder's real sidechain reference atoms.
 
     `target_only_features` bakes the actual binder sequence in, so it is
@@ -170,6 +171,17 @@ def build_features(model, *, name, seq, target, msa_path, condition):
         sequence=target, use_msa=msa_path is not None,
         msa_path=str(msa_path) if msa_path else None,
     )
+    if condition == "monomer" and monomer_msa is not None:
+        # Fold the sequence alone, WITH its own alignment. Normally a monomer
+        # fold has none -- a de novo binder has no homologs, so
+        # `build_features` passes msa_path only for the complex. That is right
+        # for scoring designs and wrong for a control protein: GFP folded
+        # single-sequence gives AF2 pLDDT 38 and a shape that is not a barrel,
+        # which measures MSA dependence rather than whether the model works.
+        return model.target_only_features(chains=[
+            TargetChain(sequence=seq, use_msa=True, msa_path=str(monomer_msa))
+        ])
+
     if name in BINDER_FEATURE_PATH:
         # binder_features(binder_length, target_chains): the binder is
         # prepended internally, so only the target is passed.
@@ -357,6 +369,10 @@ def parse_args() -> argparse.Namespace:
                    help="bound JAX's compiled-kernel pool; Protenix OOMs without it")
     p.add_argument("--max-runtime", type=float, default=None, help="hours")
     p.add_argument("--save-dir", required=True)
+    p.add_argument("--monomer-msa", default=None,
+                   help="an a3m for the folded sequence itself, used only by "
+                        "the monomer reader. For control proteins; designs "
+                        "have no homologs and must not use this.")
     p.add_argument("--variant", default=None,
                    help="protenix checkpoint: mini or base")
     p.add_argument("--save-structures", action="store_true",
@@ -499,6 +515,7 @@ def main() -> int:
                             model, name=a.model, seq=seq, target=target,
                             msa_path=a.target_msa if condition == "complex" else None,
                             condition=condition,
+                            monomer_msa=a.monomer_msa,
                         )
                         for sample in range(n_samples):
                             t_fold = time.time()

@@ -79,7 +79,16 @@ ACCEPTS_TARGET_MSA: dict[str, bool] = {
     "esmfold2": True,  # Full only; Fast has no MSA encoder and raises
     "of3": True,
     "protenix": True,
-    "promera": True,   # already routed through require_msa in the dev source
+    # False, and not for want of routing. `models/promera.py:77-85` raises
+    # NotImplementedError when any chain carries an msa_path: Promera resolves
+    # alignments through tinyprot's own sequence-keyed cache and cannot be
+    # pointed at a caller-supplied a3m. Observed 2026-09-09 -- I had set this
+    # True from reading `require_msa` in its imports, which is the same
+    # source-over-observation mistake af2 above records, in the other
+    # direction. Promera can still be scored MSA-free; it just cannot fold
+    # against the campaign alignment, so its numbers are not comparable to the
+    # others on alignment terms.
+    "promera": False,
 }
 
 # Backends with a diffusion sampler. AF2 has none and asserts that it is not

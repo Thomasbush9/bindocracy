@@ -128,9 +128,32 @@ def test_af2_now_accepts_a_target_msa() -> None:
     assert HAS_SAMPLER["af2"] is False
 
 
-def test_promera_is_a_known_model() -> None:
-    assert ACCEPTS_TARGET_MSA["promera"] is True
+def test_promera_cannot_take_the_campaign_alignment() -> None:
+    """`models/promera.py:77-85` raises NotImplementedError on any chain with an
+    msa_path -- Promera resolves alignments through tinyprot's sequence-keyed
+    cache and cannot be pointed at an a3m. Observed 2026-09-09 after this flag
+    was set True from reading its imports; the run is what settled it.
+
+    Failing loudly is the right behaviour and worth pinning: the alternative,
+    silently substituting a ColabFold search, is the bug that made OpenFold3 and
+    Protenix incomparable.
+    """
+    assert ACCEPTS_TARGET_MSA["promera"] is False
     assert HAS_SAMPLER["promera"] is True
+
+
+def test_promera_needs_the_binder_feature_path(chai1_driver=None) -> None:
+    """Its `model_output` applies the PSSM through `apply_binder_sequence`,
+    which asserts on a target-only feature pack. The path is not cosmetic --
+    `binder_features` stubs the binder's sidechains -- so it is recorded per
+    run rather than inferred."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "drivers" / "scorer" / "score_designs.py"
+    spec = importlib.util.spec_from_file_location("score_designs_fp", path)
+    driver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(driver)
+    assert driver.BINDER_FEATURE_PATH == {"promera"}
 
 
 def test_the_driver_accepts_the_flags_the_connector_adds(scorer_driver) -> None:

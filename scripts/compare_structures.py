@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""Do the scorers agree about where the binder sits?
+"""How similar are the scorers' predictions, and does every one of them run?
 
-A confidence number says how sure a model is; it says nothing about whether two
-models are sure of the *same thing*. This measures that directly: superpose two
-predictions of the same design on the target chain, then take the RMSD over the
-binder's alpha carbons. Low means the models put the binder in the same place
-on the target; high means they disagree about the pose while both may be
-reporting high ipTM.
+This is a **harness check**, not a scoring result. It answers two questions
+about the wiring: does each model actually produce a structure for each design,
+and how close are those structures to one another. It says nothing about which
+designs are good -- the design sets it runs on are small and arbitrary, and no
+ranking should be read out of it.
+
+Similarity is measured where it matters for a binder: superpose two predictions
+of the same design on the target chain, then take the RMSD over the binder's
+alpha carbons. Low means two models put the binder in the same place on the
+target; high means they disagree about the pose, which a confidence number
+cannot show because each model is separately confident.
 
 Superposition is on the target, deliberately. Superposing on the whole complex
 would let a well-predicted binder fold hide a completely different docking
@@ -190,9 +195,12 @@ def plot(models, designs, pairwise, out: Path) -> None:
                 shade = "white" if matrix[i, j] > np.nanmax(matrix) * 0.6 else ink
                 ax.text(j, i, f"{matrix[i, j]:.1f}", ha="center", va="center",
                         fontsize=10, color=shade)
-    ax.set_title("Median binder RMSD after superposing on the target (Å)",
+    ax.set_title("Median binder RMSD between two models, same design (Å)",
                  fontsize=11.5, color=ink, pad=12, loc="left")
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04).ax.tick_params(labelsize=9)
+    # The matrix keeps a square aspect while the pair list grows with the model
+    # count, so without this the matrix floats in the middle of a tall column.
+    ax.set_anchor("N")
     for spine in ax.spines.values():
         spine.set_visible(False)
 
@@ -222,9 +230,13 @@ def plot(models, designs, pairwise, out: Path) -> None:
     bx.spines["bottom"].set_color(grid)
     bx.tick_params(colors=muted, labelsize=9)
 
-    fig.suptitle("Do the scorers agree where the binder sits?",
+    fig.suptitle("How similar are the scorers\u2019 predictions?",
                  fontsize=15, color=ink, x=.008, ha="left", y=.985, weight="bold")
-    fig.tight_layout(rect=(0, 0, 1, .94))
+    fig.text(.008, .945,
+             "Harness check: every model folds the same designs, and this is how "
+             "far apart the results are. Not a ranking of designs.",
+             fontsize=10.5, color=muted, ha="left")
+    fig.tight_layout(rect=(0, 0, 1, .925))
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=170, facecolor="white")
     print(f"wrote {out}")

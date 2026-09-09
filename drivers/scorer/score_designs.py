@@ -146,21 +146,40 @@ def read_fasta(path: Path) -> list[tuple[str, str]]:
     return out
 
 
-def build_features(model, *, seq, target, msa_path, condition):
+# Backends whose `model_output` applies the PSSM through
+# `apply_binder_sequence`, which asserts on a target-only feature pack. They
+# must be featurised down the binder-design path instead. The difference is not
+# cosmetic: `binder_features` stubs the binder to a placeholder residue and
+# lets the PSSM carry the sequence, so the binder's sidechain reference atoms
+# are generic rather than real. Recorded per run in `feature_path`.
+BINDER_FEATURE_PATH = {"promera"}
+
+
+def build_features(model, *, name, seq, target, msa_path, condition):
     """One feature pack, with the binder's real sidechain reference atoms.
 
     `target_only_features` bakes the actual binder sequence in, so it is
     rebuilt per design. Shapes do not change, so that costs a featurisation
     but no recompile -- and it is what the design and ranking paths use.
+
+    Promera is the exception; see BINDER_FEATURE_PATH.
     """
     from mosaic.structure_prediction import TargetChain
 
+    target_chain = TargetChain(
+        sequence=target, use_msa=msa_path is not None,
+        msa_path=str(msa_path) if msa_path else None,
+    )
+    if name in BINDER_FEATURE_PATH:
+        # binder_features(binder_length, target_chains): the binder is
+        # prepended internally, so only the target is passed.
+        return model.binder_features(
+            len(seq), [target_chain] if condition == "complex" else []
+        )
+
     chains = [TargetChain(sequence=seq, use_msa=False)]
     if condition == "complex":
-        chains.append(
-            TargetChain(sequence=target, use_msa=msa_path is not None,
-                        msa_path=str(msa_path) if msa_path else None)
-        )
+        chains.append(target_chain)
     # Both halves. The writer turns a prediction's coordinates into a
     # gemmi.Structure (`models/*.py::predict`), and dropping it -- which this
     # driver used to do with a bare [0] -- is what made a scoring run
@@ -362,6 +381,12 @@ def main() -> int:
         "n_produced": 0,
         "output_file": METRICS_FILE,
         "error": None,
+        # Which featurisation the binder went through. Not cosmetic: the
+        # binder-design path stubs the binder's sidechains, so two models on
+        # different paths are not measuring quite the same object.
+        "feature_path": (
+            "binder_features" if a.model in BINDER_FEATURE_PATH else "target_only_features"
+        ),
     }
 
     try:
@@ -471,7 +496,7 @@ def main() -> int:
                 for condition in readers:
                     try:
                         features, _writer = build_features(
-                            model, seq=seq, target=target,
+                            model, name=a.model, seq=seq, target=target,
                             msa_path=a.target_msa if condition == "complex" else None,
                             condition=condition,
                         )

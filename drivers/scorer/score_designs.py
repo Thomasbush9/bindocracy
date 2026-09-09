@@ -48,6 +48,9 @@ from pathlib import Path
 
 METRICS_FILE = "metrics.jsonl"
 STATUS_FILE = "status.json"
+# One subdirectory per condition beneath it, so a complex pose and the monomer
+# pose of the same design never collide.
+STRUCTURES_DIR = "structures"
 
 CA = 1
 IFACE_CUTOFF = 8.0  # angstrom, CA-CA, for interface pLDDT
@@ -68,8 +71,14 @@ def now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def load_model(name):
-    """Constructors matched to the checkpoints actually on disk."""
+def load_model(name, variant=None):
+    """Constructors matched to the checkpoints actually on disk.
+
+    `variant` applies to protenix only. Naming a checkpoint that is not on
+    disk would reach for a download, and offline mode turns that into an
+    unrelated-looking error from inside a constructor, so the accepted set is
+    closed here as well as in the config.
+    """
     if name == "af2":
         from mosaic.models.af2 import AlphaFold2
 
@@ -87,11 +96,29 @@ def load_model(name):
 
         return OF3()
     if name == "protenix":
-        # mini v0.5.0 is the only variant whose weights are on disk; the others
-        # would trigger a download, which offline mode turns into a crash.
-        from mosaic.models.protenix import ProtenixMini
+        # Two checkpoints are on disk. They are different models, not different
+        # speeds of one: mini defaults to 2 diffusion steps and base to 20, and
+        # the benchmark scored mini at 0.680 AUC partly for that reason.
+        if variant in (None, "mini"):
+            from mosaic.models.protenix import ProtenixMini
 
-        return ProtenixMini()
+            return ProtenixMini()
+        if variant == "base":
+            from mosaic.models.protenix import ProtenixBase
+
+            return ProtenixBase()
+        raise ValueError(
+            f"protenix variant {variant!r} has no weights under MOSAIC_WEIGHTS; "
+            "mini and base are the two on disk"
+        )
+    if name == "promera":
+        # jpromera publishes converted equinox weights, so this is a plain
+        # load with no torch conversion. `subsample` is left at the library
+        # default; it caps MSA rows per pass and is a protocol knob we do not
+        # expose yet, so it must not be varied silently.
+        from mosaic.models.promera import JPromeraModel
+
+        return JPromeraModel()
     if name == "esmfold2":
         # Full, not Fast. Fast has no MSA encoder and raises if any chain sets
         # use_msa, so it cannot take the target MSA on equal terms.
@@ -134,7 +161,13 @@ def build_features(model, *, seq, target, msa_path, condition):
             TargetChain(sequence=target, use_msa=msa_path is not None,
                         msa_path=str(msa_path) if msa_path else None)
         )
-    return model.target_only_features(chains=chains)[0]
+    # Both halves. The writer turns a prediction's coordinates into a
+    # gemmi.Structure (`models/*.py::predict`), and dropping it -- which this
+    # driver used to do with a bare [0] -- is what made a scoring run
+    # unrepeatable: the metrics survived and the pose they described did not,
+    # so no epitope, contact or clash measurement could ever be added after
+    # the fact without folding everything again.
+    return model.target_only_features(chains=chains)
 
 
 def fold(name, model, pssm, features, *, sample, key, recycling, sampling):
@@ -156,6 +189,61 @@ def fold(name, model, pssm, features, *, sample, key, recycling, sampling):
         key=k,
         **kw,
     )
+
+
+def save_structure(output, path: Path, save_dir: Path) -> str | None:
+    """Write one predicted pose as PDB, returning its task-relative path.
+
+    Deliberately NOT the per-model `writer` that `target_only_features`
+    returns. AF2's is `None` (`models/af2.py:440`), so a writer-based
+    implementation silently produced no structures for AF2 while every other
+    model worked -- observed 2026-09-09.
+
+    `atom37_coords`, `full_sequence`, `asym_id` and `residue_idx` are populated
+    by *every* wrapper (`losses/structure_prediction.py:18-38`), and
+    `full_sequence` is guaranteed to be in mosaic-20 order, which is
+    AlphaFold's `restypes` order. So one writer serves all of them, and -- more
+    useful than uniformity for its own sake -- every model's structure comes
+    out with the same atom ordering and chain convention, which is what makes
+    two models' poses directly comparable without a per-model reader.
+
+    Chain 0 is the binder and chain 1 the target, matching the order
+    `build_features` constructs them in.
+
+    A failure here must not lose the metrics: the numbers are the run's purpose
+    and the pose is an addition to it, so this returns None and the caller
+    records that.
+    """
+    import numpy as np
+
+    try:
+        from mosaic.alphafold.common import protein, residue_constants
+
+        coords = np.asarray(output.atom37_coords, dtype=np.float64)
+        aatype = np.asarray(output.full_sequence).argmax(-1).astype(np.int32)
+        # Which atoms this residue type has at all, minus any the model left
+        # exactly at the origin (how the wrappers mark an absent atom).
+        mask = residue_constants.restype_atom37_mask[aatype].astype(np.float64)
+        mask = mask * (np.abs(coords).sum(-1) > 1e-6)
+        plddt = np.asarray(output.plddt, dtype=np.float64)
+        # AF2's PDB writer puts b-factors per atom; pLDDT is per residue.
+        b_factors = np.repeat(plddt[:, None], coords.shape[1], axis=1) * mask
+
+        pose = protein.Protein(
+            atom_positions=coords,
+            atom_mask=mask,
+            aatype=aatype,
+            residue_index=np.asarray(output.residue_idx, dtype=np.int32),
+            chain_index=np.asarray(output.asym_id, dtype=np.int32),
+            b_factors=b_factors,
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(protein.to_pdb(pose))
+        return str(path.relative_to(save_dir))
+    except Exception as exc:  # noqa: BLE001 - a missing pose must not fail a fold
+        print(f"    could not write structure {path.name}: "
+              f"{type(exc).__name__}: {str(exc)[:160]}", flush=True)
+        return None
 
 
 def interface_plddt(out, binder_length):
@@ -234,7 +322,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--target-fasta", required=True)
     p.add_argument("--target-msa", default=None)
     p.add_argument("--model", required=True,
-                   choices=["af2", "boltz1", "boltz2", "of3", "protenix", "esmfold2"])
+                   choices=["af2", "boltz1", "boltz2", "of3", "protenix",
+                            "esmfold2", "promera"])
     p.add_argument("--recycling", type=int, required=True,
                    help="trunk passes, normalised per backend")
     p.add_argument("--sampling-steps", type=int, default=None)
@@ -249,6 +338,10 @@ def parse_args() -> argparse.Namespace:
                    help="bound JAX's compiled-kernel pool; Protenix OOMs without it")
     p.add_argument("--max-runtime", type=float, default=None, help="hours")
     p.add_argument("--save-dir", required=True)
+    p.add_argument("--variant", default=None,
+                   help="protenix checkpoint: mini or base")
+    p.add_argument("--save-structures", action="store_true",
+                   help="write each predicted pose as mmCIF beside the metrics")
     return p.parse_args()
 
 
@@ -256,6 +349,7 @@ def main() -> int:
     a = parse_args()
     save_dir = Path(a.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
+    structures_dir = save_dir / STRUCTURES_DIR
     started = now()
     t_start = time.time()
 
@@ -328,7 +422,7 @@ def main() -> int:
         )
 
         t0 = time.time()
-        model = load_model(a.model)
+        model = load_model(a.model, getattr(a, "variant", None))
         print(f"model loaded in {time.time() - t0:.1f}s", flush=True)
 
         key = jax.random.key(a.seed)
@@ -376,7 +470,7 @@ def main() -> int:
 
                 for condition in readers:
                     try:
-                        features = build_features(
+                        features, _writer = build_features(
                             model, seq=seq, target=target,
                             msa_path=a.target_msa if condition == "complex" else None,
                             condition=condition,
@@ -397,6 +491,14 @@ def main() -> int:
                                 k: (None if v is None or not math.isfinite(v) else v)
                                 for k, v in values.items()
                             }
+                            structure = None
+                            if a.save_structures:
+                                structure = save_structure(
+                                    output,
+                                    structures_dir / condition
+                                    / f"design-{index:06d}_s{sample}.pdb",
+                                    save_dir,
+                                )
                             record = {
                                 "index": index,
                                 "condition": condition,
@@ -404,6 +506,11 @@ def main() -> int:
                                 "metrics": values,
                                 "seconds": round(time.time() - t_fold, 3),
                                 "failed": None,
+                                # Relative to the task directory.
+                                # The adapter turns this into an artifact row so
+                                # a later epitope or clash pass can read the pose
+                                # instead of folding it again.
+                                "structure": structure,
                             }
                             out_file.write(json.dumps(record) + "\n")
                             out_file.flush()

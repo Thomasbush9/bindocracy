@@ -39,7 +39,13 @@ from bindocracy.store.records import canonical_json, sha256_text
 # Models reachable through mosaic.sif today, confirmed by its own model audit.
 # Adding one is a literal here plus whatever validation its knobs need; it is
 # not a new plugin.
-ScoringModelName = Literal["boltz2", "boltz1", "af2", "esmfold2", "of3", "protenix"]
+ScoringModelName = Literal[
+    "boltz2", "boltz1", "af2", "esmfold2", "of3", "protenix", "promera"
+]
+
+# Protenix checkpoints present under `mosaic_setup/weights/protenix/`. `tiny`
+# has a loader in mosaic but no weights here, so it is not offered.
+PROTENIX_VARIANT = Literal["mini", "base"]
 
 # Which backends read a supplied target alignment. OpenFold3, Protenix and
 # ESMFold2 historically accepted `msa_path` and silently queried a public
@@ -48,26 +54,32 @@ ScoringModelName = Literal["boltz2", "boltz1", "af2", "esmfold2", "of3", "proten
 # through `require_msa`, which raises rather than falling back; this table is
 # the harness-side assertion that the campaign's alignment is the one used.
 #
-# af2 is False, and the reasoning that says otherwise is a trap worth
-# recording. `models/af2.py:343-350` does read `chain.use_msa` and load the
-# a3m, which reads as support; `design_config.py` marks af2 `accepts_msa:
-# False`, which reads as a stale note contradicting the code. The code path
-# that settles it is neither: a *complex* run raises
-# `AssertionError: AF2 interface does not support MSA yet`, observed on all 20
-# designs of the first scoring run (2026-09-07). AF2 takes an MSA for a single
-# chain and refuses one at an interface, so for binder scoring it is False.
+# af2 became True on 2026-09-09, and the history is worth keeping because the
+# same fact was read three different ways.
 #
-# Trusting the source read over the observation cost a GPU job. This is the
-# case harness-design §3 makes about writing adapters against observed output:
-# where the docs and the code disagreed, both were misleading and only running
-# it was decisive.
+# It was False, on evidence: a complex run raised
+# `AssertionError: AF2 interface does not support MSA yet` on all 20 designs of
+# the first scoring run (2026-09-07). That assertion is real -- it still sits
+# at `/opt/mosaic/src/mosaic/models/af2.py:391` inside the current mosaic.sif.
+#
+# But it is a fact about the IMAGE, not about mosaic. The checkout that
+# `runtime.dev_source` binds over it gained `models/af2_msa.py` on 2026-08-18,
+# three weeks before that run, and its `af2.py:341-359` builds per-chain MSAs
+# and merges them. Verified by running it: af2 with the campaign a3m scored
+# 3/3 designs across both readers, no assertion (2026-09-09).
+#
+# So this is True *conditionally*: on the dev source, or on an image rebuilt
+# from it. Running af2 with use_target_msa against the un-rebuilt mosaic.sif
+# and no dev_source will still assert -- which is one more reason the rebuild
+# in docs/scoring-stage.md is not cosmetic.
 ACCEPTS_TARGET_MSA: dict[str, bool] = {
     "boltz2": True,
     "boltz1": True,
-    "af2": False,
+    "af2": True,  # dev_source or a rebuilt image; the shipped .sif asserts
     "esmfold2": True,  # Full only; Fast has no MSA encoder and raises
     "of3": True,
     "protenix": True,
+    "promera": True,   # already routed through require_msa in the dev source
 }
 
 # Backends with a diffusion sampler. AF2 has none and asserts that it is not
@@ -80,6 +92,7 @@ HAS_SAMPLER: dict[str, bool] = {
     "esmfold2": True,
     "of3": True,
     "protenix": True,
+    "promera": True,
 }
 
 
@@ -109,9 +122,14 @@ class ScoringModel(ConfigModel):
 
     seed: int = 42
 
-    # Protenix ships mini, tiny, base, 2025 and v2; only mini's weights are on
-    # disk and the others would download. Refused for every other model.
-    variant: str | None = None
+    # Protenix ships mini, tiny, base, 2025 and v2. Two are on disk: `mini`
+    # (v0.5.0, 2 diffusion steps) and `base` (v1.0.0, 20). Naming an absent one
+    # would trigger a download, which offline mode turns into a crash deep
+    # inside a constructor, so the choice is closed rather than free. The
+    # stored metric prefix follows this, so `protenix_mini_iptm` and
+    # `protenix_base_iptm` are different columns -- they are different models
+    # and averaging them would be nonsense.
+    variant: PROTENIX_VARIANT | None = None
 
     # Whether the campaign's target alignment is passed in. Required to be
     # explicit rather than inferred, because "the model ignored the MSA I gave
@@ -166,6 +184,19 @@ class Readers(ConfigModel):
         if not any((self.complex, self.monomer, self.epitope, self.inverse_folding)):
             raise ValueError("a scoring run with no readers enabled would measure nothing")
         return self
+
+
+SAVE_STRUCTURES_NOTE = """Whether each predicted pose is written beside its metrics.
+
+Deliberately outside `protocol`: writing a file does not change the number, so
+two runs that differ only here measured the same thing and must stay
+comparable. It is on by default because the alternative is what the first four
+scoring runs did -- keep the scalars, discard the pose, and make every later
+epitope, contact or clash question a reason to fold everything again.
+
+Cost is real and worth stating: roughly 100 KB per pose, so one model over
+3,302 designs at six samples and two readers is order 4 GB.
+"""
 
 
 class ScorerDriver(ConfigModel):
@@ -233,6 +264,9 @@ class ScorerConfig(ToolConfig):
     sharding: ScorerSharding = ScorerSharding()
     driver: ScorerDriver
     runtime: ScorerRuntime
+
+    # See SAVE_STRUCTURES_NOTE. Outside `protocol` on purpose.
+    save_structures: bool = True
 
     @property
     def driver_script(self) -> Path:

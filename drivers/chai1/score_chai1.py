@@ -129,6 +129,19 @@ def read_single_fasta(path: Path) -> str:
     )
 
 
+def _relative(path: Path, save_dir: Path) -> str:
+    """A task-relative path, or the absolute one when it lies outside.
+
+    An absolute path recorded inside a container is wrong the moment the
+    campaign moves, so the adapter is given something it can resolve against
+    the run directory.
+    """
+    try:
+        return str(Path(path).resolve().relative_to(Path(save_dir).resolve()))
+    except ValueError:
+        return str(path)
+
+
 def write_chai_fasta(path: Path, target_sequence: str, binder_sequence: str) -> None:
     """Target first, binder second.
 
@@ -310,7 +323,12 @@ def main() -> int:
                                 "condition": "complex",
                                 "metrics": values,
                                 "seconds": round(time.time() - began, 2),
-                                "structure": str(candidates.cif_paths[replicate]),
+                                # Relative to the task directory, matching the
+                            # mosaic driver, so one adapter turns both into
+                            # artifact rows.
+                            "structure": _relative(
+                                candidates.cif_paths[replicate], args.save_dir
+                            ),
                             }
                         )
                         + "\n"

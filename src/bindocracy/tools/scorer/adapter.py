@@ -54,6 +54,7 @@ class ScorerOutputAdapter(OutputAdapter):
         statuses = []
         per_task: dict[str, Any] = {}
         n_attempted = 0
+        n_structures = 0
         seen_indices: set[int] = set()
         failures: dict[str, int] = {}
 
@@ -72,6 +73,28 @@ class ScorerOutputAdapter(OutputAdapter):
             seen_indices |= counts["indices"]
             for reason, count in counts["failures"].items():
                 failures[reason] = failures.get(reason, 0) + count
+            # One artifact row per saved pose, joined to the design it is of.
+            # This is what makes a later epitope, contact or clash pass a read
+            # rather than a re-fold: `SELECT uri FROM artifacts WHERE
+            # design_id = ? AND kind = 'predicted_structure'`.
+            for relative, design_id, condition, replicate in counts["structures"]:
+                record = artifact(
+                    run_dir,
+                    run.run_id,
+                    f"{task.directory}/{relative}",
+                    "predicted_structure",
+                    design_id=design_id,
+                )
+                if record is not None:
+                    artifacts.append(
+                        record.model_copy(update={"metadata": {
+                            "model": prefix,
+                            "condition": condition,
+                            "replicate": replicate,
+                        }})
+                    )
+                    n_structures += 1
+
             per_task[f"task-{task.task_id:04d}"] = {
                 "status": status.status if status else None,
                 "n_lines": counts["n_lines"],
@@ -118,6 +141,7 @@ class ScorerOutputAdapter(OutputAdapter):
                     "tasks": per_task,
                     "n_designs_seen": len(seen_indices),
                     "n_metric_rows": len(metrics),
+                    "n_structures": n_structures,
                     "fold_failures": failures,
                     "metric_prefix": prefix,
                     "protocol_sha256": manifest.workflow.get("protocol_sha256"),
@@ -178,10 +202,15 @@ def _read_metrics(
     records: list[MetricRecord] = []
     indices: set[int] = set()
     failures: dict[str, int] = {}
+    # (task-relative path, design_id, condition, replicate) per saved pose.
+    structures: list[tuple[str, str, str | None, int]] = []
     n_lines = 0
 
     if not path.is_file():
-        return records, {"n_lines": 0, "indices": indices, "failures": failures}
+        return records, {
+            "n_lines": 0, "indices": indices, "failures": failures,
+            "structures": structures,
+        }
 
     for line in path.read_text().splitlines():
         line = line.strip()
@@ -207,6 +236,17 @@ def _read_metrics(
             failures[reason] = failures.get(reason, 0) + 1
             continue
 
+        # Recorded even when the metrics are empty: a pose that exists is
+        # worth pointing at whether or not the numbers came out.
+        relative = row.get("structure")
+        if relative:
+            structures.append((
+                str(relative),
+                index_to_design[index],
+                row.get("condition"),
+                int(row.get("replicate", 0)),
+            ))
+
         values = row.get("metrics") or {}
         if not values:
             continue
@@ -223,4 +263,7 @@ def _read_metrics(
             )
         )
 
-    return records, {"n_lines": n_lines, "indices": indices, "failures": failures}
+    return records, {
+        "n_lines": n_lines, "indices": indices, "failures": failures,
+        "structures": structures,
+    }

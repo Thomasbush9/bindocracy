@@ -52,6 +52,10 @@ def scorer_launch_spec(
     ]
     if scorer.model.sampling_steps is not None:
         argv.extend(("--sampling-steps", str(scorer.model.sampling_steps)))
+    if scorer.model.variant is not None:
+        argv.extend(("--variant", scorer.model.variant))
+    if scorer.save_structures:
+        argv.append("--save-structures")
     if scorer.model.use_target_msa and general.target.msa is not None:
         argv.extend(("--target-msa", str(general.target.msa)))
 

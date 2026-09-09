@@ -1,0 +1,208 @@
+"""Saved structures, model variants, and the flags that reach the container.
+
+The point of saving a pose is that a later epitope, contact or clash pass can
+read it instead of folding everything again. That only works if the pointer
+survives into the database, so these tests follow it from the driver's JSONL to
+an artifact row.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from bindocracy.tools.scorer.adapter import _read_metrics
+from bindocracy.tools.scorer.config import ACCEPTS_TARGET_MSA, HAS_SAMPLER
+
+WHEN = __import__("datetime").datetime(2026, 9, 9, tzinfo=__import__("datetime").UTC)
+
+
+def _row(index: int, **over) -> str:
+    row = {
+        "index": index, "condition": "complex", "replicate": 0,
+        "metrics": {"iptm": 0.7}, "seconds": 1.0, "failed": None,
+        "structure": f"structures/complex/design-{index:06d}_s0.pdb",
+    }
+    row.update(over)
+    return json.dumps(row)
+
+
+def test_a_saved_pose_becomes_a_pointer_the_adapter_can_use(tmp_path) -> None:
+    path = tmp_path / "metrics.jsonl"
+    path.write_text(_row(0) + "\n" + _row(1) + "\n")
+    _, counts = _read_metrics(
+        path, index_to_design={0: "d-a", 1: "d-b"}, prefix="boltz2",
+        run_id="r1", fallback_time=WHEN,
+    )
+    assert counts["structures"] == [
+        ("structures/complex/design-000000_s0.pdb", "d-a", "complex", 0),
+        ("structures/complex/design-000001_s0.pdb", "d-b", "complex", 0),
+    ]
+
+
+def test_a_pose_is_recorded_even_when_the_metrics_are_empty(tmp_path) -> None:
+    """A structure that exists is worth pointing at whether or not the numbers
+    came out; the two are separate facts about the same fold."""
+    path = tmp_path / "metrics.jsonl"
+    path.write_text(_row(0, metrics={}) + "\n")
+    records, counts = _read_metrics(
+        path, index_to_design={0: "d-a"}, prefix="boltz2",
+        run_id="r1", fallback_time=WHEN,
+    )
+    assert records == []
+    assert len(counts["structures"]) == 1
+
+
+def test_a_fold_that_saved_no_pose_contributes_nothing(tmp_path) -> None:
+    path = tmp_path / "metrics.jsonl"
+    path.write_text(_row(0, structure=None) + "\n")
+    _, counts = _read_metrics(
+        path, index_to_design={0: "d-a"}, prefix="boltz2",
+        run_id="r1", fallback_time=WHEN,
+    )
+    assert counts["structures"] == []
+
+
+def test_the_condition_travels_with_the_pose(tmp_path) -> None:
+    """A complex pose and the monomer pose of the same design are different
+    structures; an artifact row that lost the condition could not say which."""
+    path = tmp_path / "metrics.jsonl"
+    path.write_text(
+        _row(0) + "\n"
+        + _row(0, condition="monomer",
+               structure="structures/monomer/design-000000_s0.pdb") + "\n"
+    )
+    _, counts = _read_metrics(
+        path, index_to_design={0: "d-a"}, prefix="boltz2",
+        run_id="r1", fallback_time=WHEN,
+    )
+    assert {c for _, _, c, _ in counts["structures"]} == {"complex", "monomer"}
+
+
+# --- what the container is told -------------------------------------------
+
+
+def test_saving_a_file_does_not_change_the_protocol(scorer_configs) -> None:
+    """`save_structures` is outside `protocol` on purpose: two runs differing
+    only in whether they kept the pose measured the same thing."""
+    _, model = scorer_configs
+    before = model.protocol_hash
+    flipped = model.model_copy(update={"save_structures": not model.save_structures})
+    assert flipped.protocol_hash == before
+
+
+def test_the_protenix_variant_is_part_of_the_metric_name(scorer_configs) -> None:
+    """mini and base are different weights. One `protenix_iptm` column holding
+    both would silently average a 2-step sampler with a 20-step one."""
+    _, model = scorer_configs
+    mini = model.model_copy(
+        update={"model": model.model.model_copy(update={"name": "protenix", "variant": "mini"})}
+    )
+    base = model.model_copy(
+        update={"model": model.model.model_copy(update={"name": "protenix", "variant": "base"})}
+    )
+    assert mini.metric_prefix == "protenix_mini"
+    assert base.metric_prefix == "protenix_base"
+    assert mini.protocol_hash != base.protocol_hash
+
+
+def test_only_checkpoints_on_disk_are_offered() -> None:
+    """`tiny` has a loader in mosaic and no weights here; naming it would
+    reach for a download that offline mode turns into an opaque crash."""
+    from bindocracy.tools.scorer.config import ScoringModel
+
+    with pytest.raises(ValueError):
+        ScoringModel.model_validate({
+            "name": "protenix", "recycling_steps": 3, "sampling_steps": 20,
+            "num_samples": 1, "variant": "tiny", "use_target_msa": True,
+        })
+
+
+def test_af2_now_accepts_a_target_msa() -> None:
+    """Verified by running it: 3/3 designs across both readers, 2026-09-09.
+    True only against the dev source or a rebuilt image -- the shipped
+    mosaic.sif still asserts at models/af2.py:391."""
+    assert ACCEPTS_TARGET_MSA["af2"] is True
+    assert HAS_SAMPLER["af2"] is False
+
+
+def test_promera_is_a_known_model() -> None:
+    assert ACCEPTS_TARGET_MSA["promera"] is True
+    assert HAS_SAMPLER["promera"] is True
+
+
+def test_the_driver_accepts_the_flags_the_connector_adds(scorer_driver) -> None:
+    """A flag that grows on the connector side and not the driver's launches a
+    GPU job that dies in argparse. Parsed here with the driver's own parser."""
+    import sys
+
+    argv = [
+        "score_designs.py",
+        "--design-set", "/tmp/set.fasta", "--target-fasta", "/tmp/t.fasta",
+        "--model", "protenix", "--recycling", "3", "--num-samples", "1",
+        "--seed", "0", "--readers", "complex", "--shard", "0",
+        "--num-shards", "1", "--task-id", "0", "--save-dir", "/tmp/out",
+        "--sampling-steps", "20", "--variant", "base", "--save-structures",
+    ]
+    saved = sys.argv
+    try:
+        sys.argv = argv
+        parsed = scorer_driver.parse_args()
+    finally:
+        sys.argv = saved
+    assert parsed.variant == "base"
+    assert parsed.save_structures is True
+
+
+@pytest.fixture
+def scorer_driver():
+    """The mosaic driver's module. Its container-only imports all sit inside
+    functions, so it loads on the host."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "drivers" / "scorer" / "score_designs.py"
+    spec = importlib.util.spec_from_file_location("score_designs", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def scorer_configs(tmp_path):
+    """A validated (GeneralConfig, ScorerConfig) pair with real paths."""
+    from bindocracy.config.models import GeneralConfig
+    from bindocracy.tools.scorer.config import ScorerConfig
+
+    target = tmp_path / "target.fasta"
+    target.write_text(">t\nACDEFGHIKLMNPQRSTVWY\n")
+    msa = tmp_path / "t.a3m"
+    msa.write_text(">t\nACDEFGHIKLMNPQRSTVWY\n")
+    container = tmp_path / "mosaic.sif"; container.write_bytes(b"x")
+    wrapper = tmp_path / "exec.sh"; wrapper.write_text("#!/bin/sh\n")
+    weights = tmp_path / "weights"; weights.mkdir()
+    driver = tmp_path / "d.py"; driver.write_text("# fixture\n")
+    (tmp_path / "scratch").mkdir()
+
+    general = GeneralConfig.model_validate({
+        "schema_version": 1,
+        "campaign": {"name": "c"},
+        "target": {"name": "t", "sequence_fasta": str(target),
+                   "msa": str(msa), "chain_id": "A", "hotspots": []},
+        "cluster": {"executor": "slurm", "account": "a", "default_partition": "p"},
+    })
+    model = ScorerConfig.model_validate({
+        "schema_version": 1, "name": "s", "tool": "scorer",
+        "design_set": str(tmp_path / "set.json"),
+        "model": {"name": "boltz2", "recycling_steps": 3, "sampling_steps": 25,
+                  "num_samples": 1, "use_target_msa": True},
+        "readers": {"complex": True},
+        "sharding": {"jobs": 1},
+        "driver": {"script": str(driver)},
+        "runtime": {"container": str(container), "weights": str(weights),
+                    "exec_wrapper": str(wrapper),
+                    "scratch": str(tmp_path / "scratch" / "m")},
+        "resources": {"gpus": 1, "cpus": 8, "memory_gb": 32, "walltime": "2:00:00"},
+    })
+    return general, model

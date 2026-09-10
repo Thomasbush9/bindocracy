@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from bindocracy.config.preflight import ConfigPreflightError
 from bindocracy.tools.scorer.adapter import _read_metrics
 from bindocracy.tools.scorer.config import ACCEPTS_TARGET_MSA, HAS_SAMPLER
 
@@ -229,3 +230,63 @@ def scorer_configs(tmp_path):
         "resources": {"gpus": 1, "cpus": 8, "memory_gb": 32, "walltime": "2:00:00"},
     })
     return general, model
+
+
+# --- deprecation -------------------------------------------------------------
+
+
+def test_mosaics_of3_is_refused_for_new_runs(scorer_configs) -> None:
+    """It does not fold correctly: GFP pLDDT 38.5 at 24 A from consensus where
+    the official image gives 88.7 at 3.9 A, and 0.597 on Nipah-G, below the
+    sequence-only control bar."""
+    from bindocracy.tools.scorer.preflight import preflight_scorer
+
+    general, model = scorer_configs
+    broken = model.model_copy(
+        update={"model": model.model.model_copy(
+            update={"name": "of3", "sampling_steps": 25})}
+    )
+    with pytest.raises(ConfigPreflightError) as error:
+        preflight_scorer(general, broken)
+    message = str(error.value)
+    assert "deprecated" in message
+    assert "of3_upstream" in message, "the refusal must name the replacement"
+
+
+def test_a_historical_run_still_loads_from_its_manifest() -> None:
+    """The literal stays valid on purpose. `configs_of()` reads a manifest's
+    stored config with a bare model_validate and never calls preflight, so a
+    run made before the deprecation is still relaunchable and collectable.
+    Refusing at the validator instead would strand every past of3 run."""
+    from bindocracy.tools.scorer.config import ScoringModel
+
+    archived = ScoringModel.model_validate({
+        "name": "of3", "recycling_steps": 3, "sampling_steps": 25,
+        "num_samples": 1, "use_target_msa": True,
+    })
+    assert archived.name == "of3"
+
+
+def test_it_can_be_chosen_deliberately(scorer_configs) -> None:
+    """One honest reason to: reproducing a historical comparison. The config
+    then says out loud that a known-bad scorer was picked on purpose."""
+    from bindocracy.tools.scorer.preflight import preflight_scorer
+
+    general, model = scorer_configs
+    deliberate = model.model_copy(update={
+        "model": model.model.model_copy(update={"name": "of3", "sampling_steps": 25}),
+        "allow_deprecated": True,
+    })
+    # Gets past the deprecation gate; fails later on the fixture's absent
+    # design set, which is the next check rather than this one.
+    with pytest.raises(ConfigPreflightError) as error:
+        preflight_scorer(general, deliberate)
+    assert "deprecated" not in str(error.value)
+
+
+def test_deprecation_does_not_change_the_protocol_hash(scorer_configs) -> None:
+    """`allow_deprecated` is an operator's decision, not a measurement: two
+    runs differing only there measured the same thing."""
+    _, model = scorer_configs
+    before = model.protocol_hash
+    assert model.model_copy(update={"allow_deprecated": True}).protocol_hash == before

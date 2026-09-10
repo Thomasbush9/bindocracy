@@ -218,6 +218,28 @@ The three are not equally implicated:
   also the most expensive of the three: `jpromera` is a JAX port of a PyTorch
   model with no container built.
 
+## Resolved: OpenFold3 replaced, mosaic's deprecated
+
+Settled 2026-09-10 by folding GFP with the official image:
+
+| | GFP pLDDT | RMSD to consensus |
+|---|---|---|
+| upstream OF3 (`of3_upstream`) | **88.7** | **3.9 Å** |
+| mosaic's OF3 (`of3`) | 38.5 | 24.0 Å |
+
+3.9 Å places it exactly among af2 (3.9), af3 (4.0) and chai1 (3.7). The two
+implementations differ **from each other by 24.6 Å** and disagree on the DIO3
+complex too (ipTM 0.374 vs 0.248). OpenFold3 works; `jopenfold3` does not —
+which means the 0.597 above was measuring the port, not the model.
+
+`of3` is now **refused for new runs** by the scorer's preflight, with the
+refusal naming `of3_upstream` as the replacement. The literal stays valid on
+purpose: `configs_of()` reads a manifest's stored config without calling
+preflight, so every historical `of3` run remains relaunchable and collectable.
+Refusing at the validator instead would have stranded them. `allow_deprecated:
+true` opts back in for the one honest reason — reproducing a historical
+comparison deliberately.
+
 A replacement must be a **new metric prefix**, not a swap. `of3` and
 `of3_upstream` are different models and a single `of3_iptm` column holding both
 would silently average two implementations — the same mistake `protenix_mini`

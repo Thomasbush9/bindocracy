@@ -22,7 +22,7 @@ Two measurements exist for the panel, and they disagree usefully:
 
 ---
 
-## 1. Replace OpenFold3 with its own implementation · *in progress*
+## 1. Replace OpenFold3 with its own implementation · **done**
 
 The case is made in `benchmark-nipah.md`: mosaic's OF3 fails both tests
 independently — 0.597 on the labelled set, below the sequence-only control bar,
@@ -41,9 +41,15 @@ confound the MSA work removed.
 Stored as `of3_upstream_*`, never as `of3_*`. They are different models and one
 column holding both would silently average two implementations.
 
-**Done when:** it scores the Nipah-G 434 and folds GFP, both alongside the
-existing panel. If it clears the control bar and produces a barrel, mosaic's OF3
-comes out of the default configs.
+**Done.** Plugin `of3_upstream` (config, preflight, launch, adapter, driver),
+fourth on the shared seam, 14 tests. On GFP it returns pLDDT 88.7 at 3.9 Å from
+consensus against mosaic's 38.5 at 24.0 Å — the two differ from each other by
+24.6 Å. `of3` is deprecated: refused for new runs, still loadable from archived
+manifests so historical runs stay relaunchable.
+
+**Still outstanding:** `of3_upstream` has not been scored on the Nipah-G 434, so
+the panel's AUC table still carries mosaic's 0.597 for OpenFold3. That number
+now has a known cause and should be replaced rather than trusted.
 
 ## 2. Make `readers.epitope` and `readers.inverse_folding` honest
 

@@ -19,7 +19,7 @@ from bindocracy.config.preflight import (
 )
 from bindocracy.runs.designset import DesignSet, DesignSetError
 from bindocracy.store.records import sha256_text
-from bindocracy.tools.scorer.config import ScorerConfig
+from bindocracy.tools.scorer.config import DEPRECATED_MODELS, ScorerConfig
 
 # Amino acids mosaic's TOKENS covers. A design containing anything else cannot
 # be one-hot encoded and would fail inside the container, one design at a time,
@@ -67,6 +67,14 @@ def source_tree_digest(root: Path) -> str:
 
 def preflight_scorer(general: GeneralConfig, model: ScorerConfig) -> ScorerPreflight:
     """Refuse a scoring run that cannot mean what it says."""
+    reason = DEPRECATED_MODELS.get(model.model.name)
+    if reason is not None and not model.allow_deprecated:
+        raise ConfigPreflightError(
+            f"{model.model.name} is deprecated as a scorer.\n  {reason}\n"
+            "  Set allow_deprecated: true only to reproduce a historical "
+            "comparison on purpose."
+        )
+
     target_sequence = read_single_fasta(general.target.sequence_fasta)
 
     # The design set, and the FASTA beside it.

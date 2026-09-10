@@ -43,6 +43,25 @@ ScoringModelName = Literal[
     "boltz2", "boltz1", "af2", "esmfold2", "of3", "protenix", "promera"
 ]
 
+# Models kept selectable so archived configs still load, but refused for new
+# runs. `configs_of()` reads a manifest's stored config with a bare
+# `model_validate` and never calls preflight, so a historical run stays
+# relaunchable and collectable; `load()` does call preflight, so a new run is
+# stopped. That split is why this lives in preflight rather than in a validator.
+DEPRECATED_MODELS: dict[str, str] = {
+    "of3": (
+        "mosaic's jopenfold3 port does not fold correctly. On GFP it returns "
+        "pLDDT 38.5 and a structure 24 A from the six-model consensus, where "
+        "the official OpenFold3 image returns 88.7 and 3.9 A; the two disagree "
+        "with each other by 24.6 A. On the labelled Nipah-G set it scored 0.597, "
+        "below the 0.642 a sequence-only control reaches. That number was "
+        "measuring the port, not the model.\n"
+        "  Use tool `of3_upstream` instead -- the official "
+        "openfoldconsortium/openfold3 image, already on disk. See "
+        "docs/benchmark-nipah.md."
+    ),
+}
+
 # Protenix checkpoints present under `mosaic_setup/weights/protenix/`. `tiny`
 # has a loader in mosaic but no weights here, so it is not offered.
 PROTENIX_VARIANT = Literal["mini", "base"]
@@ -276,6 +295,12 @@ class ScorerConfig(ToolConfig):
 
     # See SAVE_STRUCTURES_NOTE. Outside `protocol` on purpose.
     save_structures: bool = True
+
+    # Opt back in to a model listed in DEPRECATED_MODELS. There is one honest
+    # reason to: reproducing a historical comparison on purpose. It is a
+    # separate field rather than a force flag on the model so that the config
+    # says out loud that a known-bad scorer was chosen deliberately.
+    allow_deprecated: bool = False
 
     @property
     def driver_script(self) -> Path:

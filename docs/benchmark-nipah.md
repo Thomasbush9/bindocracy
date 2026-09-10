@@ -10,12 +10,18 @@ python scripts/benchmark_auc.py \
     --new build-logs/nipah_bench \
     --labels benchmark_sets/nipah_434_labels.csv \
     --fasta benchmark_sets/nipah_434.fasta \
-    --out build-logs/nipah-auc.png
+    --out /n/holylfs06/.../binder_design/docs/figures/nipah-auc.png
 ```
 
 ## Results, 2026-09-09
 
-![Nipah-G AUC by model](figures/nipah-auc.png)
+> Figures are **not in the repository**. They live under
+> `binder_design/docs/figures/`, because a plot is a run artifact: a
+> committed script regenerates it from data that is itself too large to
+> track, so versioning the picture adds weight and merge conflicts
+> without adding provenance.
+
+**Figure:** `/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/docs/figures/nipah-auc.png`
 
 | model | AUC | best metric | note |
 |---|---|---|---|
@@ -91,7 +97,7 @@ models has seen thousands of. Something that is not a barrel is a wiring
 failure rather than a modelling opinion — and unlike the benchmark above, this
 needs no labels and no controls.
 
-![GFP folded by every scorer](figures/gfp-gallery.png)
+**Figure:** `/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/docs/figures/gfp-gallery.png`
 
 Folded alone, with GFP's own 770-sequence alignment where the model can use
 one. RMSD is to the most confident prediction, which stands in for a reference
@@ -150,3 +156,69 @@ The monomer reader passes no alignment by default, and that is correct for
 scoring designs: a de novo binder has no homologs by construction. It is wrong
 for a control protein. `--monomer-msa` exists for exactly this and is a separate
 flag from `--target-msa` so that a design cannot take that path by accident.
+
+## Is it a parameter problem? Measured: no
+
+Three models fold GFP badly. Before concluding anything about them, the three
+axes that could explain it were swept — alignment, sampler budget, trunk
+passes — 15 runs in all.
+
+**The alignment.** ESMFold2 loads all 770 sequences (`MSA.depth == 770`,
+verified in the container) and the fold barely moves: pLDDT 0.4161 with,
+0.4156 without. Not ignored — the structures differ — just worth ~0.1%, which
+is what a language-model folder should look like. OpenFold3 gains a little more
+(0.343 → 0.380). Neither is anywhere near enough.
+
+**The sampler.** Irrelevant for both. ESMFold2 at its native 14 steps scores
+0.4159 against 0.4161 at 25; OpenFold3 at its native 20 scores 0.379 against
+0.380. The shared 25-step budget is not what is hurting them.
+
+**Trunk passes.** The only axis that moves anything, and it plateaus:
+
+| trunk passes | ESMFold2 | OpenFold3 |
+|---|---|---|
+| 3 (panel default) | 0.416 | 0.380 |
+| 6 | 0.548 | 0.408 |
+| 10 | 0.547 | 0.425 |
+| 16 | 0.594 | 0.416 |
+
+Five times the compute buys ESMFold2 +0.18 and OpenFold3 +0.04, and both level
+off far below the 0.91–0.96 that six other models reach at three passes.
+Promera is flat on every axis available to it (0.335 / 0.328 / 0.343 across
+recycling 3–6 and sampling 25–50).
+
+**So it is not a configuration problem.** Whatever is wrong is in the model or
+in mosaic's port of it, and no setting reachable from the config fixes it.
+
+### What that implies, and how confident to be
+
+The relevant prior is already measured in this project: mosaic's Boltz-2 and
+upstream Boltz-2 agree on ipTM at only **0.758** Spearman, mean absolute
+difference 0.115, with mosaic reading systematically lower. A JAX port can
+diverge that much on a model that works, which makes "the port is wrong" a live
+hypothesis for one that does not.
+
+The three are not equally implicated:
+
+- **OpenFold3 fails both tests.** 0.597 on the benchmark — below the
+  sequence-only control bar — and 24 Å from consensus on GFP. Two independent
+  measurements agreeing is the strongest case here, and it is also the cheapest
+  to act on: `openfold3.sif` already exists (ProtForge, v0.4) and the original
+  `of3-p2-145k.pt` / `of3-p2-155k.pt` checkpoints are already on disk. Moving it
+  to its own plugin is a driver, not a container build.
+- **ESMFold2 is the confusing one.** It folds GFP poorly *and* scores 0.833 on
+  the benchmark — second best of nine. Excellent at the task we care about,
+  weak on a control protein. That combination does not obviously mean a broken
+  port, and it is the intended held-out judge, so it deserves one direct
+  comparison against upstream ESMFold2 before anyone invests in replacing it.
+- **Promera is confounded.** It scored 0.610 (below the control bar) and folds
+  GFP badly, but it ran MSA-free in both tests because mosaic refuses to hand
+  it an alignment. Its numbers are not comparable to the others in either
+  measurement, so neither is evidence about the model. Moving it upstream is
+  also the most expensive of the three: `jpromera` is a JAX port of a PyTorch
+  model with no container built.
+
+A replacement must be a **new metric prefix**, not a swap. `of3` and
+`of3_upstream` are different models and a single `of3_iptm` column holding both
+would silently average two implementations — the same mistake `protenix_mini`
+and `protenix_base` are kept apart to avoid.

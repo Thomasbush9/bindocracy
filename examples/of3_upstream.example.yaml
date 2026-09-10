@@ -1,0 +1,47 @@
+# Upstream OpenFold3 — the official openfoldconsortium image, not mosaic's
+# jopenfold3 port.
+#
+# These are different models and the metrics are stored apart
+# (of3_upstream_* vs of3_*). On GFP, mosaic's OF3 returns pLDDT 38.5 and a
+# structure 24 A from the six-model consensus; this one returns 88.7 and 3.9 A.
+# They differ from each other by 24.6 A.
+#
+# Two things that will bite if changed:
+#   * The campaign alignment is staged by the driver as `colabfold_main.a3m`.
+#     OpenFold3 keeps only files whose BASENAME is one of thirteen it knows and
+#     silently skips the rest, so an a3m named anything else is dropped and the
+#     run dies later on an unrelated-looking IndexError.
+#   * use_msa_server must stay false. Letting OpenFold3 search its own
+#     alignment folds the target against a different MSA from every other
+#     scorer here, which is the confound the MSA work removed. The config
+#     refuses true.
+schema_version: 1
+name: of3-upstream-smoke
+tool: of3_upstream
+
+design_set: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/bindocracy/design_sets/<digest>.json
+driver_script: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/bindocracy/drivers/of3_upstream/score_of3.py
+
+protocol:
+  num_diffusion_samples: 1
+  seed: 0
+  use_target_msa: true
+  use_msa_server: false
+
+readers:
+  complex: true
+
+sharding:
+  jobs: 1
+
+runtime:
+  container: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/singularity_dev/images/openfold3.sif
+  # The image ships no weights. The original torch checkpoint:
+  checkpoint: /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup/weights/hf/of3-p2-155k.pt
+  work_root: /n/netscratch/bsabatini_lab/Everyone/tbush/of3_upstream
+
+resources:
+  gpus: 1
+  cpus: 8
+  memory_gb: 128
+  walltime: "12:00:00"

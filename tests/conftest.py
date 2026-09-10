@@ -1530,3 +1530,81 @@ def af3_loaded(af3_configs):
         general=general, model=model, preflight=preflight_af3(general, model),
         general_path=Path("general.yaml"), model_path=Path("af3.yaml"),
     )
+
+
+# --- upstream OpenFold3 -------------------------------------------------------
+
+OF3_DRIVER_PATH = (
+    Path(__file__).resolve().parents[1] / "drivers" / "of3_upstream" / "score_of3.py"
+)
+
+
+def write_of3_configs(root: Path, **overrides) -> tuple[Path, Path]:
+    target_fasta = root / "of3_target.fasta"
+    target_fasta.write_text(f">dio3\n{CHAI1_TARGET}\n")
+    msa = root / "of3_target.a3m"
+    msa.write_text(f">dio3\n{CHAI1_TARGET}\n>hom\n{CHAI1_TARGET}\n")
+    container = root / "openfold3.sif"
+    container.write_bytes(b"fixture")
+    checkpoint = root / "of3-p2-155k.pt"
+    checkpoint.write_bytes(b"fixture-checkpoint")
+    driver = root / "score_of3.py"
+    driver.write_text(OF3_DRIVER_PATH.read_text())
+    (root / "of3_work").mkdir(parents=True, exist_ok=True)
+    manifest = _write_chai1_design_set(
+        root / "of3_set", ["ACDEFGHIKL", "MNPQRSTVWY", "ACDEFGHIKM"]
+    )
+
+    general_path = root / "of3_general.yaml"
+    general_path.write_text(yaml.safe_dump({
+        "schema_version": 1,
+        "campaign": {"name": "test-campaign"},
+        "target": {"name": "dio3-cut", "sequence_fasta": str(target_fasta),
+                   "msa": str(msa), "chain_id": "A", "hotspots": []},
+        "cluster": {"executor": "slurm", "account": "a", "default_partition": "p"},
+    }, sort_keys=False))
+
+    of3 = {
+        "schema_version": 1, "name": "of3-upstream-test", "tool": "of3_upstream",
+        "design_set": str(manifest), "driver_script": str(driver),
+        "protocol": {"num_diffusion_samples": 1, "seed": 0,
+                     "use_target_msa": True, "use_msa_server": False},
+        "readers": {"complex": True},
+        "sharding": {"jobs": 1},
+        "runtime": {"container": str(container), "checkpoint": str(checkpoint),
+                    "work_root": str(root / "of3_work" / "run")},
+        "resources": {"gpus": 1, "cpus": 8, "memory_gb": 128, "walltime": "12:00:00"},
+    }
+    for section, values in overrides.items():
+        of3[section].update(values)
+    model_path = root / "of3_upstream.yaml"
+    model_path.write_text(yaml.safe_dump(of3, sort_keys=False))
+    return general_path, model_path
+
+
+@pytest.fixture
+def of3_config_files(tmp_path: Path) -> tuple[Path, Path]:
+    return write_of3_configs(tmp_path)
+
+
+@pytest.fixture
+def of3_configs(of3_config_files):
+    from bindocracy.config.load import load_yaml
+    from bindocracy.config.models import GeneralConfig
+    from bindocracy.tools.of3_upstream.config import OF3UpstreamConfig
+
+    general_path, model_path = of3_config_files
+    return load_yaml(general_path, GeneralConfig), load_yaml(model_path, OF3UpstreamConfig)
+
+
+@pytest.fixture
+def of3_loaded(of3_configs):
+    from bindocracy.config.load import LoadedConfigs
+    from bindocracy.tools.of3_upstream.preflight import preflight_of3_upstream
+
+    general, model = of3_configs
+    return LoadedConfigs(
+        general=general, model=model,
+        preflight=preflight_of3_upstream(general, model),
+        general_path=Path("general.yaml"), model_path=Path("of3.yaml"),
+    )

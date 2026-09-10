@@ -14,6 +14,7 @@ from bindocracy.tools.chai1 import Chai1Plugin
 from bindocracy.tools.freebindcraft import FreeBindCraftPlugin
 from bindocracy.tools.genie3 import Genie3Plugin
 from bindocracy.tools.mosaic import MosaicPlugin
+from bindocracy.tools.of3_upstream import OF3UpstreamPlugin
 from bindocracy.tools.protein_hunter import ProteinHunterPlugin
 from bindocracy.tools.proteina_complexa import ProteinaComplexaPlugin
 from bindocracy.tools.pxdesign import PXDesignPlugin
@@ -41,6 +42,7 @@ register(FreeBindCraftPlugin)
 register(ScorerPlugin)
 register(Chai1Plugin)
 register(AF3Plugin)
+register(OF3UpstreamPlugin)
 
 # A tool does not have to live in this repository. Anything named in
 # BINDOCRACY_PLUGINS (comma-separated importable modules) is imported here and
@@ -57,6 +59,7 @@ __all__ = [
     "FreeBindCraftPlugin",
     "Genie3Plugin",
     "MosaicPlugin",
+    "OF3UpstreamPlugin",
     "PXDesignPlugin",
     "ProteinHunterPlugin",
     "ProteinaComplexaPlugin",

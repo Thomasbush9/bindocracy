@@ -154,6 +154,13 @@ def read_fasta(path: Path) -> list[tuple[str, str]]:
 # are generic rather than real. Recorded per run in `feature_path`.
 BINDER_FEATURE_PATH = {"promera"}
 
+# Backends that raise on TargetChain.msa_path. Promera resolves alignments
+# through tinyprot's own sequence-keyed cache and refuses a caller-supplied
+# a3m rather than silently running its own ColabFold search
+# (models/promera.py:77-85). Listed here so the refusal happens once, before
+# the GPU, instead of identically on every design.
+CANNOT_TAKE_MSA = {"promera"}
+
 
 def build_features(model, *, name, seq, target, msa_path, condition,
                    monomer_msa=None):
@@ -382,6 +389,21 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     a = parse_args()
+    if a.model in CANNOT_TAKE_MSA and (a.target_msa or a.monomer_msa):
+        # Refuse rather than drop the alignment: a run that quietly folded
+        # single-sequence while its command line said otherwise is exactly the
+        # kind of silent protocol change this driver exists to prevent.
+        print(
+            f"{a.model} cannot read a supplied alignment; it resolves MSAs "
+            "through its own cache and mosaic raises rather than substituting "
+            "a server search.\n"
+            "  Drop --target-msa / --monomer-msa to score it MSA-free, and "
+            "record that its numbers are not comparable to the others on "
+            "alignment terms.",
+            file=sys.stderr, flush=True,
+        )
+        return 2
+
     save_dir = Path(a.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
     structures_dir = save_dir / STRUCTURES_DIR

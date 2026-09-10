@@ -15,6 +15,8 @@ python scripts/benchmark_auc.py \
 
 ## Results, 2026-09-09
 
+![Nipah-G AUC by model](figures/nipah-auc.png)
+
 | model | AUC | best metric | note |
 |---|---|---|---|
 | boltz2 | **0.841** | `iplddt` | |
@@ -78,3 +80,73 @@ rather than beside a differently-computed number.
   25-step figure the mosaic backends share. Trunk passes, sample count and seed
   are matched; the sampler budget is not, because 25 steps is far outside the
   regime either was tuned for.
+
+---
+
+# The GFP sanity check
+
+A second, cheaper question: **does each model produce the right fold at all?**
+GFP is an 11-strand beta barrel, known since 1996, that every one of these
+models has seen thousands of. Something that is not a barrel is a wiring
+failure rather than a modelling opinion — and unlike the benchmark above, this
+needs no labels and no controls.
+
+![GFP folded by every scorer](figures/gfp-gallery.png)
+
+Folded alone, with GFP's own 770-sequence alignment where the model can use
+one. RMSD is to the most confident prediction, which stands in for a reference
+structure.
+
+| model | pLDDT | RMSD to consensus | barrel? |
+|---|---|---|---|
+| protenix (base) | 95.8 | reference | yes |
+| af2 | 95.4 | 3.9 Å | yes |
+| boltz1 | 94.4 | 1.9 Å | yes |
+| boltz2 | 92.4 | 3.5 Å | yes |
+| chai1 | 92.0 | 3.7 Å | yes |
+| af3 | 91.4 | 4.0 Å | yes |
+| esmfold2 | 41.6 | 6.9 Å | roughly |
+| of3 | 38.5 | 23.9 Å | **no** |
+| promera | 33.7 | 20.7 Å | **no** |
+
+**Six of nine agree on the same barrel** within 4 Å at pLDDT above 91. That is
+the result worth having: six independent implementations, three containers, and
+they converge on the same structure.
+
+**OpenFold3 does not fold GFP.** 23.9 Å from consensus and visibly not a
+barrel, with the alignment loaded (its pLDDT moved 34.6 → 38.5 when the MSA was
+supplied, so it consumed it and still failed). This agrees with its last place
+on the benchmark above, at 0.597 — below the sequence-only control bar. Two
+independent measurements now point the same way, which is worth more than
+either alone.
+
+**Promera does not either**, but it is the one model that could not be given
+the alignment at all, so the comparison is not like-for-like.
+
+**ESMFold2 gets the topology roughly right at pLDDT 42.** The structure is
+recognisably a barrel; the confidence is not. That deserves attention rather
+than a shrug, because ESMFold2 is the intended held-out judge and scored 0.833
+on the benchmark. A judge whose confidence is uninformative on a protein it
+should find trivial is worth understanding before trusting it to arbitrate.
+
+## What the alignment was worth
+
+The first run of this test folded everything single-sequence, and measured the
+wrong thing:
+
+| model | single-sequence | with 770-sequence MSA |
+|---|---|---|
+| af2 | 38.5 | **95.4** |
+| boltz1 | 38.4 | **94.4** |
+| af3 | 26.9 | **91.4** |
+| chai1 | 49.5 | **92.0** |
+| boltz2 | 93.7 | 92.4 |
+
+AF2 at 38.5 was never broken — it had no homologs. Boltz-2 barely moved, which
+is consistent with it being the least MSA-dependent of the group and explains
+why it was the lone confident model before the alignment existed.
+
+The monomer reader passes no alignment by default, and that is correct for
+scoring designs: a de novo binder has no homologs by construction. It is wrong
+for a control protein. `--monomer-msa` exists for exactly this and is a separate
+flag from `--target-msa` so that a design cannot take that path by accident.

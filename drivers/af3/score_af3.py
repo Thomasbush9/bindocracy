@@ -69,15 +69,22 @@ def read_single_fasta(path: Path) -> str:
     )
 
 
-def fold_input_monomer(name: str, sequence: str, seed: int) -> dict:
-    """One chain, no target and no alignment. AF3's analogue of the mosaic
-    scorer's monomer reader."""
+def fold_input_monomer(name: str, sequence: str, seed: int, a3m: str = "") -> dict:
+    """One chain, no target. AF3's analogue of the mosaic scorer's monomer
+    reader.
+
+    `a3m` is empty for designs -- a de novo binder has no homologs -- and set
+    for control proteins, where folding single-sequence would measure MSA
+    dependence rather than whether the model works. GFP single-sequence gives
+    AF3 pLDDT 27 and a shape 23 A from consensus; with homologs it is a
+    different question entirely.
+    """
     return {
         "name": name,
         "modelSeeds": [seed],
         "sequences": [
             {"protein": {"id": "A", "sequence": sequence,
-                         "unpairedMsa": "", "pairedMsa": "", "templates": []}},
+                         "unpairedMsa": a3m, "pairedMsa": "", "templates": []}},
         ],
         "dialect": "alphafold3",
         "version": 1,
@@ -225,7 +232,7 @@ def main() -> int:
                 job.mkdir(parents=True, exist_ok=True)
                 json_path = job / "fold_input.json"
                 job_spec = (
-                    fold_input_monomer(name, binder, args.seed)
+                    fold_input_monomer(name, binder, args.seed, target_a3m)
                     if args.monomer
                     else fold_input(name, target, binder, target_a3m, args.seed)
                 )

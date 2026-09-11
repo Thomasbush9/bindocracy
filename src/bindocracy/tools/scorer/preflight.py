@@ -19,7 +19,11 @@ from bindocracy.config.preflight import (
 )
 from bindocracy.runs.designset import DesignSet, DesignSetError
 from bindocracy.store.records import sha256_text
-from bindocracy.tools.scorer.config import DEPRECATED_MODELS, ScorerConfig
+from bindocracy.tools.scorer.config import (
+    DEPRECATED_MODELS,
+    MOVED_TO_FUNCTIONS,
+    ScorerConfig,
+)
 
 # Amino acids mosaic's TOKENS covers. A design containing anything else cannot
 # be one-hot encoded and would fail inside the container, one design at a time,
@@ -67,6 +71,26 @@ def source_tree_digest(root: Path) -> str:
 
 def preflight_scorer(general: GeneralConfig, model: ScorerConfig) -> ScorerPreflight:
     """Refuse a scoring run that cannot mean what it says."""
+    # A reader that validates, launches, succeeds and measures nothing is
+    # worse than one that fails: nothing in the output says the measurement is
+    # missing. Refuse before the allocation and name where it moved.
+    asked_for = [
+        name for name in MOVED_TO_FUNCTIONS if getattr(model.readers, name, False)
+    ]
+    if asked_for:
+        moved = "\n".join(
+            f"    readers.{name}  ->  functions.{name}   ({MOVED_TO_FUNCTIONS[name]})"
+            for name in asked_for
+        )
+        raise ConfigPreflightError(
+            "these are not fold conditions and were never honoured here -- the "
+            "launcher only ever emitted complex and monomer, so a run asking for "
+            f"them measured nothing:\n{moved}\n"
+            "  They are computed from a fold that already happened, by the "
+            "functions stage, which can also backfill them over every structure "
+            "already saved. See docs/scoring-functions.md."
+        )
+
     reason = DEPRECATED_MODELS.get(model.model.name)
     if reason is not None and not model.allow_deprecated:
         raise ConfigPreflightError(

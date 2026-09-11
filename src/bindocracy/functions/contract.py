@@ -46,6 +46,11 @@ class FunctionInput:
     sequence: str
     target_sequence: str | None = None
     structure: Path | None = None
+    # Which model produced `structure`. Carried because a geometric metric read
+    # off a pose belongs to the model that predicted that pose -- two models
+    # disagree about where the binder sits by a median 22.7 A, and one
+    # unprefixed column would hide it.
+    source_model: str | None = None
 
     def as_row(self, wants: Iterable[str]) -> dict:
         """Only what the function asked for.

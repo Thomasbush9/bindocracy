@@ -111,9 +111,81 @@ is a fact worth recording rather than a silent omission.
 
 ## Built-ins
 
-`epitope` and `sequence` are built-in functions that go through this same
-runner. That is deliberate — the extension point is exercised by the harness
-itself rather than merely offered to others, so the contract is proven by use.
+`epitope` and `sequence` go through this same runner, as the same type, invoked
+the same way. That is deliberate: the extension point is exercised by the
+harness itself rather than merely offered to others, so the contract is proven
+by use rather than by assertion. They are also the two worked examples — copy
+`drivers/functions/sequence_metrics.py` and change the middle.
 
-`sequence` is also the negative-control arm: on the labelled Nipah-G set,
-length alone reaches AUC 0.642 and five of nine scorers sit within 0.06 of it.
+A built-in declares no metrics, because its metrics are already in the registry
+with a fixed meaning. A custom function must declare, because nobody else knows
+what its numbers mean.
+
+### `sequence` — the negative-control arm
+
+Seven sequence-only properties: length, net charge, molecular weight,
+hydrophobic fraction, cysteines, N-linked sequons, longest homopolymer run.
+No structure, no model, no GPU.
+
+These exist because they are the bar. On the labelled Nipah-G set, **binder
+length alone separates binders from non-binders at AUC 0.642**, and five of the
+nine folding models score within 0.06 of that. A confidence metric that does
+not beat these has not earned its GPU time — and until they are stored beside
+every real metric, that comparison cannot be made without re-deriving them.
+
+Net charge deliberately excludes histidine, matching the benchmark's own
+control, so a number here and a number there are the same quantity.
+
+### `epitope` — does the binder touch what it was aimed at?
+
+Four metrics from heavy-atom contacts at a 5 Å cutoff: coverage, contact count,
+interface size, and mean distance to the nearest hotspot.
+
+Two things about the inputs were not obvious, and both were wrong on the first
+try — caught by running it against a real pose rather than reading a format:
+
+**Hotspots are 1-based positions in the target's FASTA** — not author
+numbering, and no chain letter. Chain letters are not portable: the mosaic
+driver builds `[binder, target]`, so its target is chain B, while the Chai-1
+and AlphaFold 3 drivers write the target as chain A. `A110` names the binder in
+one and the target in the other. And residue ids in a predicted pose are
+positional and 0-based (`0..200` for a 201-residue target), not the numbering a
+crystal structure carries. The caller resolves author numbering against
+`target.structure_pdb` — which the harness already does elsewhere — and passes
+positions.
+
+**The binder is identified by length**, not by chain letter, for the same
+reason.
+
+Metrics are prefixed by **the model that produced the pose**, not by the
+function: `boltz2_epitope_coverage`, `chai1_epitope_coverage`. Two models
+disagree about where the binder sits by a median 22.7 Å, and one unprefixed
+column would hide exactly that.
+
+A hotspot past the end of the target raises rather than scoring 0.0 —
+out-of-range numbering is a mistake, and reporting it as a miss would read as a
+real measurement. Coverage with no hotspots named is NaN, which the driver
+drops so no row is stored, rather than a 0.0 claiming the binder missed an
+epitope nobody specified.
+
+### First result
+
+Run against the three DIO3 designs already folded by eight models, with the
+campaign's own hotspots (`A110, A112, A131`, which map to FASTA positions
+110/112/131 — the target PDB is numbered 1..201, so the mapping is the
+identity here):
+
+**24 model-design pairs. Coverage above zero in two of them**, both Promera,
+and both a single hotspot of three. The other twenty-two place the binder
+13–30 Å from the nearest hotspot while forming a real interface of 10–36
+target residues somewhere else.
+
+So the models disagree with each other about where the binder sits — by a
+median 22.7 Å — and agree that it is not on the epitope. That independently
+corroborates what run 19 found: the tool that enforces an epitope was the one
+that appeared to miss it. Conditioning on an epitope is not evidence of
+contacting one.
+
+Read it as three arbitrary designs from one generator, not as a verdict on
+epitope conditioning in general. It is the measurement the harness could not
+make until structures were kept.

@@ -32,7 +32,7 @@ from bindocracy.functions.contract import (
     read_outputs,
     write_inputs,
 )
-from bindocracy.functions.models import CustomFunction
+from bindocracy.functions.models import ScoringFunction
 from bindocracy.store.records import MetricRecord
 
 INPUT_FILE = "inputs.jsonl"
@@ -70,7 +70,7 @@ class FunctionResult:
         }
 
 
-def command_for(function: CustomFunction, inputs: Path, outputs: Path) -> tuple[str, ...]:
+def command_for(function: ScoringFunction, inputs: Path, outputs: Path) -> tuple[str, ...]:
     """The argv for one custom function.
 
     The script is always passed `--inputs` and `--outputs`, in that order,
@@ -92,7 +92,7 @@ def command_for(function: CustomFunction, inputs: Path, outputs: Path) -> tuple[
     )
 
 
-def preflight_custom(function: CustomFunction) -> str:
+def preflight_custom(function: ScoringFunction) -> str:
     """Refuse a function that cannot work, and hash the bytes that will run.
 
     The digest is the point: a run has to record which *bytes* scored it, not
@@ -113,7 +113,7 @@ def preflight_custom(function: CustomFunction) -> str:
 
 
 def run_custom(
-    function: CustomFunction,
+    function: ScoringFunction,
     inputs: list[FunctionInput],
     *,
     run_id: str,
@@ -199,7 +199,7 @@ def run_custom(
             metric_records(
                 run_id=run_id,
                 design_id=source.design_id,
-                model=function.name,
+                model=_prefix_for(function, source),
                 values=dict(output.metrics),
                 replicate=replicate,
                 measured_at=measured_at,
@@ -221,7 +221,21 @@ def run_custom(
     )
 
 
-def _has_required_inputs(row: FunctionInput, function: CustomFunction) -> bool:
+def _prefix_for(function: ScoringFunction, row: FunctionInput) -> str:
+    """What the stored metric name is prefixed with.
+
+    `function` for anything whose value does not depend on which model produced
+    the input -- a binder's net charge is its net charge. `source_model` for
+    geometry read off a particular pose, so `boltz2_epitope_coverage` and
+    `chai1_epitope_coverage` stay separate columns. A pose whose model is
+    unrecorded falls back to the function name rather than inventing one.
+    """
+    if function.prefix == "source_model" and row.source_model:
+        return row.source_model
+    return function.name
+
+
+def _has_required_inputs(row: FunctionInput, function: ScoringFunction) -> bool:
     if "structure" in function.inputs and row.structure is None:
         return False
     return not ("target_sequence" in function.inputs and row.target_sequence is None)

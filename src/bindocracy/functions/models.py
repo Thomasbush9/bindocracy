@@ -28,7 +28,7 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
-from bindocracy.adapters.scoring import MetricSpec, registered_keys
+from bindocracy.adapters.scoring import MetricSpec, registered_keys, spec_for
 from bindocracy.config.models import ConfigModel
 from bindocracy.store.records import MetricDirection
 
@@ -59,11 +59,25 @@ class MetricDeclaration(ConfigModel):
         )
 
 
-class CustomFunction(ConfigModel):
-    """A user-supplied scoring script.
+# How a function's metrics are named in the database.
+#
+#   function      `<function name>_<metric>` -- for anything whose value does
+#                 not depend on which model produced the input. A binder's net
+#                 charge is its net charge.
+#   source_model  `<model>_<metric>` -- for geometry read off a particular
+#                 model's structure. `adapters/scoring.py::epitope_metric_name`
+#                 makes the argument: two models disagree about where the
+#                 binder sits, so one unprefixed `epitope_coverage` column
+#                 would collapse that disagreement and hide it.
+MetricPrefix = Literal["function", "source_model"]
 
-    The contract is the one every driver here already uses: JSONL in, JSONL
-    out. `contract.py` documents the exact row shapes.
+
+class ScoringFunction(ConfigModel):
+    """What every scoring function has, built-in or user-supplied.
+
+    Built-ins go through exactly this shape and exactly the runner below, so
+    the extension point is exercised by the harness rather than merely offered
+    to others -- the contract is proven by use.
     """
 
     name: str = Field(min_length=1, pattern=r"^[a-z0-9_]+$")
@@ -75,8 +89,48 @@ class CustomFunction(ConfigModel):
     # takes options.
     args: tuple[str, ...] = ()
     inputs: tuple[FunctionInputKind, ...] = ("sequence",)
-    metrics: dict[str, MetricDeclaration] = Field(min_length=1)
     timeout_seconds: int = Field(default=3600, ge=1)
+    prefix: MetricPrefix = "function"
+
+    @property
+    def specs(self) -> dict[str, MetricSpec]:  # pragma: no cover - overridden
+        raise NotImplementedError
+
+
+class BuiltinFunction(ScoringFunction):
+    """A function this repository ships.
+
+    Its metrics are already in the registry with a fixed meaning, so it
+    declares nothing: `specs` resolves them by name. That is the difference
+    from a custom function, which must declare because nobody else knows what
+    its numbers mean.
+    """
+
+    metric_keys: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def metrics_are_registered(self) -> Self:
+        missing = sorted(set(self.metric_keys) - set(registered_keys()))
+        if missing:
+            raise ValueError(
+                f"built-in function {self.name!r} names unregistered metric(s) "
+                f"{missing}; a built-in's metrics belong in adapters/scoring.py"
+            )
+        return self
+
+    @property
+    def specs(self) -> dict[str, MetricSpec]:
+        return {key: spec_for(key) for key in self.metric_keys}
+
+
+class CustomFunction(ScoringFunction):
+    """A user-supplied scoring script.
+
+    The contract is the one every driver here already uses: JSONL in, JSONL
+    out. `contract.py` documents the exact row shapes.
+    """
+
+    metrics: dict[str, MetricDeclaration] = Field(min_length=1)
 
     @model_validator(mode="after")
     def metrics_do_not_shadow_builtins(self) -> Self:
@@ -144,11 +198,72 @@ class FunctionsConfig(ConfigModel):
             ) if on
         )
 
+    def resolve(self, **builtin_overrides) -> tuple[ScoringFunction, ...]:
+        """Every enabled function, built-in and custom, in one list.
+
+        Built-ins come back as the same type the runner takes for a user
+        script, because they are run the same way. `builtin_overrides` is how a
+        caller supplies what only it knows -- the epitope function needs the
+        campaign's hotspots as `args`, for instance -- keyed by function name.
+        """
+        resolved: list[ScoringFunction] = []
+        for name in self.enabled_builtins:
+            if name not in BUILTIN_FUNCTIONS:
+                raise ValueError(
+                    f"function {name!r} is enabled but not implemented yet; it "
+                    "would validate, launch and measure nothing"
+                )
+            resolved.append(builtin(name, **builtin_overrides.get(name, {})))
+        resolved.extend(self.custom)
+        return tuple(resolved)
+
+
+# The functions this repository ships. `script` is resolved against
+# `drivers/functions/` at use, so these stay declarative.
+BUILTIN_FUNCTIONS: dict[str, dict] = {
+    "sequence": {
+        "script": "sequence_metrics.py",
+        "inputs": ("sequence",),
+        "prefix": "function",
+        "metric_keys": (
+            "length", "net_charge", "molecular_weight", "hydrophobic_fraction",
+            "n_cysteines", "n_glycosylation_motifs", "max_low_complexity_run",
+        ),
+    },
+    "epitope": {
+        "script": "epitope_metrics.py",
+        "inputs": ("structure", "sequence"),
+        # Geometry off one model's pose: prefix by that model, not by this
+        # function, or two models' disagreement collapses into one column.
+        "prefix": "source_model",
+        "metric_keys": (
+            "epitope_coverage", "n_epitope_contacts", "n_interface_residues",
+            "epitope_offset",
+        ),
+    },
+}
+
+BUILTIN_SCRIPT_DIR = Path(__file__).resolve().parents[3] / "drivers" / "functions"
+
+
+def builtin(name: str, **overrides) -> BuiltinFunction:
+    """The shipped function called `name`."""
+    spec = dict(BUILTIN_FUNCTIONS[name])
+    spec["name"] = name
+    spec["script"] = BUILTIN_SCRIPT_DIR / spec["script"]
+    spec.update(overrides)
+    return BuiltinFunction.model_validate(spec)
+
 
 __all__ = [
+    "BUILTIN_FUNCTIONS",
+    "BuiltinFunction",
     "CustomFunction",
     "FunctionInputKind",
     "FunctionsConfig",
     "MetricDeclaration",
     "MetricDirection",
+    "MetricPrefix",
+    "ScoringFunction",
+    "builtin",
 ]

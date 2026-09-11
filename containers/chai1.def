@@ -1,0 +1,123 @@
+Bootstrap: docker
+From: nvidia/cuda:12.4.1-runtime-ubuntu22.04@sha256:517da2300c184c9999ec203c2665244bdebd3578d12fcc7065e83667932643d9
+
+# Chai-1 v0.6.1, x86_64, embedded assets. No SIF has been built by this setup.
+# Inspect: %files, container-requirements.{in,lock}, build-backend.lock,
+#          assets-manifest.json,
+# assets.sha256, source.sha256, chai1_offline.py, verify_container.py.
+# Build FROM THIS CLONE ROOT in a scheduled CPU build job (not a GPU job):
+#   singularity build --fakeroot ../images/chai1.sif chai1.def
+# Build needs network for OS/Python packages, never to acquire model assets.
+# CUDA 12.4 needs a compatible host driver; inference needs bfloat16 GPU support.
+# Upstream recommends A100/H100 80GB or L40S 48GB; small jobs may use less.
+# Run with explicit input/output bind, no external weight/cache bind required:
+#   singularity run --nv --cleanenv --bind /absolute/work:/work ../images/chai1.sif fold /work/input.fasta /work/output
+# Local MSAs: append --msa-directory /work/msas (sequence-hash.aligned.pqt files).
+# MSA conversion: singularity run --cleanenv ../images/chai1.sif a3m-to-pqt --help
+# Network MSA/template services are intentionally rejected; all inference is offline.
+# CHAI_RUNTIME_DIR may name job-private writable scratch via SINGULARITYENV_;
+# otherwise incidental caches are isolated in a new /tmp/chai1-* directory.
+# Python and every Python dependency are pinned; distro apt security updates
+# remain build-time resolved. source.sha256 pins copied upstream bytes, no .git.
+
+%labels
+    Upstream https://github.com/chaidiscovery/chai-lab
+    ChaiVersion 0.6.1
+    SourceRevision 8d5ac0f93e9b6ea4c3a6545c253a6381c0f3694b
+    PythonVersion 3.11.11
+    TorchVersion 2.5.1+cu124
+    ModelWeights EmbeddedReadOnly
+
+%files
+    chai_lab /opt/chai-lab/chai_lab
+    pyproject.toml /opt/chai-lab/pyproject.toml
+    requirements.in /opt/chai-lab/requirements.in
+    LICENSE /opt/chai-lab/LICENSE
+    source.sha256 /opt/chai-lab/source.sha256
+    container-requirements.in /opt/chai-lab/container-requirements.in
+    container-requirements.lock /opt/chai-lab/container-requirements.lock
+    build-backend.lock /opt/chai-lab/build-backend.lock
+    downloads/models_v2 /opt/chai-lab/downloads/models_v2
+    downloads/esm /opt/chai-lab/downloads/esm
+    downloads/conformers_v1.apkl /opt/chai-lab/downloads/conformers_v1.apkl
+    assets-manifest.json /opt/chai-lab/assets-manifest.json
+    assets.sha256 /opt/chai-lab/assets.sha256
+    chai1_offline.py /opt/chai-lab/chai1_offline.py
+    verify_container.py /opt/chai-lab/verify_container.py
+
+%post
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    # Two locked packages are source distributions: ihm==2.4, which carries a
+    # C extension, and modelcif==1.3, which does not. The CUDA runtime base has
+    # no compiler; managed CPython supplies its own Python headers, while
+    # build-essential supplies cc, make and libc headers.
+    apt-get install -y --no-install-recommends build-essential ca-certificates python3 python3-pip libgomp1 libglib2.0-0 libgl1 kalign
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+    cd /opt/chai-lab
+    sha256sum --check source.sha256
+    python3 verify_container.py --assets-only
+
+    # Install a fixed resolver, then a fixed managed CPython independent of apt.
+    python3 -m pip install --no-cache-dir uv==0.11.6
+    export UV_PYTHON_INSTALL_DIR=/opt/python
+    export UV_CACHE_DIR=/tmp/chai-build-uv
+    uv python install 3.11.11
+    uv venv --python 3.11.11 /opt/chai-venv
+    # Two sdists in the lock have no wheels and no pyproject.toml, so pip falls
+    # back to setuptools.build_meta:__legacy__ and compiles them here:
+    # ihm==2.4 (C extension ihm._format) and modelcif==1.3. With build
+    # isolation uv resolves that backend fresh from PyPI, ignoring the lock --
+    # observed fetching setuptools 84.0.0 while the lock pins 75.8.0. Every
+    # other input to this image is pinned or hashed, so an unpinned compiler
+    # environment is the one hole through which the image can change without
+    # any file here changing. Install the pinned backend first, then build
+    # against it. Both survive the sync because both are in the main lock.
+    uv pip install --python /opt/chai-venv/bin/python --require-hashes -r build-backend.lock
+    uv pip sync --python /opt/chai-venv/bin/python --require-hashes --no-build-isolation container-requirements.lock
+    # Build backend already exists in the hashed lock; no isolated, unpinned
+    # build environment and no dependency resolution for the local source.
+    uv pip install --python /opt/chai-venv/bin/python --no-deps --no-build-isolation -e /opt/chai-lab
+    uv pip check --python /opt/chai-venv/bin/python
+    CHAI_DOWNLOADS_DIR=/opt/chai-lab/downloads /opt/chai-venv/bin/python verify_container.py
+
+    # Even a writable sandbox must not modify embedded weights during inference.
+    chmod -R a-w /opt/chai-lab/downloads
+    mkdir -p /opt/chai-bin
+    printf '%s\n' '#!/bin/sh' 'exec /opt/chai-venv/bin/python -B /opt/chai-lab/chai1_offline.py "$@"' > /opt/chai-bin/chai-lab
+    chmod 755 /opt/chai-bin/chai-lab
+    # Route the installed CLI through the offline policy for singularity exec too.
+    cp /opt/chai-bin/chai-lab /opt/chai-venv/bin/chai-lab
+    rm -rf /tmp/chai-build-uv
+
+%environment
+    export PATH=/opt/chai-bin:/opt/chai-venv/bin:$PATH
+    export CHAI_DOWNLOADS_DIR=/opt/chai-lab/downloads
+    export PYTHONNOUSERSITE=1
+    export PYTHONDONTWRITEBYTECODE=1
+    export PYTHONUNBUFFERED=1
+    export HF_HUB_OFFLINE=1
+    export TRANSFORMERS_OFFLINE=1
+    export LANG=C.UTF-8
+
+%runscript
+    exec /opt/chai-bin/chai-lab "$@"
+
+%test
+    set -eu
+    cd /opt/chai-lab
+    sha256sum --check source.sha256
+    /opt/chai-venv/bin/python -m pip check
+    CHAI_DOWNLOADS_DIR=/opt/chai-lab/downloads /opt/chai-venv/bin/python verify_container.py
+    /opt/chai-bin/chai-lab fold --help
+    /opt/chai-bin/chai-lab a3m-to-pqt --help
+
+%help
+    Offline Chai-1 v0.6.1, all eight model/ESM/conformer assets embedded.
+    singularity run --nv --cleanenv --bind /absolute/work:/work chai1.sif fold /work/input.fasta /work/output
+    Add --msa-directory /work/msas for local sequence-hash.aligned.pqt files.
+    singularity run --cleanenv chai1.sif a3m-to-pqt --help
+    Build from the clone root: singularity build --fakeroot ../images/chai1.sif chai1.def
+    No model download is allowed at inference. No GPU is needed by build tests.

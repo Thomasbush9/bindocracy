@@ -18,6 +18,9 @@ All image paths below are relative to:
 | [SwitchCraft](switchcraft.md) | explicit Python command | Yes | Embedded |
 | [Mosaic](mosaic.md) | required host wrapper | Yes | External |
 | [RFdiffusion](rfdiffusion.md) | direct RFdiffusion runscript | Yes | External |
+| [Chai-1](chai1.md) | `singularity run ... fold` | Yes | Embedded |
+| [AlphaFold 3](af3.md) | `run_alphafold.py` | Yes | **External — licence, not convenience** |
+| [OpenFold3](openfold3.md) | `run_openfold predict` | Yes | External |
 
 Read [running containers](../running-containers.md) before launching a campaign,
 especially the login-node policy and reproducibility checklist.

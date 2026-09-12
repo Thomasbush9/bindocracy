@@ -1,6 +1,7 @@
 """Applying a filter set to scored designs.
 
-DRAFT -- not wired into anything yet. See docs/scoring-stage.md.
+Reached by `bindocracy filter apply` and `bindocracy designset build`.
+See docs/custom-optimization.md for the stage that consumes it.
 
 Pure functions over records: nothing here opens a database, launches anything,
 or knows what a run is. That keeps the interesting part -- how a threshold

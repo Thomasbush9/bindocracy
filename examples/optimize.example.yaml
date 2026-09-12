@@ -1,0 +1,138 @@
+# TEMPLATE for a custom optimization run. Copy, edit, keep it beside your
+# campaign data rather than in the repository -- its absolute paths belong to
+# one machine.
+#
+# The full contract your script must satisfy is docs/custom-optimization.md.
+# Check the script before submitting anything:
+#
+#   python scripts/validate_optimizer.py \
+#       --script /abs/path/to/my_optimizer.py \
+#       --design-set sets/<digest>.json \
+#       --target-fasta /abs/path/to/target.fasta \
+#       --declare loss:min --declare n_steps:none \
+#       --max-children 4
+
+schema_version: 1
+
+# Also the METRIC PREFIX. Every number this run stores is `<name>_<metric>`, so
+# `loss` below lands as `refine_charge_loss`. Two optimizers with different
+# losses must have different names -- the same rule that keeps protenix_mini
+# and protenix_base in separate columns.
+name: refine_charge
+tool: optimize
+
+# ---------------------------------------------------------------------------
+# What to improve
+# ---------------------------------------------------------------------------
+# A frozen, content-addressed candidate set. Build it from what a filter chose:
+#
+#   bindocracy filter apply DB --general general.yaml --filter filter.yaml \
+#       --output-dir runs/filter-01
+#   bindocracy designset build DB --out-dir sets/ \
+#       --passed-filter worth_optimizing --filter-run <run_id>
+#
+# Name the filter RUN, not just the rule: re-filtering under changed
+# thresholds writes a second run beside the first, and selecting on the shared
+# name would union two contradictory policies.
+design_set: /absolute/path/to/sets/e52aa59a7ed8299c.json
+
+# ---------------------------------------------------------------------------
+# The script
+# ---------------------------------------------------------------------------
+script: /absolute/path/to/my_optimizer.py
+# Appended after the harness's own --inputs/--outputs/--context.
+args: ["--n-steps", "150"]
+
+# What each parent row carries. Ask for the least you need: a run that does not
+# ask for `structure` can be planned over designs nothing has folded.
+#   sequence    the parent's amino-acid sequence
+#   structure   a predicted pose on disk (needs structures_from below)
+#   metrics     stored metrics, named in metric_inputs
+#   provenance  tool, run_name, native_id
+inputs: [sequence]
+
+# Required when inputs includes `structure`. Two models disagree about where
+# the binder sits by a median 22.7 A, so "the structure" is not one thing.
+# structures_from: boltz2
+# Optimize only the parents that have a pose, instead of refusing the run:
+# allow_unfolded: false
+
+# Required when inputs includes `metrics`. Full stored names, with the scorer
+# prefix -- `bindocracy filter metrics DB` lists what exists.
+# metric_inputs: [boltz2_iptm, boltz2_bt_pae]
+
+# ---------------------------------------------------------------------------
+# WHICH MODELS THE LOSS SAW. Required. The most important line here.
+# ---------------------------------------------------------------------------
+# If a design is driven against boltz2 ipTM and its children are later ranked
+# by boltz2 ipTM, the ranking measures the optimizer rather than the binder --
+# and nothing in the database could detect that, because no run has ever
+# recorded which models fed a loss. This is stored on the run AND on every
+# child, so a later selection can exclude them.
+#
+# `[]` is a claim, not a default: it says the loss consulted no structure
+# predictor at all. Say it explicitly.
+loss_models: []
+
+# ---------------------------------------------------------------------------
+# What the script returns, per child
+# ---------------------------------------------------------------------------
+# A direction is required. A number stored the wrong way round sorts backwards
+# and nothing in the row says so, and only whoever wrote the script knows which
+# way it points. A metric the script returns but does not declare here is
+# rejected rather than stored.
+metrics:
+  loss:
+    direction: min
+    description: the optimizer's own objective, lower being better
+  n_steps:
+    direction: none
+    description: steps taken before stopping
+
+# Ceiling on children per parent. `child` ordinals must be 0..max_children-1;
+# a row beyond it is rejected rather than truncated, because a runaway loop and
+# a productive optimizer look identical after truncation.
+max_children: 4
+
+seed: 42
+# Per task, not per design.
+timeout_seconds: 43200
+
+# How far the binder length may move. 0 means the child must be the same length
+# as its parent. Non-zero is fine and sometimes the point, but it costs a JIT
+# recompile per new length at the next scoring pass, so it is stated rather
+# than discovered.
+length_delta: 0
+
+# ---------------------------------------------------------------------------
+# Where it runs
+# ---------------------------------------------------------------------------
+sharding:
+  jobs: 4
+
+runtime:
+  # Omit for the harness's own interpreter on the host -- right for a
+  # stdlib-and-numpy optimizer, wrong for anything that folds.
+  container: /absolute/path/to/singularity_dev/images/mosaic.sif
+  # The interpreter INSIDE the image. mosaic.sif has `python`; Chai-1 needs
+  # /opt/chai-venv/bin/python. Stated because `singularity exec ... python`
+  # resolves against whatever PATH survives --cleanenv.
+  container_python: python
+  # Bound over the image's own copy. Needed while mosaic.sif predates the MSA
+  # routing; see docs/mosaic-rebuild.md. Its digest is recorded on the run,
+  # because with this set the container digest no longer determines the result.
+  dev_source: /absolute/path/to/mosaic_setup/mosaic/src/mosaic
+  # Node-local, job-private scratch. Every cache a folding library reaches for
+  # is routed here instead of into a /tmp tree nothing removes.
+  scratch: /tmp/optimize-scratch
+
+resources:
+  gpus: 1
+  cpus: 8
+  memory_gb: 64
+  walltime: "12:00:00"
+
+# Shipped with the harness. Runs inside the container above, marshals the
+# shard, and calls your script; it imports nothing but the standard library so
+# it works in any image.
+driver_script: /absolute/path/to/bindocracy/drivers/optimize/run_optimizer.py

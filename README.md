@@ -22,6 +22,12 @@ use the login node only to edit inputs, inspect help, and submit jobs.
   takes any registered tool's config to designs in DuckDB, and how to run it
 - **[Adding a tool](docs/adding-a-tool.md)** — the five things a tool supplies,
   and the one line that registers it
+- **[Scoring functions](docs/scoring-functions.md)** — conditions (things that
+  fold) against functions (things computed from the result), and how to add a
+  metric with a script instead of a plugin
+- **[Custom optimization](docs/custom-optimization.md)** — improve the designs a
+  filter chose, with a script the campaign does not have to know about; the
+  whole generate → score → filter → optimize loop
 - **[drivers/](drivers/)** — code the harness runs inside a container
 - **[legacy/](legacy/)** — the hand-written `sbatch` launchers from the alpha
   benchmark, kept as reference and not used by the harness

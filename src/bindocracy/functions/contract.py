@@ -61,7 +61,12 @@ class FunctionInput:
         folded.
         """
         wanted = set(wants)
-        row: dict = {"index": self.index, "design_id": self.design_id}
+        # No `design_id`. A driver runs inside a container, knows nothing about
+        # the database, and joins back through `index` -- the design-set
+        # position -- exactly as `DesignSetEntry` describes. Handing over an id
+        # a script has no use for invites it to be echoed back as the join key,
+        # and `docs/scoring-functions.md` already documents its absence.
+        row: dict = {"index": self.index}
         if "sequence" in wanted:
             row["sequence"] = self.sequence
         if "target_sequence" in wanted and self.target_sequence is not None:

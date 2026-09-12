@@ -79,6 +79,13 @@ whichever quirk table the model turns out to need.
 A plugin, the Chai-1 / AlphaFold 3 / OpenFold3 pattern. Six files and one
 `register()` line, exactly as `adding-a-tool.md` describes.
 
+### Not a function at all — changing the design
+
+A function computes a number *about* a design. Something that produces a new
+design is an optimizer, which is a different contract: n→m rather than 1:1,
+keyed on `(parent_index, child)`, and writing to the `designs` table rather
+than to `metrics`. See [custom-optimization.md](custom-optimization.md).
+
 ## Four rules the contract enforces
 
 **Declare the direction.** A custom metric has no default direction and the

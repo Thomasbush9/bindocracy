@@ -20,15 +20,23 @@ from bindocracy.config import (
 )
 from bindocracy.config.load import load_yaml
 from bindocracy.config.models import GeneralConfig, ResourceConfig
-from bindocracy.runs import ingest_bundle, write_collected
+from bindocracy.filters.config import FilterConfig
+from bindocracy.filters.config import summarise as summarise_filter
+from bindocracy.filters.run import FilterRunError, run_filter
+from bindocracy.runs import ingest_bundle, ingest_collected, write_collected
+from bindocracy.runs.designset import DesignSet, DesignSetError
+from bindocracy.runs.designset import summarise as summarise_set
 from bindocracy.runs.inputs import TargetDigest
 from bindocracy.runs.msa import prepare_target_msa
+from bindocracy.runs.selection import SelectionError, read_only
+from bindocracy.runs.selection import build as build_selection
 from bindocracy.store import (
     CampaignStore,
     IngestConflictError,
     TargetMismatchError,
     create_database,
 )
+from bindocracy.store.query import DesignQuery, metric_names
 from bindocracy.tools import UnknownToolError, collect_run, load_configs
 from bindocracy.tools.boltzgen.migrate import backfill_boltzgen_decisions
 
@@ -40,6 +48,10 @@ config_app = typer.Typer(help="Validate and load campaign configuration.")
 app.add_typer(config_app, name="config")
 target_app = typer.Typer(help="Prepare shared target inputs before planning runs.")
 app.add_typer(target_app, name="target")
+designset_app = typer.Typer(help="Freeze a database query into a reusable candidate set.")
+app.add_typer(designset_app, name="designset")
+filter_app = typer.Typer(help="Apply a stored filter policy to a frozen design set.")
+app.add_typer(filter_app, name="filter")
 
 
 @target_app.command("prepare-msa")
@@ -69,6 +81,173 @@ def prepare_msa(
         typer.echo(f"Target preparation error:\n{error}", err=True)
         raise typer.Exit(code=2) from error
     typer.echo(output)
+
+
+@designset_app.command("build")
+def designset_build(
+    database: Annotated[Path, typer.Argument(help="Campaign database to select from.")],
+    out_dir: Annotated[Path, typer.Option("--out-dir", help="Where to write <digest>.fasta/.json.")],
+    query_file: Annotated[Path | None, typer.Option(
+        "--query", help="A DesignQuery YAML, instead of the flags below.",
+    )] = None,
+    tool: Annotated[list[str] | None, typer.Option("--tool", help="Producing tool; repeatable.")] = None,
+    run_name: Annotated[list[str] | None, typer.Option("--run-name", help="Producing run; repeatable.")] = None,
+    passed_filter: Annotated[list[str] | None, typer.Option(
+        "--passed-filter", help="Decision name a design must have passed; repeatable.",
+    )] = None,
+    filter_run: Annotated[list[str] | None, typer.Option(
+        "--filter-run", help="Filter run whose verdicts to trust; required with --passed-filter.",
+    )] = None,
+    exclude_scored_by: Annotated[list[str] | None, typer.Option(
+        "--exclude-scored-by", help="Skip designs this evaluator run already scored; repeatable.",
+    )] = None,
+    min_length: Annotated[int | None, typer.Option("--min-length", min=1)] = None,
+    max_length: Annotated[int | None, typer.Option("--max-length", min=1)] = None,
+    distinct_sequences: Annotated[bool, typer.Option(
+        "--distinct-sequences", help="Keep one design per identical sequence.",
+    )] = False,
+    limit: Annotated[int | None, typer.Option("--limit", min=1)] = None,
+) -> None:
+    """Freeze the designs a query selects into a content-addressed set.
+
+    The digest covers the members and their order and nothing else, so the same
+    query against an unchanged database is recognisably the same set rather
+    than a new one. Use `--passed-filter` with `--filter-run` to select what a
+    stored policy chose; see `bindocracy filter apply`.
+    """
+    if query_file is not None:
+        flags = (tool, run_name, passed_filter, filter_run, exclude_scored_by,
+                 min_length, max_length, limit)
+        if any(value for value in flags) or distinct_sequences:
+            raise typer.BadParameter(
+                "--query replaces the narrowing flags; pass one or the other",
+                param_hint="--query",
+            )
+        try:
+            query = load_yaml(query_file, DesignQuery)
+        except (ConfigLoadError, ValidationError) as error:
+            typer.echo(f"Query error:\n{error}", err=True)
+            raise typer.Exit(code=2) from error
+    else:
+        try:
+            query = DesignQuery(
+                tools=tuple(tool or ()),
+                run_names=tuple(run_name or ()),
+                passed_filter=tuple(passed_filter or ()),
+                filter_runs=tuple(filter_run or ()),
+                exclude_scored_by_run=tuple(exclude_scored_by or ()),
+                min_length=min_length,
+                max_length=max_length,
+                distinct_sequences=distinct_sequences,
+                limit=limit,
+            )
+        except ValidationError as error:
+            typer.echo(f"Query error:\n{error}", err=True)
+            raise typer.Exit(code=2) from error
+
+    try:
+        design_set, fasta, manifest = build_selection(database, query, out_dir)
+    except (SelectionError, DesignSetError) as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=2) from error
+
+    typer.echo(summarise_set(design_set))
+    typer.echo(f"fasta:    {fasta}")
+    typer.echo(f"manifest: {manifest}")
+
+
+@designset_app.command("show")
+def designset_show(
+    manifest: Annotated[Path, typer.Argument(help="A <digest>.json design-set manifest.")],
+) -> None:
+    """Summarise a frozen design set, including the query that produced it."""
+    try:
+        design_set = DesignSet.read(manifest)
+    except DesignSetError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=2) from error
+    typer.echo(summarise_set(design_set))
+
+
+@filter_app.command("metrics")
+def filter_metrics(
+    database: Annotated[Path, typer.Argument(help="Campaign database.")],
+) -> None:
+    """List the metric names present, which is what a filter set may test.
+
+    Stored names carry their scorer prefix (`boltz2_iptm`, not `iptm`). Run
+    this before writing thresholds: a filter set naming a metric that does not
+    exist is refused by `filter apply`, but reading the list is faster than
+    being told.
+    """
+    try:
+        with read_only(database) as connection:
+            names = metric_names(connection)
+    except SelectionError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=2) from error
+    if not names:
+        typer.echo("no metrics in this database yet")
+        return
+    for name in names:
+        typer.echo(name)
+
+
+@filter_app.command("apply")
+def filter_apply(
+    database: Annotated[Path, typer.Argument(help="Campaign database to read and write.")],
+    general: Annotated[Path, typer.Option("--general", help="General campaign YAML.")],
+    filter_config: Annotated[Path, typer.Option("--filter", help="Filter YAML; tool: filter.")],
+    output_dir: Annotated[Path, typer.Option(
+        "--output-dir", help="Where the staging bundle is written.",
+    )],
+    ingest: Annotated[bool, typer.Option(
+        "--ingest/--no-ingest", help="Write the verdicts to the database.",
+    )] = True,
+) -> None:
+    """Apply a stored filter policy to a frozen design set, once.
+
+    A filter is not a tool: no container, no GPU, no task fan-out. It reads the
+    database and writes verdicts, so it runs here in process and goes to the
+    database through the same staging bundle every plugin uses. No design is
+    deleted and no metric is rewritten -- a design that fails is a row saying
+    so, with the numbers that failed it.
+    """
+    try:
+        general_config = load_yaml(general, GeneralConfig)
+        config = load_yaml(filter_config, FilterConfig)
+    except (ConfigLoadError, ValidationError) as error:
+        typer.echo(f"Configuration error:\n{error}", err=True)
+        raise typer.Exit(code=2) from error
+
+    try:
+        collected, config_record = run_filter(
+            database=database,
+            general=general_config,
+            config=config,
+            output_dir=output_dir,
+            general_source=general,
+        )
+    except FilterRunError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=2) from error
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    bundle = write_collected(collected, output_dir / "collected.json")
+
+    typer.echo(summarise_filter(collected.run))
+    typer.echo(f"bundle: {bundle}")
+
+    if not ingest:
+        typer.echo("not ingested (--no-ingest)")
+        return
+    try:
+        inserted = ingest_collected(database, collected, config=config_record)
+    except (IngestConflictError, TargetMismatchError) as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=2) from error
+    typer.echo("ingested" if inserted else "already ingested; nothing to do")
+    typer.echo(f"run: {collected.run.run_id}")
 
 
 @app.callback()

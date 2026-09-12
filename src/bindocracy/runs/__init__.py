@@ -1,6 +1,6 @@
 """Generic run machinery: manifests, launch specs, execution, staging."""
 
-from bindocracy.runs.ingest import ingest_bundle
+from bindocracy.runs.ingest import ingest_bundle, ingest_collected
 from bindocracy.runs.launch import LaunchSpec, task_of
 from bindocracy.runs.manifest import (
     MANIFEST_NAME,
@@ -19,6 +19,7 @@ __all__ = [
     "RunManifest",
     "ToolPlan",
     "ingest_bundle",
+    "ingest_collected",
     "plan_run",
     "read_collected",
     "run_task",

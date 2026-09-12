@@ -1,6 +1,7 @@
 """What a filter is allowed to say.
 
-DRAFT -- not wired into anything yet. See docs/scoring-stage.md.
+Reached by `bindocracy filter apply` and `bindocracy designset build`.
+See docs/custom-optimization.md for the stage that consumes it.
 
 A filter set is a *stored, versioned document*, not numbers in a script. That is
 the whole point of this module. Every threshold in the campaign so far lives

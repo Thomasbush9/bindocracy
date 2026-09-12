@@ -11,7 +11,7 @@ from pathlib import Path
 
 from bindocracy.runs.manifest import MANIFEST_NAME, RunManifest
 from bindocracy.runs.staging import read_collected, staged_digest
-from bindocracy.store import CampaignStore
+from bindocracy.store import CampaignStore, CollectedRun, ConfigRecord
 
 
 def ingest_bundle(database: str | Path, collected_path: str | Path) -> bool:
@@ -33,5 +33,35 @@ def ingest_bundle(database: str | Path, collected_path: str | Path) -> bool:
             collected,
             configs=[manifest.config],
             digest=staged_digest(collected_path),
+            target=target,
+        )
+
+
+def ingest_collected(
+    database: str | Path,
+    collected: CollectedRun,
+    *,
+    config: ConfigRecord,
+    target: tuple[str, str] | None = None,
+) -> bool:
+    """Ingest a run that has no run directory. False means already present.
+
+    The database-to-database shape `filters/config.py` names: filtering,
+    clustering and ranking read the campaign, evaluate arithmetic, and write
+    verdicts. They have no container, no task fan-out and no run directory, so
+    there is no `run.json` for `ingest_bundle` to read the config pair out of --
+    the caller passes it instead, because it built it.
+
+    Everything downstream is unchanged. `CampaignStore.ingest` is already
+    generic over what a `CollectedRun` holds, and the restart-safety it
+    provides (an identical re-ingest is a no-op, a changed one raises) applies
+    here exactly as it does to a GPU run.
+    """
+    with CampaignStore(database) as store:
+        return store.ingest(
+            collected,
+            configs=[config],
+            # The verdicts, not the wall clock. See `CollectedRun.verdict_hash`.
+            digest=collected.verdict_hash(),
             target=target,
         )

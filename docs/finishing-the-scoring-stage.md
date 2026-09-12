@@ -11,11 +11,17 @@ in, a `metrics.jsonl` comes out, one adapter reads all of them.
 | | |
 |---|---|
 | scorers wired and GPU-verified | 9 |
-| plugins | 4 (`scorer`, `chai1`, `af3`, + `of3_upstream` in progress) |
+| plugins | 5 (`scorer`, `chai1`, `af3`, `of3_upstream`, `optimize`) |
 | metric specs registered | 35 |
 | structures saved and pointed at from the DB | yes |
-| tests | 589 |
+| selection wired (`designset build`, `filter apply`) | yes, 2026-09-12 |
+| tests | 716 |
 | written to `campaign.duckdb` | **nothing yet** |
+
+**Update 2026-09-12.** Items 2 and 8 below are done, and item 3's first half
+(the sequence-only control arm) landed with the scoring functions. The
+selection commands exist because optimization needed them: `docs/custom-optimization.md`
+is the stage that consumes a filter's verdicts.
 
 Two measurements exist for the panel, and they disagree usefully:
 `docs/benchmark-nipah.md` has the AUCs and the GFP control folds.
@@ -51,15 +57,11 @@ manifests so historical runs stay relaunchable.
 the panel's AUC table still carries mosaic's 0.597 for OpenFold3. That number
 now has a known cause and should be replaced rather than trusted.
 
-## 2. Make `readers.epitope` and `readers.inverse_folding` honest
+## 2. Make `readers.epitope` and `readers.inverse_folding` honest · **done**
 
-They validate, launch, succeed, and are silently dropped by the launcher, which
-only emits `complex` and `monomer`. A run that quietly omits the measurement it
-was asked for is worse than one that fails.
-
-Smallest correct fix is to **reject an unsupported flag before allocation**.
-That is an afternoon and it stops the class of bug; implementing the readers is
-separate work below.
+Both are now refused by preflight with a message naming where they went, and
+`epitope` is implemented as a scoring function over poses already on disk. See
+`docs/scoring-functions.md`, including what it measured on its first run.
 
 ## 3. Negative controls
 
@@ -119,12 +121,21 @@ the current image shipped with silently.
 Retires `runtime.dev_source` and unblocks AF2-with-MSA in the image rather than
 only in the bind.
 
-## 8. Selection workflow
+## 8. Selection workflow · **done for the parts optimization needs**
 
-`designset build`, `filter apply`, candidate export, diversity-aware selection.
-Scoring already runs through the generic Snakemake path; these are the commands
-that connect generation to a frozen evaluation set and a recorded selection
-policy without ad-hoc SQL.
+`bindocracy designset build` freezes a query into a content-addressed set;
+`bindocracy filter apply` applies a stored policy and writes verdicts;
+`bindocracy filter metrics` lists what a policy may test. The filter run's
+`run_id` is derived from the policy, the set and the evaluator runs, so
+re-applying the same policy is a no-op rather than a second set of identical
+verdicts — a filter has no run directory to key restart-safety on.
+
+Two refusals came out of building it, both for the same reason. `passed_filter`
+requires `filter_runs`, and a filter run *name* is refused when two runs share
+it: re-filtering under changed thresholds writes a second run beside the first,
+and the union of a strict filter and a loose one is the loose one.
+
+Still open here: candidate export, and diversity-aware selection (item 6).
 
 ## 9. Ingest into the real campaign
 

@@ -1,6 +1,7 @@
 """The filter run: a policy document, applied to a frozen design set.
 
-DRAFT -- not wired into anything yet. See docs/scoring-stage.md.
+Reached by `bindocracy filter apply` and `bindocracy designset build`.
+See docs/custom-optimization.md for the stage that consumes it.
 
 **Filtering is not a tool, and this module is where that is argued rather than
 worked around.** `ToolPlugin` describes something with a container, a task
@@ -40,7 +41,7 @@ from bindocracy.store.records import (
     RunKind,
     RunRecord,
     RunStatus,
-    new_id,
+    stable_id,
     utc_now,
 )
 
@@ -115,8 +116,28 @@ def build_filter_run(
     started = started_at or utc_now()
     design_ids = [entry.design_id for entry in design_set.entries]
 
+    # Content-derived, not `new_id()`. Every other run in this harness is
+    # restart-safe because its run directory carries a manifest with a fixed
+    # run_id, so re-collecting an already-ingested run is a no-op. A filter has
+    # no run directory, so a random id would make a second `filter apply` of
+    # the same policy write a second set of identical verdicts under a new run
+    # -- and the design set built from "passed worth_optimizing" would then
+    # depend on which of the two duplicates a query happened to see.
+    #
+    # The three inputs that can change a verdict are the policy, the candidate
+    # set, and the evaluator runs supplying the numbers. Re-running with any of
+    # them changed is a new run beside the old one, which is the semantics
+    # `apply.py` already documents; re-running with none of them changed is the
+    # same run, and `CampaignStore.ingest` recognises it.
+    run_id = stable_id(
+        "filter-run",
+        model_config_id,
+        design_set.digest,
+        *sorted(config.evaluator_runs),
+    )
+
     decisions, summary = apply_filter_set(
-        run_id=(run_id := new_id()),
+        run_id=run_id,
         filter_set=config.filter_set,
         design_ids=design_ids,
         metrics=metrics,

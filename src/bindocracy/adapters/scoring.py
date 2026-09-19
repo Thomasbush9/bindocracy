@@ -137,20 +137,28 @@ _REGISTRY: dict[str, MetricSpec] = {
 }
 
 
-def spec_for(key: str) -> MetricSpec:
+def spec_for(key: str, overlay: Mapping[str, MetricSpec] | None = None) -> MetricSpec:
     """The specification for a metric key, or a refusal.
 
     Deliberately not forgiving. A scorer that reports something new adds it to
     the registry in the same commit, which is one line and forces the direction
     question to be answered by somebody who knows the answer.
+
+    `overlay` is how a custom scoring function supplies its own specs without
+    editing this file. It does not weaken the rule -- a spec must still exist,
+    with a direction somebody chose -- it only moves where that declaration
+    lives, from this module to the config that names the script. The registry
+    is consulted first, so a custom function cannot redefine `iptm`.
     """
-    try:
+    if key in _REGISTRY:
         return _REGISTRY[key]
-    except KeyError:
-        raise CollectionError(
-            f"unregistered metric {key!r}; add a MetricSpec in adapters/scoring.py "
-            "rather than storing a metric whose direction nothing records"
-        ) from None
+    if overlay and key in overlay:
+        return overlay[key]
+    raise CollectionError(
+        f"unregistered metric {key!r}; add a MetricSpec in adapters/scoring.py, "
+        "or declare it with a direction in the custom function's config, rather "
+        "than storing a metric whose direction nothing records"
+    )
 
 
 def registered_keys() -> tuple[str, ...]:
@@ -177,6 +185,7 @@ def metric_records(
     replicate: int,
     measured_at: datetime,
     details: Mapping[str, Any] | None = None,
+    specs: Mapping[str, MetricSpec] | None = None,
 ) -> tuple[MetricRecord, ...]:
     """One replicate's worth of measurements for one design.
 
@@ -188,7 +197,7 @@ def metric_records(
     """
     records: list[MetricRecord] = []
     for key, raw in values.items():
-        spec = spec_for(key)
+        spec = spec_for(key, specs)
         name = spec.stored_name(model)
         usable = raw is not None and math.isfinite(raw)
         records.append(

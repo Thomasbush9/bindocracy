@@ -306,3 +306,42 @@ class CollectedRun(Record):
     def content_hash(self) -> str:
         """Hash the whole bundle, so a repeated ingestion can be recognized."""
         return sha256_text(canonical_json(self.model_dump(mode="json")))
+
+    def verdict_hash(self) -> str:
+        """Hash what the run DECIDED, ignoring when it decided it.
+
+        For a run with a directory, `content_hash` is the right identity: the
+        bundle came off disk and any difference in it means the run directory
+        changed. A database-to-database run (filter, cluster, rank) has no
+        directory and is deterministic in its inputs, so the only things that
+        differ between two identical applications of one policy are the
+        timestamps -- and treating those as a content change turns a harmless
+        re-run into an ingest conflict, which is what it did before this
+        existed.
+
+        Timestamps are dropped; ids, verdicts and reasons are not. A policy
+        that decides something different under the same identity is still a
+        genuine conflict and still raises.
+        """
+        payload = {
+            "run_id": self.run.run_id,
+            "model_config_id": self.run.model_config_id,
+            "n_passed": self.run.n_passed,
+            "decisions": [
+                {
+                    key: value
+                    for key, value in record.model_dump(mode="json").items()
+                    if key != "created_at"
+                }
+                for record in self.decisions
+            ],
+            "designs": [
+                {
+                    key: value
+                    for key, value in record.model_dump(mode="json").items()
+                    if key != "created_at"
+                }
+                for record in self.designs
+            ],
+        }
+        return sha256_text(canonical_json(payload))

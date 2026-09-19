@@ -1,6 +1,7 @@
 """Reading designs and metrics back out of a campaign database.
 
-DRAFT -- not wired into anything yet. See docs/scoring-stage.md.
+Reached by `bindocracy filter apply` and `bindocracy designset build`.
+See docs/custom-optimization.md for the stage that consumes it.
 
 `CampaignStore` is write-only by design: generation never needs to read, and
 keeping it that way made the single-writer rule easy to hold. A scoring stage
@@ -90,12 +91,54 @@ class DesignQuery(BaseModel):
     # silently skipped as "already done".
     exclude_scored_by_run: tuple[str, ...] = ()
 
+    # Keep only designs a filter passed. `passed_filter` names the decisions
+    # -- a rule name, or the filter set's own name for the gating verdict --
+    # and every one of them must have passed.
+    #
+    # `filter_runs` is REQUIRED alongside it, and that is the interesting rule
+    # here. Re-filtering under changed thresholds produces a second filter run
+    # *beside* the first rather than correcting it (see `filters/apply.py`), so
+    # "passed a rule called confident_interface" is ambiguous the moment a
+    # policy has been revised: the union of two contradictory policies reads as
+    # a selection somebody made, and nobody made it. Naming the run is what
+    # makes a design set reproducible.
+    # Run IDs, or names that resolve to exactly one run. A name is NOT
+    # unique -- re-filtering under changed thresholds writes a second run with
+    # the same config `name` -- so `runs.selection.select` resolves names to
+    # IDs and refuses an ambiguous one. Going through that path is what makes
+    # the guarantee hold; this predicate accepts either form so a resolved
+    # query and a hand-written one both work.
+    passed_filter: tuple[str, ...] = ()
+    filter_runs: tuple[str, ...] = ()
+
     # Deduplicate identical sequences across tools. Off by default: the campaign
     # currently has zero cross-tool duplicates, so switching it on would hide
     # nothing and cost a subquery. Worth having the day two tools converge.
     distinct_sequences: bool = False
 
     limit: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def check_filter_scope(self) -> DesignQuery:
+        """A filter selection must say which filter run it trusts.
+
+        Symmetric with `FilterConfig.evaluator_runs`, which is required for the
+        same reason: a policy applied to "whatever was in the database" cannot
+        be reproduced, and neither can a selection over "whatever policy was
+        applied".
+        """
+        if self.passed_filter and not self.filter_runs:
+            raise ValueError(
+                "passed_filter requires filter_runs: a rule name alone is ambiguous "
+                "once a policy has been revised, because re-filtering writes a "
+                "second filter run beside the first rather than replacing it"
+            )
+        if self.filter_runs and not self.passed_filter:
+            raise ValueError(
+                "filter_runs without passed_filter narrows nothing; name the "
+                "decision(s) a design must have passed"
+            )
+        return self
 
     @model_validator(mode="after")
     def check_length_window(self) -> DesignQuery:
@@ -243,6 +286,23 @@ def _predicates(query: DesignQuery) -> tuple[list[str], list[Any]]:
     if query.max_length is not None:
         where.append("d.length <= ?")
         params.append(query.max_length)
+    if query.passed_filter:
+        # One EXISTS per named decision, so a design must have passed all of
+        # them rather than any. A design with no decision row at all fails,
+        # which is `filters/models.py` rule 2 -- a missing verdict is not a
+        # pass -- applied at selection time.
+        for name in query.passed_filter:
+            where.append(
+                "EXISTS (SELECT 1 FROM decisions x JOIN runs xr ON xr.run_id = x.run_id "
+                "WHERE x.design_id = d.design_id AND x.kind = 'filter' "
+                "AND x.passed AND x.name = ? AND ("
+                f"xr.run_id IN ({_placeholders(query.filter_runs)}) OR "
+                f"xr.name IN ({_placeholders(query.filter_runs)})))"
+            )
+            params.append(name)
+            params.extend(query.filter_runs)
+            params.extend(query.filter_runs)
+
     if query.exclude_scored_by_run:
         where.append(
             "d.design_id NOT IN "

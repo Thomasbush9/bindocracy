@@ -1608,3 +1608,134 @@ def of3_loaded(of3_configs):
         preflight=preflight_of3_upstream(general, model),
         general_path=Path("general.yaml"), model_path=Path("of3.yaml"),
     )
+
+
+# --- the mosaic scorer, shared by several test modules ----------------------
+
+@pytest.fixture
+def scorer_configs(tmp_path):
+    """A validated (GeneralConfig, ScorerConfig) pair with real paths."""
+    from bindocracy.config.models import GeneralConfig
+    from bindocracy.tools.scorer.config import ScorerConfig
+
+    target = tmp_path / "target.fasta"
+    target.write_text(">t\nACDEFGHIKLMNPQRSTVWY\n")
+    msa = tmp_path / "t.a3m"
+    msa.write_text(">t\nACDEFGHIKLMNPQRSTVWY\n")
+    container = tmp_path / "mosaic.sif"; container.write_bytes(b"x")
+    wrapper = tmp_path / "exec.sh"; wrapper.write_text("#!/bin/sh\n")
+    weights = tmp_path / "weights"; weights.mkdir()
+    driver = tmp_path / "d.py"; driver.write_text("# fixture\n")
+    (tmp_path / "scratch").mkdir()
+
+    general = GeneralConfig.model_validate({
+        "schema_version": 1,
+        "campaign": {"name": "c"},
+        "target": {"name": "t", "sequence_fasta": str(target),
+                   "msa": str(msa), "chain_id": "A", "hotspots": []},
+        "cluster": {"executor": "slurm", "account": "a", "default_partition": "p"},
+    })
+    model = ScorerConfig.model_validate({
+        "schema_version": 1, "name": "s", "tool": "scorer",
+        "design_set": str(tmp_path / "set.json"),
+        "model": {"name": "boltz2", "recycling_steps": 3, "sampling_steps": 25,
+                  "num_samples": 1, "use_target_msa": True},
+        "readers": {"complex": True},
+        "sharding": {"jobs": 1},
+        "driver": {"script": str(driver)},
+        "runtime": {"container": str(container), "weights": str(weights),
+                    "exec_wrapper": str(wrapper),
+                    "scratch": str(tmp_path / "scratch" / "m")},
+        "resources": {"gpus": 1, "cpus": 8, "memory_gb": 32, "walltime": "2:00:00"},
+    })
+    return general, model
+
+
+# --- the custom optimizer ---------------------------------------------------
+
+OPTIMIZE_DRIVER_PATH = (
+    Path(__file__).resolve().parents[1] / "drivers" / "optimize" / "run_optimizer.py"
+)
+POINT_MUTATE = Path(__file__).resolve().parent / "fixtures" / "optimize" / "point_mutate.py"
+
+
+def write_optimize_configs(root: Path, *, script: Path | None = None, **overrides
+                           ) -> tuple[Path, Path]:
+    """A valid general + optimize pair over a three-design set."""
+    target_fasta = root / "opt_target.fasta"
+    target_fasta.write_text(f">dio3\n{CHAI1_TARGET}\n")
+    msa = root / "opt_target.a3m"
+    msa.write_text(f">dio3\n{CHAI1_TARGET}\n>hom\n{CHAI1_TARGET}\n")
+    driver = root / "run_optimizer.py"
+    driver.write_text(OPTIMIZE_DRIVER_PATH.read_text())
+    optimizer = script or (root / "point_mutate.py")
+    if script is None:
+        optimizer.write_text(POINT_MUTATE.read_text())
+    manifest = _write_chai1_design_set(
+        root / "opt_set", ["MKTVLIWAFGSDEH", "MKTAAAGSDEHKLM", "GGGGSGGGGSGGGG"]
+    )
+
+    general_path = root / "opt_general.yaml"
+    general_path.write_text(yaml.safe_dump({
+        "schema_version": 1,
+        "campaign": {"name": "test-campaign"},
+        "target": {"name": "dio3-cut", "sequence_fasta": str(target_fasta),
+                   "msa": str(msa), "chain_id": "A", "hotspots": []},
+        "cluster": {"executor": "slurm", "account": "a", "default_partition": "p"},
+    }, sort_keys=False))
+
+    optimize = {
+        "schema_version": 1, "name": "refine_test", "tool": "optimize",
+        "design_set": str(manifest),
+        "script": str(optimizer),
+        "driver_script": str(driver),
+        "args": ["--children", "2"],
+        "inputs": ["sequence"],
+        "loss_models": [],
+        "metrics": {
+            "loss": {"direction": "min"},
+            "n_mutations": {"direction": "none"},
+        },
+        "max_children": 2,
+        "seed": 7,
+        "sharding": {"jobs": 1},
+        "runtime": {},
+        "resources": {"gpus": 1, "cpus": 4, "memory_gb": 16, "walltime": "01:00:00"},
+    }
+    for section, values in overrides.items():
+        if isinstance(values, dict) and isinstance(optimize.get(section), dict):
+            optimize[section].update(values)
+        else:
+            optimize[section] = values
+    model_path = root / "optimize.yaml"
+    model_path.write_text(yaml.safe_dump(optimize, sort_keys=False))
+    return general_path, model_path
+
+
+@pytest.fixture
+def optimize_config_files(tmp_path: Path) -> tuple[Path, Path]:
+    return write_optimize_configs(tmp_path)
+
+
+@pytest.fixture
+def optimize_configs(optimize_config_files):
+    from bindocracy.config.load import load_yaml
+    from bindocracy.config.models import GeneralConfig
+    from bindocracy.tools.optimize.config import OptimizeConfig
+
+    general_path, model_path = optimize_config_files
+    return load_yaml(general_path, GeneralConfig), load_yaml(model_path, OptimizeConfig)
+
+
+@pytest.fixture
+def optimize_loaded(optimize_configs, optimize_config_files):
+    from bindocracy.config.load import LoadedConfigs
+    from bindocracy.tools.optimize.preflight import preflight_optimize
+
+    general, model = optimize_configs
+    general_path, model_path = optimize_config_files
+    return LoadedConfigs(
+        general=general, model=model,
+        preflight=preflight_optimize(general, model),
+        general_path=general_path, model_path=model_path,
+    )

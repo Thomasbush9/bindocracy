@@ -193,43 +193,6 @@ def scorer_driver():
     return module
 
 
-@pytest.fixture
-def scorer_configs(tmp_path):
-    """A validated (GeneralConfig, ScorerConfig) pair with real paths."""
-    from bindocracy.config.models import GeneralConfig
-    from bindocracy.tools.scorer.config import ScorerConfig
-
-    target = tmp_path / "target.fasta"
-    target.write_text(">t\nACDEFGHIKLMNPQRSTVWY\n")
-    msa = tmp_path / "t.a3m"
-    msa.write_text(">t\nACDEFGHIKLMNPQRSTVWY\n")
-    container = tmp_path / "mosaic.sif"; container.write_bytes(b"x")
-    wrapper = tmp_path / "exec.sh"; wrapper.write_text("#!/bin/sh\n")
-    weights = tmp_path / "weights"; weights.mkdir()
-    driver = tmp_path / "d.py"; driver.write_text("# fixture\n")
-    (tmp_path / "scratch").mkdir()
-
-    general = GeneralConfig.model_validate({
-        "schema_version": 1,
-        "campaign": {"name": "c"},
-        "target": {"name": "t", "sequence_fasta": str(target),
-                   "msa": str(msa), "chain_id": "A", "hotspots": []},
-        "cluster": {"executor": "slurm", "account": "a", "default_partition": "p"},
-    })
-    model = ScorerConfig.model_validate({
-        "schema_version": 1, "name": "s", "tool": "scorer",
-        "design_set": str(tmp_path / "set.json"),
-        "model": {"name": "boltz2", "recycling_steps": 3, "sampling_steps": 25,
-                  "num_samples": 1, "use_target_msa": True},
-        "readers": {"complex": True},
-        "sharding": {"jobs": 1},
-        "driver": {"script": str(driver)},
-        "runtime": {"container": str(container), "weights": str(weights),
-                    "exec_wrapper": str(wrapper),
-                    "scratch": str(tmp_path / "scratch" / "m")},
-        "resources": {"gpus": 1, "cpus": 8, "memory_gb": 32, "walltime": "2:00:00"},
-    })
-    return general, model
 
 
 # --- deprecation -------------------------------------------------------------

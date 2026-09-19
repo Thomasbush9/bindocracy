@@ -192,25 +192,46 @@ class ScoringModel(ConfigModel):
         return self
 
 
-class Readers(ConfigModel):
-    """Which measurements are taken from the fold.
+# `readers.epitope` and `readers.inverse_folding` are not conditions: they do
+# not fold anything. They were accepted here, validated, launched, and then
+# dropped by `launch.py::_readers`, which only ever emitted `complex` and
+# `monomer` -- so a run asking for them succeeded and measured nothing, with no
+# error anywhere. They moved to the `functions` block on 2026-09-11.
+#
+# The fields stay on this model because `configs_of()` validates a manifest's
+# stored config with `extra="forbid"`, and all twelve archived scorer configs
+# name all four keys. Removing them would strand every historical run to save
+# two lines. Preflight refuses them when true instead -- and no archived config
+# ever set either true, so nothing that once worked stops working.
+MOVED_TO_FUNCTIONS = {
+    "epitope": "geometry over a saved pose; costs no GPU",
+    "inverse_folding": "loads a second model",
+}
 
-    This is the coarse-versus-fine switch, and it is a set of flags rather than
-    a mode because the groups are independent and three of the four cost no
-    extra inference. `complex` reads the confidence tensors the fold already
-    returned; `epitope` reads its coordinates. Only `monomer` costs a second
-    pass, and only `inverse_folding` loads another model.
+
+class Readers(ConfigModel):
+    """Which CONDITIONS are folded. Each costs a GPU pass per design.
+
+    A reader is a thing that gets folded, not a thing that is computed. That
+    distinction is the whole reason the block was split: `complex` and
+    `monomer` are inference, while epitope geometry reads a pose already on
+    disk and costs nothing. Putting three cost classes behind one name is what
+    let two of them be silently unimplemented for a month.
     """
 
     complex: bool = True
     monomer: bool = False
+    # Accepted, never honoured. See MOVED_TO_FUNCTIONS.
     epitope: bool = False
     inverse_folding: bool = False
 
     @model_validator(mode="after")
     def require_one(self) -> Self:
-        if not any((self.complex, self.monomer, self.epitope, self.inverse_folding)):
-            raise ValueError("a scoring run with no readers enabled would measure nothing")
+        if not (self.complex or self.monomer):
+            raise ValueError(
+                "a scoring run with no conditions enabled would fold nothing; "
+                "set readers.complex or readers.monomer"
+            )
         return self
 
 

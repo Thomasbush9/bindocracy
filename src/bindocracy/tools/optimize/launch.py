@@ -29,6 +29,8 @@ def optimize_launch_spec(
     task = task_of(manifest, task_id)
     run_dir = manifest.directory
     driver = run_dir / manifest.provenance["driver"].path
+    archived_script = manifest.provenance.get("optimizer_script")
+    script = run_dir / archived_script.path if archived_script else model.script
     task_dir = run_dir / task.directory
 
     # From the manifest, never the live config: a resumed task must not be
@@ -61,7 +63,7 @@ def optimize_launch_spec(
         str(driver),
         "--design-set", str(design_fasta),
         "--design-set-manifest", str(design_manifest),
-        "--script", str(model.script),
+        "--script", str(script),
         "--target-fasta", str(general.target.sequence_fasta),
         "--target-chain", general.target.chain_id,
         "--resolved", str(resolved),

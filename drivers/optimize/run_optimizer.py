@@ -136,6 +136,15 @@ def run_script(argv: list[str], timeout: int, work_dir: Path) -> tuple[bool, int
     """
     environment = dict(os.environ)
     environment.setdefault("PYTHONUNBUFFERED", "1")
+    # Archived plans keep the helper beside this driver and the user script.
+    # The source-tree driver also supports standalone validation without a
+    # bindocracy installation in the script's interpreter.
+    helper_dir = Path(__file__).resolve().parent
+    if not (helper_dir / "bindocracy_io.py").is_file():
+        helper_dir = helper_dir.parent
+    if (helper_dir / "bindocracy_io.py").is_file():
+        previous = environment.get("PYTHONPATH")
+        environment["PYTHONPATH"] = str(helper_dir) + (os.pathsep + previous if previous else "")
     try:
         result = subprocess.run(
             argv, timeout=timeout, cwd=str(work_dir), env=environment, check=False

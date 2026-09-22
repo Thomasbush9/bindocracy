@@ -37,6 +37,7 @@ from bindocracy.store.records import MetricRecord
 
 INPUT_FILE = "inputs.jsonl"
 OUTPUT_FILE = "metrics.jsonl"
+IO_HELPER = Path(__file__).resolve().parents[3] / "drivers" / "bindocracy_io.py"
 
 
 class FunctionError(RuntimeError):
@@ -52,6 +53,7 @@ class FunctionResult:
     n_inputs: int
     n_scored: int
     script_sha256: str | None = None
+    helper_sha256: str | None = None
     seconds: float = 0.0
     failures: dict[str, int] = field(default_factory=dict)
     incomplete: dict[int, tuple[str, ...]] = field(default_factory=dict)
@@ -64,13 +66,17 @@ class FunctionResult:
             "n_scored": self.n_scored,
             "n_metric_rows": len(self.records),
             "script_sha256": self.script_sha256,
+            "helper_sha256": self.helper_sha256,
             "seconds": round(self.seconds, 2),
             "failures": dict(self.failures),
             "n_incomplete": len(self.incomplete),
         }
 
 
-def command_for(function: ScoringFunction, inputs: Path, outputs: Path) -> tuple[str, ...]:
+def command_for(
+    function: ScoringFunction, inputs: Path, outputs: Path,
+    *, bind_paths: tuple[Path, ...] = (),
+) -> tuple[str, ...]:
     """The argv for one custom function.
 
     The script is always passed `--inputs` and `--outputs`, in that order,
@@ -79,7 +85,14 @@ def command_for(function: ScoringFunction, inputs: Path, outputs: Path) -> tuple
     """
     if function.container is not None:
         # The image's own interpreter, by the name it has inside.
-        prefix = ("singularity", "exec", "--cleanenv", str(function.container), "python")
+        bindings = tuple(
+            part for path in dict.fromkeys((inputs.parent.resolve(), *bind_paths))
+            for part in ("--bind", str(path))
+        )
+        prefix = (
+            "singularity", "exec", "--cleanenv", *bindings,
+            str(function.container), "python",
+        )
     else:
         # `sys.executable`, not "python": there is no bare `python` on this
         # cluster's PATH, and a host function should run under the harness's
@@ -127,15 +140,28 @@ def run_custom(
     compute a `score` without colliding and the stored column always says which
     function produced it -- the same reason a model's metrics carry its name.
     """
-    digest = preflight_custom(function)
+    preflight_custom(function)
+    if len({row.index for row in inputs}) != len(inputs):
+        raise FunctionError("scoring inputs contain duplicate indices")
+    if Path(function.script).name == IO_HELPER.name:
+        raise FunctionError(f"scoring script cannot be named {IO_HELPER.name}")
 
+    work_dir = work_dir.resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
-    # Archive the script beside its own output. The config records a path; this
-    # records the file, so the run stays readable after the original moves.
-    shutil.copyfile(function.script, work_dir / Path(function.script).name)
+    # Execute the archived bytes, not the original path that may change while
+    # a run is starting. The stdlib-only helper travels into any container.
+    archived_script = work_dir / Path(function.script).name
+    if Path(function.script).resolve() != archived_script:
+        shutil.copyfile(function.script, archived_script)
+    archived_helper = work_dir / IO_HELPER.name
+    shutil.copyfile(IO_HELPER, archived_helper)
+    digest = sha256_file(archived_script)
+    helper_digest = sha256_file(archived_helper)
+    archived_function = function.model_copy(update={"script": archived_script})
 
     input_path = work_dir / INPUT_FILE
     output_path = work_dir / OUTPUT_FILE
+    output_path.unlink(missing_ok=True)
     wanted = [row for row in inputs if _has_required_inputs(row, function)]
     skipped = len(inputs) - len(wanted)
     n_written = write_inputs(input_path, wanted, function.inputs)
@@ -150,7 +176,13 @@ def run_custom(
     if n_written:
         try:
             completed = subprocess.run(
-                command_for(function, input_path, output_path),
+                command_for(
+                    archived_function, input_path, output_path,
+                    bind_paths=tuple(
+                        row.structure.resolve().parent for row in wanted
+                        if row.structure is not None
+                    ),
+                ),
                 capture_output=True, text=True, check=False,
                 timeout=function.timeout_seconds,
             )
@@ -173,41 +205,51 @@ def run_custom(
     incomplete: dict[int, tuple[str, ...]] = {}
     scored: set[int] = set()
 
-    for output in read_outputs(output_path):
-        source = by_index.get(output.index)
-        if source is None:
-            failures["unknown_index"] = failures.get("unknown_index", 0) + 1
-            continue
-        if output.failed:
-            reason = output.failed.split(":")[0][:60]
-            failures[reason] = failures.get(reason, 0) + 1
-            continue
-        missing = declared_but_absent(specs, output.metrics)
-        if missing:
-            incomplete[output.index] = missing
-        unknown = sorted(set(output.metrics) - set(specs))
-        if unknown:
-            raise FunctionError(
-                f"custom function {function.name!r} returned undeclared metric(s) "
-                f"{unknown} for design index {output.index}. Declare them in the "
-                "config with a direction, or stop emitting them -- a metric whose "
-                "direction nothing records sorts backwards silently."
+    seen: set[int] = set()
+    try:
+        for output in read_outputs(output_path):
+            source = by_index.get(output.index)
+            if source is None:
+                raise FunctionError(f"unknown design index {output.index} in scoring output")
+            if output.index in seen:
+                raise FunctionError(f"duplicate design index {output.index} in scoring output")
+            seen.add(output.index)
+            if output.failed is not None:
+                reason = output.failed.split(":")[0][:60]
+                failures[reason] = failures.get(reason, 0) + 1
+                continue
+            missing = declared_but_absent(specs, output.metrics)
+            if missing:
+                incomplete[output.index] = missing
+            unknown = sorted(set(output.metrics) - set(specs))
+            if unknown:
+                raise FunctionError(
+                    f"custom function {function.name!r} returned undeclared metric(s) "
+                    f"{unknown} for design index {output.index}. Declare them in the "
+                    "config with a direction, or stop emitting them."
+                )
+            if not output.metrics:
+                continue
+            records.extend(
+                metric_records(
+                    run_id=run_id,
+                    design_id=source.design_id,
+                    model=_prefix_for(function, source),
+                    values=output.metrics,
+                    replicate=replicate,
+                    measured_at=measured_at,
+                    details={
+                        "function": function.name, "script_sha256": digest,
+                        "helper_sha256": helper_digest,
+                    },
+                    specs=specs,
+                )
             )
-        if not output.metrics:
-            continue
-        records.extend(
-            metric_records(
-                run_id=run_id,
-                design_id=source.design_id,
-                model=_prefix_for(function, source),
-                values=dict(output.metrics),
-                replicate=replicate,
-                measured_at=measured_at,
-                details={"function": function.name, "script_sha256": digest},
-                specs=specs,
-            )
-        )
-        scored.add(output.index)
+            scored.add(output.index)
+    except (TypeError, ValueError) as error:
+        raise FunctionError(f"custom function {function.name!r}: {error}") from error
+    if missing_outputs := len(wanted) - len(seen):
+        failures["missing_output"] = failures.get("missing_output", 0) + missing_outputs
 
     return FunctionResult(
         name=function.name,
@@ -215,6 +257,7 @@ def run_custom(
         n_inputs=len(inputs),
         n_scored=len(scored),
         script_sha256=digest,
+        helper_sha256=helper_digest,
         seconds=time.time() - started,
         failures=failures,
         incomplete=incomplete,

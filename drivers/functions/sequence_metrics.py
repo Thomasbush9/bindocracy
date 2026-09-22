@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import itertools
-import json
 
 # Average residue masses in daltons, water excluded. Matches the table the
 # mosaic benchmark's `controls()` uses, so a number computed here and one
@@ -80,29 +79,15 @@ def metrics_for(sequence: str) -> dict[str, float]:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--inputs", required=True)
-    p.add_argument("--outputs", required=True)
-    args = p.parse_args()
+    from bindocracy_io import RejectCandidate, run_scoring
 
-    with open(args.inputs) as source, open(args.outputs, "w") as sink:
-        for line in source:
-            line = line.strip()
-            if not line:
-                continue
-            row = json.loads(line)
-            sequence = (row.get("sequence") or "").strip().upper()
-            if not sequence:
-                sink.write(
-                    json.dumps({"index": row["index"], "failed": "empty sequence"})
-                    + "\n"
-                )
-                continue
-            sink.write(
-                json.dumps({"index": row["index"], "metrics": metrics_for(sequence)})
-                + "\n"
-            )
-    return 0
+    def score(candidate, args):
+        sequence = (candidate.get("sequence") or "").strip().upper()
+        if not sequence:
+            raise RejectCandidate("empty sequence")
+        return metrics_for(sequence)
+
+    return run_scoring(score, parser=argparse.ArgumentParser(description=__doc__))
 
 
 if __name__ == "__main__":

@@ -1668,6 +1668,8 @@ def write_optimize_configs(root: Path, *, script: Path | None = None, **override
     msa.write_text(f">dio3\n{CHAI1_TARGET}\n>hom\n{CHAI1_TARGET}\n")
     driver = root / "run_optimizer.py"
     driver.write_text(OPTIMIZE_DRIVER_PATH.read_text())
+    helper = OPTIMIZE_DRIVER_PATH.parent.parent / "bindocracy_io.py"
+    (root / helper.name).write_text(helper.read_text())
     optimizer = script or (root / "point_mutate.py")
     if script is None:
         optimizer.write_text(POINT_MUTATE.read_text())

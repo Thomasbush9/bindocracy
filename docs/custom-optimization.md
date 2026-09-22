@@ -73,6 +73,44 @@ follows.
 `<python>` is the interpreter inside your container (`runtime.container_python`),
 or the harness's own if you declared no container.
 
+
+### Shared Python I/O helper
+
+Use the same portable module as custom scorers; replace the callback, not the
+transport. This small example appends a residue solely to demonstrate the I/O
+contract, not a scientific optimization:
+
+```python
+from bindocracy_io import RejectCandidate, run_optimization
+
+def optimize(parent, context, args):
+    sequence = parent.get("sequence")
+    if not sequence:
+        raise RejectCandidate("sequence is required")
+    yield {"sequence": sequence + "A", "metrics": {"edit_cost": 1}}
+
+if __name__ == "__main__":
+    run_optimization(optimize)
+```
+
+Its config must allow `length_delta: 1` and declare `edit_cost` with a direction.
+The callback yields zero or more children. The helper attaches `parent_index`
+and consecutive `child` ordinals, parses `--inputs`, `--outputs`, `--context`,
+loads context once, and flushes each JSONL row. Child metrics are optional.
+Pass `parser=your_argument_parser` for script-specific options.
+
+Raise `RejectCandidate` for an expected refusal; other exceptions fail the
+process rather than hiding programming errors. Already emitted children remain
+available for collection. The host still owns sequence, length, child-limit,
+metric-declaration and artifact-path validation; it never trusts a script merely
+because that script used the helper.
+
+New optimizer plans archive the user script and `drivers/bindocracy_io.py`
+beside the driver, and execute those archived bytes. No bindocracy installation
+is needed inside the container. Standalone scripts can copy the helper beside
+themselves or put `drivers/` on `PYTHONPATH`. The existing validator supplies it
+automatically. Scripts that directly read/write the JSONL contract remain valid.
+
 ### `--context CTX.json` — written once
 
 Everything that does not vary per design. It is a separate file rather than a
@@ -278,11 +316,13 @@ real frozen set, which is what the run will see.
 
 ## Worked examples
 
-**`tests/fixtures/optimize/point_mutate.py`** — complete, minimal, imports
-nothing from this project, and covered by the test suite. Not a useful
-optimizer; it is the shortest thing that exercises every part of the contract
-(n→m children, a declared metric, a failure row, a written trajectory, a parent
-it declines to touch). Copy it and replace `optimize()`.
+**`tests/fixtures/optimize/point_mutate.py`** — complete, minimal, uses the shared
+stdlib-only I/O helper, and is covered by the test suite. Not a useful optimizer;
+it exercises n→m children, declared metrics, explicit refusal, trajectories and
+parents deliberately left untouched. Copy it and replace the callback.
+
+**`examples/optimizers/foreign_surface_tuner.py`** — a worked optimizer using
+`run_optimization`, custom arguments and one-time setup outside the callback.
 
 **`examples/optimizers/mosaic_refine.py`** — the real thing, against mosaic.
 The difference from the hallucination driver is one line:
@@ -319,8 +359,10 @@ is the only way to tell "converged" from "wandered" after the fact. Report
 `start_loss` beside `loss` for the same reason: a final loss of 0.31 means
 nothing without knowing it began at 0.33.
 
-**One parent must not kill the shard.** Catch per-parent, write a `failed` row,
-continue. Optimization cost is variable in a way scoring cost is not.
+**Distinguish refusal from a bug.** Raise `RejectCandidate` for an expected
+per-parent refusal and continue. Unexpected exceptions should fail the process;
+catching every exception would make a broken optimizer look like a biological
+failure.
 
 **Round depth.** Optimizing children gives a parent chain, which is what you
 want, but the generation number is not stored as a column — it is reconstructed

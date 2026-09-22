@@ -17,7 +17,6 @@ are merely nearby, and the question here is whether atoms touch.
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import sys
 
@@ -141,44 +140,34 @@ def metrics_for(path: str, binder_length: int, hotspots: set[int],
 
 
 def main() -> int:
+    from bindocracy_io import RejectCandidate, run_scoring
+
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--inputs", required=True)
-    p.add_argument("--outputs", required=True)
     p.add_argument("--hotspots", default="",
                    help="comma-separated 1-based TARGET FASTA positions, e.g. "
                         "110,112,131. Not author numbering, and no chain letter "
                         "-- see parse_hotspots for why neither is portable.")
     p.add_argument("--cutoff", type=float, default=DEFAULT_CUTOFF,
                    help="heavy-atom contact distance in angstroms")
-    args = p.parse_args()
-
-    hotspots = parse_hotspots(args.hotspots)
+    # Parse function-specific options once, leaving contract paths to the helper.
+    options, _ = p.parse_known_args()
+    hotspots = parse_hotspots(options.hotspots)
     if not hotspots:
         print("no hotspots given; coverage and offset will be reported as absent",
               file=sys.stderr)
 
-    with open(args.inputs) as source, open(args.outputs, "w") as sink:
-        for line in source:
-            line = line.strip()
-            if not line:
-                continue
-            row = json.loads(line)
-            try:
-                values = metrics_for(
-                    row["structure"], len(row.get("sequence") or ""),
-                    hotspots, args.cutoff,
-                )
-                # A NaN is an absent measurement, not a zero. Dropping it here
-                # means no row is stored, which is the honest record.
-                values = {k: v for k, v in values.items() if not math.isnan(v)}
-                sink.write(
-                    json.dumps({"index": row["index"], "metrics": values}) + "\n")
-            except Exception as error:  # noqa: BLE001 - one design must not stop the rest
-                sink.write(json.dumps({
-                    "index": row["index"],
-                    "failed": f"{type(error).__name__}: {error}"[:200],
-                }) + "\n")
-    return 0
+    def score(candidate, args):
+        try:
+            values = metrics_for(
+                candidate["structure"], len(candidate.get("sequence") or ""),
+                hotspots, args.cutoff,
+            )
+        except ValueError as error:
+            raise RejectCandidate(str(error)) from error
+        # An intentionally absent measurement is not a zero.
+        return {key: value for key, value in values.items() if not math.isnan(value)}
+
+    return run_scoring(score, parser=p)
 
 
 if __name__ == "__main__":

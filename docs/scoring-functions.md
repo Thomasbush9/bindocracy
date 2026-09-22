@@ -32,18 +32,53 @@ A script that reads a JSONL of designs and writes a JSONL of metrics. Any
 language, any container, or none. No plugin, no `register()` line, nothing
 under `src/`.
 
+Write a standalone function-run config (not a `functions:` block in a folding
+scorer config):
+
 ```yaml
-functions:
-  sequence: true            # built-in
-  custom:
-    - name: sasa
-      script: /abs/path/to/buried_sasa.py
-      container: images/mosaic.sif       # optional; absent = the harness venv
-      inputs: [structure, sequence]
-      metrics:
-        buried_sasa:  {direction: max, unit: angstrom^2}
-        n_hbonds:     {direction: max}
+schema_version: 1
+name: sasa-pass
+tool: function
+design_set: /abs/sets/<digest>.json
+structures_from: boltz2-evaluation-run   # required only for structure input
+function:
+  name: sasa
+  script: /abs/path/to/buried_sasa.py
+  container: /abs/images/geometry.sif   # optional; absent = the harness venv
+  inputs: [structure, sequence]
+  prefix: source_model
+  metrics:
+    buried_sasa: {direction: max, unit: angstrom^2}
+    n_hbonds:    {direction: max}
 ```
+
+Freeze the database selection, then run and ingest:
+
+```bash
+bindocracy designset build campaign.duckdb --out-dir sets/ \
+  --tool mosaic --min-length 60 --max-length 100 \
+  --created-after 2026-09-01T00:00:00Z --created-before 2026-10-01T00:00:00Z
+bindocracy function run campaign.duckdb \
+  --general general.yaml --config function.yaml --output-dir runs/sasa-pass
+```
+
+Creation windows refer to **design creation time**, including the lower bound
+and excluding the upper bound. A timezone is required; offsets are accepted.
+For loss-based selection, use `filter apply` with an explicit metric, aggregation,
+threshold and evaluator run, then freeze with `--passed-filter` and `--filter-run`.
+Missing measurements do not pass. The same frozen set can feed an optimizer.
+
+The command verifies the frozen members against the named database, archives
+the inputs and script, executes the function, writes `collected.json`, then
+ingests atomically. It requires a **new output directory** and does not overwrite
+an earlier attempt. Structure inputs resolve from the specified evaluator run's
+complex prediction at replicate 0; absent or ambiguous poses are refused before
+execution. The script never opens the database.
+
+This command is synchronous: it does not submit Slurm jobs or configure GPU
+access and model-weight mounts. GPU-backed custom scripts still need an
+appropriate allocated-job/container launcher. The shared I/O helper itself
+requires only Python's standard library.
 
 The script is invoked as:
 
@@ -54,7 +89,7 @@ The script is invoked as:
 **Input**, one line per design — only the fields you asked for in `inputs`:
 
 ```json
-{"index": 0, "design_id": "…", "sequence": "MKT…", "structure": "/abs/pose.pdb"}
+{"index": 0, "sequence": "MKT…", "structure": "/abs/pose.pdb"}
 ```
 
 **Output**, one line per design:
@@ -64,8 +99,41 @@ The script is invoked as:
 {"index": 1, "failed": "no interface found"}
 ```
 
-`tests/fixtures/functions/net_charge.py` is a complete working example, and it
-imports nothing from this project.
+Python scripts can omit the argument parser and JSONL loop entirely:
+
+```python
+from bindocracy_io import RejectCandidate, run_scoring
+
+def score(candidate, args):
+    sequence = candidate.get("sequence")
+    if not sequence:
+        raise RejectCandidate("sequence is required")
+    return {"net_charge_at_ph": sequence.count("K") + sequence.count("R")
+            - sequence.count("D") - sequence.count("E")}
+
+if __name__ == "__main__":
+    run_scoring(score)
+```
+
+Declare the callback's metric names and directions in the function config.
+`drivers/bindocracy_io.py` is copied beside the archived script automatically;
+containers do not need the bindocracy package installed. For standalone local
+development, put that module beside your script or add `drivers/` to `PYTHONPATH`.
+Pass an `argparse.ArgumentParser` as `parser=` to add your own options; the
+helper owns `--inputs` and `--outputs` and passes the parsed namespace to the
+callback. Initialize expensive models once, outside the per-candidate work.
+
+The helper handles row identity, JSONL serialization, finite numeric metrics,
+and explicit refusals. `RejectCandidate` writes a failed row and continues;
+unexpected exceptions fail the process. Do not return `index` yourself.
+The host additionally rejects undeclared metrics, duplicate/unknown output
+indices and malformed rows. An unterminated, invalid final JSON line can be
+salvaged as a missing output, but never makes a run fully successful.
+Explicit failures, omitted candidates or missing declared metrics yield
+`partial`/`failed`, not `succeeded`.
+
+`tests/fixtures/functions/net_charge.py` is a complete working example with
+custom arguments. Raw JSONL scripts in any language remain supported.
 
 ### Tier 2 — a mosaic-backed model
 
@@ -101,10 +169,10 @@ function declaring it is refused — the same reason `protenix_mini` and
 **Return only what you declared.** A metric that appears in the output but not
 the config aborts the run rather than being stored with an unknown meaning.
 
-**Your bytes are hashed and archived.** The script's sha256 goes into every
-metric row's `details`, and a copy is kept beside the output. A run records
-which bytes scored it, not which path they were read from, so editing a script
-between two runs cannot make them look comparable.
+**Your bytes are hashed and archived.** The script and portable helper are
+archived, and their SHA-256 hashes go into metric details. The archived script
+is what executes. Editing the original between runs cannot make the recorded
+bytes silently refer to different code.
 
 ## What a function does not get
 
@@ -112,9 +180,9 @@ A `design_id` — it keys on `index`, the design-set position, for the same
 reason the design-set FASTA carries an index rather than an ID. The join back
 to a design happens host-side.
 
-A design without a required input is **counted, not dropped**: a function
-asking for `structure` cannot score a design that was never folded, and that
-is a fact worth recording rather than a silent omission.
+The standalone command refuses missing required structures before execution.
+The lower-level `run_custom` library also supports mixed inputs: a design
+without a required input is counted as missing rather than silently dropped.
 
 ## Built-ins
 

@@ -23,6 +23,7 @@ from bindocracy.config.models import GeneralConfig, ResourceConfig
 from bindocracy.filters.config import FilterConfig
 from bindocracy.filters.config import summarise as summarise_filter
 from bindocracy.filters.run import FilterRunError, run_filter
+from bindocracy.functions.run import FunctionRunConfig, FunctionRunError, run_function
 from bindocracy.runs import ingest_bundle, ingest_collected, write_collected
 from bindocracy.runs.designset import DesignSet, DesignSetError
 from bindocracy.runs.designset import summarise as summarise_set
@@ -52,6 +53,8 @@ designset_app = typer.Typer(help="Freeze a database query into a reusable candid
 app.add_typer(designset_app, name="designset")
 filter_app = typer.Typer(help="Apply a stored filter policy to a frozen design set.")
 app.add_typer(filter_app, name="filter")
+function_app = typer.Typer(help="Score a frozen database selection with a custom function.")
+app.add_typer(function_app, name="function")
 
 
 @target_app.command("prepare-msa")
@@ -103,6 +106,12 @@ def designset_build(
     )] = None,
     min_length: Annotated[int | None, typer.Option("--min-length", min=1)] = None,
     max_length: Annotated[int | None, typer.Option("--max-length", min=1)] = None,
+    created_after: Annotated[str | None, typer.Option(
+        "--created-after", help="Include designs created at/after this timezone-aware ISO timestamp.",
+    )] = None,
+    created_before: Annotated[str | None, typer.Option(
+        "--created-before", help="Include designs created before this timezone-aware ISO timestamp.",
+    )] = None,
     distinct_sequences: Annotated[bool, typer.Option(
         "--distinct-sequences", help="Keep one design per identical sequence.",
     )] = False,
@@ -117,7 +126,7 @@ def designset_build(
     """
     if query_file is not None:
         flags = (tool, run_name, passed_filter, filter_run, exclude_scored_by,
-                 min_length, max_length, limit)
+                 min_length, max_length, created_after, created_before, limit)
         if any(value for value in flags) or distinct_sequences:
             raise typer.BadParameter(
                 "--query replaces the narrowing flags; pass one or the other",
@@ -138,6 +147,8 @@ def designset_build(
                 exclude_scored_by_run=tuple(exclude_scored_by or ()),
                 min_length=min_length,
                 max_length=max_length,
+                created_after=created_after,
+                created_before=created_before,
                 distinct_sequences=distinct_sequences,
                 limit=limit,
             )
@@ -248,6 +259,42 @@ def filter_apply(
         raise typer.Exit(code=2) from error
     typer.echo("ingested" if inserted else "already ingested; nothing to do")
     typer.echo(f"run: {collected.run.run_id}")
+
+
+@function_app.command("run")
+def function_run(
+    database: Annotated[Path, typer.Argument(help="Campaign database to read and write.")],
+    general: Annotated[Path, typer.Option("--general", help="General campaign YAML.")],
+    config: Annotated[Path, typer.Option("--config", help="Function run YAML; tool: function.")],
+    output_dir: Annotated[Path, typer.Option(
+        "--output-dir", help="New directory for archived inputs, script, and staging bundle.",
+    )],
+) -> None:
+    """Score frozen candidates, stage the measurements, and atomically ingest them."""
+    try:
+        general_config = load_yaml(general, GeneralConfig)
+        function_config = load_yaml(config, FunctionRunConfig)
+        collected, config_record = run_function(
+            database=database, general=general_config, config=function_config,
+            output_dir=output_dir, general_source=general,
+        )
+        bundle = write_collected(collected, output_dir / "collected.json")
+        target = TargetDigest.model_validate(collected.run.workflow_metadata["target"])
+        with CampaignStore(database) as store:
+            inserted = store.ingest(
+                collected, configs=[config_record], digest=collected.content_hash(),
+                target=(target.name, target.sequence_sha256),
+            )
+    except (
+        ConfigLoadError, FunctionRunError, ValidationError, OSError,
+        IngestConflictError, TargetMismatchError,
+    ) as error:
+        typer.echo(f"Function run error:\n{error}", err=True)
+        raise typer.Exit(code=2) from error
+    typer.echo(f"run: {collected.run.run_id} [{collected.run.status}]")
+    typer.echo(f"scored: {collected.run.n_produced}/{collected.run.n_requested}")
+    typer.echo(f"bundle: {bundle}")
+    typer.echo("ingested" if inserted else "already ingested; nothing to do")
 
 
 @app.callback()

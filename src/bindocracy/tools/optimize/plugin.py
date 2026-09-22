@@ -10,6 +10,7 @@ rather than the database-to-database shape `filters/config.py` describes.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any
 
 from bindocracy.config.load import LoadedConfigs
@@ -42,7 +43,6 @@ class OptimizePlugin(ToolPlugin):
             "target_fasta": loaded.general.target.sequence_fasta,
             "design_set": pre.fasta_path,
             "design_set_manifest": model.design_set,
-            "optimizer_script": model.script,
         }
         if loaded.general.target.msa is not None:
             inputs["target_msa"] = loaded.general.target.msa
@@ -52,7 +52,11 @@ class OptimizePlugin(ToolPlugin):
             jobs=jobs,
             designs_per_task=per_task,
             designs_file=CHILDREN_FILE,
-            archives={"driver": model.driver_script},
+            archives={
+                "driver": model.driver_script,
+                "optimizer_script": model.script,
+                "bindocracy_io": Path(__file__).resolve().parents[4] / "drivers" / "bindocracy_io.py",
+            },
             inputs=inputs,
             # A host-run optimizer has no container. `ToolPlan.container` is
             # typed as one, so the script stands in for it -- it is the thing

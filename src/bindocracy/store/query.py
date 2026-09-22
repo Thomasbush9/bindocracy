@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import duckdb
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from bindocracy.store.records import CandidateType
 
@@ -85,6 +85,12 @@ class DesignQuery(BaseModel):
     min_length: int | None = Field(default=None, gt=0)
     max_length: int | None = Field(default=None, gt=0)
     require_sequence: bool = True
+
+    # Creation time of the DESIGN, not its producing/evaluating run. Require an
+    # explicit timezone so selection does not depend on the caller's location.
+    # Half-open windows compose without counting the boundary twice.
+    created_after: AwareDatetime | None = None
+    created_before: AwareDatetime | None = None
 
     # Skip designs an evaluator has already scored. Named by run, not by tool,
     # because rescoring under a changed protocol is a new run and must not be
@@ -148,6 +154,16 @@ class DesignQuery(BaseModel):
             and self.max_length < self.min_length
         ):
             raise ValueError("max_length cannot be below min_length")
+        return self
+
+    @model_validator(mode="after")
+    def check_creation_window(self) -> DesignQuery:
+        if (
+            self.created_after is not None
+            and self.created_before is not None
+            and self.created_after >= self.created_before
+        ):
+            raise ValueError("created_before must be later than created_after")
         return self
 
 
@@ -286,6 +302,12 @@ def _predicates(query: DesignQuery) -> tuple[list[str], list[Any]]:
     if query.max_length is not None:
         where.append("d.length <= ?")
         params.append(query.max_length)
+    if query.created_after is not None:
+        where.append("d.created_at >= ?")
+        params.append(query.created_after)
+    if query.created_before is not None:
+        where.append("d.created_at < ?")
+        params.append(query.created_before)
     if query.passed_filter:
         # One EXISTS per named decision, so a design must have passed all of
         # them rather than any. A design with no decision row at all fails,

@@ -14,7 +14,7 @@ files, not a Python class.
      "structure": "/abs/path.pdb" # omitted unless requested
     }
 
-**Output**, one line per design (or per replicate)::
+**Output**, one line per design (the caller selects the replicate)::
 
     {"index": 0, "metrics": {"buried_sasa": 812.4}}
     {"index": 1, "failed": "no interface found"}
@@ -32,6 +32,7 @@ design-set FASTA carries an index rather than an ID.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,35 +99,51 @@ def write_inputs(path: Path, rows: Iterable[FunctionInput], wants: Iterable[str]
 
 
 def read_outputs(path: Path) -> Iterator[FunctionOutput]:
-    """Parse the output JSONL, skipping what cannot be trusted.
+    """Parse strict output rows, tolerating only a torn, unterminated last line.
 
-    A torn final line is what a killed process leaves behind. Losing that one
-    row is better than losing the file, so it is skipped rather than raised on
-    -- the caller counts what it got against what it asked for.
+    The caller counts that lost final row as missing output. Malformed complete
+    rows are errors, not absent measurements that could imply a successful run.
     """
     if not path.is_file():
         return
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line:
+    lines = path.read_text().splitlines(keepends=True)
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
             continue
         try:
             row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if "index" not in row:
-            continue
+        except json.JSONDecodeError as error:
+            if number == len(lines) and not line.endswith(("\n", "\r")):
+                return
+            raise ValueError(f"invalid JSON in output line {number}") from error
+        if not isinstance(row, dict):
+            raise TypeError(f"output line {number} must be an object")
+        index = row.get("index")
+        if type(index) is not int or index < 0:
+            raise ValueError(f"output line {number} needs a nonnegative integer index")
         failed = row.get("failed")
+        if failed is not None and (not isinstance(failed, str) or not failed.strip()):
+            raise ValueError(f"output line {number} has an invalid failure reason")
+        metrics = row.get("metrics", {})
+        if not isinstance(metrics, dict):
+            raise TypeError(f"output line {number} metrics must be an object")
+        if failed is not None and metrics:
+            raise ValueError(f"output line {number} cannot report metrics and failure")
         values: dict[str, float] = {}
-        if not failed:
-            for key, value in (row.get("metrics") or {}).items():
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    values[key] = float(value)
-        yield FunctionOutput(
-            index=int(row["index"]),
-            metrics=values,
-            failed=str(failed) if failed else None,
-        )
+        for key, value in metrics.items():
+            if (
+                not isinstance(key, str) or not key
+                or isinstance(value, bool) or not isinstance(value, (int, float))
+            ):
+                raise ValueError(f"output line {number} has an invalid metric {key!r}")
+            try:
+                number_value = float(value)
+            except OverflowError as error:
+                raise ValueError(f"output line {number} has a nonfinite metric {key!r}") from error
+            if not math.isfinite(number_value):
+                raise ValueError(f"output line {number} has a nonfinite metric {key!r}")
+            values[key] = number_value
+        yield FunctionOutput(index=index, metrics=values, failed=failed)
 
 
 def declared_but_absent(

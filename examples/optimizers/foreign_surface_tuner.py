@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """surface_tuner -- a small sequence-only binder polisher.
 
-Written outside bindocracy and deliberately kept that way: standard library
-only, no import from the harness, its own configuration file, its own naming,
-its own idea of what a "run" is. It is here to answer one question -- can a
-script nobody on this campaign wrote be accepted by the optimize contract
-without being rewritten first? -- so everything that is merely a matter of
-taste is done differently on purpose.
+Originally written outside bindocracy, this standard-library-only optimizer
+keeps its own policy and optimization logic. The portable bindocracy_io module
+now handles its JSONL transport; the host supplies that module automatically.
+For standalone use, put the repository's drivers directory on PYTHONPATH.
 
 What it does, scientifically, is modest and honest about it: it removes
 solvent-exposed hydrophobics and walks the binder's net charge toward a target,
@@ -15,8 +13,7 @@ model is consulted, nothing is folded. That is why the run declares
 `loss_models: []` -- a claim that the loss saw no structure predictor at all,
 not an omission.
 
-Its only concession to the host harness is the calling convention, which is
-three flags:
+The calling convention remains three flags:
 
     surface_tuner --inputs IN.jsonl --outputs OUT.jsonl --context CTX.json
 
@@ -35,6 +32,8 @@ import random
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from bindocracy_io import RejectCandidate, run_optimization
 
 __version__ = "0.3.1"
 
@@ -185,97 +184,70 @@ def tune(sequence: str, policy: Policy, rng: random.Random) -> Attempt:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="surface_tuner", description=__doc__)
-    parser.add_argument("--inputs", required=True, type=Path)
-    parser.add_argument("--outputs", required=True, type=Path)
-    parser.add_argument("--context", required=True, type=Path)
     parser.add_argument("--policy", type=str, default=None, help="Policy JSON.")
     parser.add_argument("--variants", type=int, default=2, help="Attempts per parent.")
     parser.add_argument("--version", action="version", version=__version__)
-    options = parser.parse_args(argv)
-
+    # Load script-owned state once; the helper parses the transport flags.
+    options, _ = parser.parse_known_args(argv)
     policy = Policy.load(options.policy)
-    context = json.loads(options.context.read_text())
-
-    # The host tells us how many children it will accept and where writable
-    # space is. Both are honoured rather than argued with.
-    variants = max(1, min(options.variants, int(context.get("max_children", 1))))
-    workspace = Path(context["structure_dir"]) / "surface_tuner"
-    workspace.mkdir(parents=True, exist_ok=True)
-
-    rng = random.Random(context.get("seed", 0))
+    rng = random.Random()
+    initialized = False
     written = 0
 
-    with options.outputs.open("w") as sink:
-        for line in options.inputs.read_text().splitlines():
-            if not line.strip():
+    def optimize(parent, context, args):
+        nonlocal initialized, written
+        if not initialized:
+            rng.seed(context.get("seed", 0))
+            workspace = Path(context["structure_dir"]) / "surface_tuner"
+            workspace.mkdir(parents=True, exist_ok=True)
+            initialized = True
+        variants = max(1, min(args.variants, int(context.get("max_children", 1))))
+        index = parent["index"]
+        sequence = parent["sequence"]
+        if not policy.min_length <= len(sequence) <= policy.max_length:
+            # No opinion is distinct from an explicit refusal.
+            return
+
+        attempts = [tune(sequence, policy, rng) for _ in range(variants)]
+        attempts = [attempt for attempt in attempts if attempt.sequence != sequence]
+        if not attempts:
+            raise RejectCandidate(
+                "no substitution lowered the composition score; "
+                f"start {score(sequence, policy):.4f}"
+            )
+
+        # Best first, so child 0 is the one a later query will reach for.
+        attempts.sort(key=lambda attempt: attempt.score)
+        seen: set[str] = set()
+        ordinal = 0
+        for attempt in attempts:
+            if attempt.sequence in seen:
                 continue
-            parent = json.loads(line)
-            index = parent["index"]
-            sequence = parent["sequence"]
-
-            if not policy.min_length <= len(sequence) <= policy.max_length:
-                # No opinion. Emitting nothing is different from emitting a
-                # refusal, and the host counts the two separately.
-                continue
-
-            attempts = [tune(sequence, policy, rng) for _ in range(variants)]
-            attempts = [a for a in attempts if a.sequence != sequence]
-            if not attempts:
-                sink.write(
-                    json.dumps(
-                        {
-                            "parent_index": index,
-                            "failed": (
-                                "no substitution lowered the composition score; "
-                                f"start {score(sequence, policy):.4f}"
-                            ),
-                        }
-                    )
-                    + "\n"
+            seen.add(attempt.sequence)
+            trail = f"surface_tuner/{index}-{ordinal}.jsonl"
+            (Path(context["structure_dir"]) / trail).write_text(
+                "".join(
+                    json.dumps({"step": step, "loss": value}) + "\n"
+                    for step, value in enumerate(attempt.history)
                 )
-                continue
+            )
+            yield {
+                "sequence": attempt.sequence,
+                "metrics": {
+                    "loss": round(attempt.score, 6),
+                    "start_loss": round(attempt.start_score, 6),
+                    # Do not shadow the registered net_charge metric.
+                    "opt_net_charge": round(attempt.charge, 3),
+                    "n_substitutions": attempt.substitutions,
+                },
+                "trajectory": trail,
+            }
+            ordinal += 1
+            written += 1
 
-            # Best first, so `child` 0 is the one a later query will reach for.
-            attempts.sort(key=lambda a: a.score)
-            seen: set[str] = set()
-            ordinal = 0
-            for attempt in attempts:
-                if attempt.sequence in seen:
-                    continue
-                seen.add(attempt.sequence)
-                trail = f"surface_tuner/{index}-{ordinal}.jsonl"
-                (Path(context["structure_dir"]) / trail).write_text(
-                    "".join(
-                        json.dumps({"step": step, "loss": value}) + "\n"
-                        for step, value in enumerate(attempt.history)
-                    )
-                )
-                sink.write(
-                    json.dumps(
-                        {
-                            "parent_index": index,
-                            "child": ordinal,
-                            "sequence": attempt.sequence,
-                            "metrics": {
-                                "loss": round(attempt.score, 6),
-                                "start_loss": round(attempt.start_score, 6),
-                                # NOT `net_charge`: that name is already
-                                # registered with a fixed meaning, and the host
-                                # refuses a declaration that shadows one.
-                                "opt_net_charge": round(attempt.charge, 3),
-                                "n_substitutions": attempt.substitutions,
-                            },
-                            # Relative to the directory the host gave us.
-                            "trajectory": trail,
-                        }
-                    )
-                    + "\n"
-                )
-                ordinal += 1
-                written += 1
-
+    result = run_optimization(optimize, parser=parser, argv=argv)
     print(f"surface_tuner {__version__}: wrote {written} variant(s)", file=sys.stderr)
-    return 0
+    return result
 
 
 if __name__ == "__main__":

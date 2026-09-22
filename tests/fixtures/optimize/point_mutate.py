@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A complete, minimal custom optimizer. Imports nothing from this project.
+"""A complete, minimal custom optimizer using the portable JSONL helper.
 
 Not a useful optimizer -- it substitutes the most hydrophobic surface-ish
 residues for alanine and calls that an improvement -- but it is a correct one,
@@ -7,8 +7,8 @@ and it is the shortest thing that exercises every part of the contract:
 n->m children, a declared metric, a failure row, a written trajectory, and a
 parent it declines to touch.
 
-Copy this, delete the middle, and put your own optimization where `optimize()`
-is. Everything above and below it is the contract.
+Copy this and put your own optimization where `optimize()` is. The helper
+supplies argument parsing, row identity, failures, and streaming output.
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ import argparse
 import json
 import random
 from pathlib import Path
+
+from bindocracy_io import RejectCandidate, run_optimization
 
 HYDROPHOBIC = "AILMFWVY"
 
@@ -49,64 +51,36 @@ def optimize(sequence: str, rng: random.Random, n_children: int) -> list[tuple[s
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    # The three the harness always passes, in this order.
-    parser.add_argument("--inputs", required=True)
-    parser.add_argument("--outputs", required=True)
-    parser.add_argument("--context", required=True)
-    # Anything after those comes from `args:` in the YAML.
     parser.add_argument("--children", type=int, default=1)
-    args = parser.parse_args()
+    rng = random.Random()
+    initialized = False
 
-    context = json.loads(Path(args.context).read_text())
-    rng = random.Random(context["seed"])
-    structure_dir = Path(context["structure_dir"])
-    # Never write outside structure_dir, and never report an absolute path:
-    # the harness refuses one so that a run directory can be moved.
-    trajectories = structure_dir / "trajectories"
-    trajectories.mkdir(parents=True, exist_ok=True)
+    def optimize_parent(parent, context, args):
+        nonlocal initialized
+        structure_dir = Path(context["structure_dir"])
+        if not initialized:
+            rng.seed(context["seed"])
+            (structure_dir / "trajectories").mkdir(parents=True, exist_ok=True)
+            initialized = True
+        children = optimize(parent["sequence"], rng, min(args.children, context["max_children"]))
+        if not children:
+            raise RejectCandidate("no hydrophobic position to substitute")
 
-    n_children = min(args.children, context["max_children"])
-
-    with open(args.outputs, "w") as out:
-        for line in Path(args.inputs).read_text().splitlines():
-            if not line.strip():
-                continue
-            parent = json.loads(line)
-            index = parent["index"]
-
-            children = optimize(parent["sequence"], rng, n_children)
-            if not children:
-                # A parent that could not be optimized is REPORTED, not
-                # omitted. Absence and refusal look the same in a query and
-                # mean opposite things.
-                out.write(json.dumps({
-                    "parent_index": index,
-                    "failed": "no hydrophobic position to substitute",
-                }) + "\n")
-                continue
-
-            relative = f"trajectories/{index}.jsonl"
-            (structure_dir / relative).write_text(
-                "".join(
-                    json.dumps({"step": step, "loss": loss}) + "\n"
-                    for step, (_, loss) in enumerate(children)
-                )
+        relative = f"trajectories/{parent['index']}.jsonl"
+        (structure_dir / relative).write_text(
+            "".join(
+                json.dumps({"step": step, "loss": loss}) + "\n"
+                for step, (_, loss) in enumerate(children)
             )
+        )
+        for sequence, loss in children:
+            yield {
+                "sequence": sequence,
+                "metrics": {"loss": loss, "n_mutations": 2},
+                "trajectory": relative,
+            }
 
-            out.writelines(
-                json.dumps({
-                    "parent_index": index,
-                    "child": ordinal,
-                    "sequence": sequence,
-                    # Only metrics the YAML declares. An undeclared one is
-                    # rejected, because a number with no direction sorts
-                    # backwards and nothing in the row says so.
-                    "metrics": {"loss": loss, "n_mutations": 2},
-                    "trajectory": relative,
-                }) + "\n"
-                for ordinal, (sequence, loss) in enumerate(children)
-            )
-    return 0
+    return run_optimization(optimize_parent, parser=parser)
 
 
 if __name__ == "__main__":

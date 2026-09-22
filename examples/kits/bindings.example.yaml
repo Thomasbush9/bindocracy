@@ -1,0 +1,38 @@
+# Where this machine keeps the things kits ask for.
+#
+# Campaign-owned, one file per site. A kit names `mosaic` and
+# `alphafold-params`; this says where they are. Nothing here is portable and
+# nothing here belongs in a kit -- a second site would have to change every
+# line, which is the test for which side of the boundary a field sits on.
+#
+# A name a kit requires and this file does not bind is a preflight failure.
+# Once there is a store, that failure becomes the offer to fetch it.
+
+bindings_schema: 1
+
+mosaic:
+  kind: container
+  path: /absolute/path/to/images/mosaic.sif
+  # The interpreter inside the image. Stated rather than guessed, because
+  # `singularity exec ... python` resolves against whatever PATH survives
+  # --cleanenv, and the images here disagree: mosaic has `python`, Chai-1
+  # needs /opt/chai-venv/bin/python.
+  interpreter: python
+
+alphafold-params:
+  kind: weights
+  path: /absolute/path/to/weights/alphafold
+
+mosaic-src:
+  kind: source_overlay
+  path: /absolute/path/to/mosaic/src/mosaic
+  # Bound over the image's own copy. With this set, the container digest no
+  # longer determines the result, so preflight digests the tree and the run
+  # records the hash beside the container.
+
+bindocracy-io:
+  kind: harness_module
+  # Not an installable thing: the checkout that ships drivers/bindocracy_io.py.
+  # The harness archives that file beside the script and puts it on PYTHONPATH,
+  # so nothing needs bindocracy installed inside the container.
+  path: /absolute/path/to/bindocracy

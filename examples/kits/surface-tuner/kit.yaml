@@ -1,0 +1,84 @@
+# A kit wrapped around a script that knows nothing about kits.
+#
+# `optimizer.py` here is `surface_tuner`, written outside this project by
+# somebody who never saw this file. It imports nothing from bindocracy, has
+# its own version string, its own policy format and its own CLI. It was not
+# modified to be packaged, and that is the claim this kit exists to make: the
+# manifest describes a script from the outside, so packaging costs the author
+# nothing and a kit can wrap a binary or a Perl script on the same terms.
+#
+# The one thing the packager has to get right is the metric block below.
+# Nobody but the script's author knows which way its numbers point, so that
+# part is read off `optimizer.py` by hand and checked against the campaign
+# config by `kitcheck.py`.
+
+kit_schema: 1
+
+name: surface-tuner
+version: 0.3.1              # tracks surface_tuner's own __version__
+kind: optimizer
+summary: >-
+  Sequence-only binder polisher. Removes solvent-exposed hydrophobics and
+  walks net charge toward a target by hill-climbing a composition score. No
+  structure is predicted and no model is consulted.
+
+entrypoint: optimizer.py
+python: ">=3.10"
+
+# ---------------------------------------------------------------------------
+# Nothing to install, including no transport helper. That is worth stating
+# rather than omitting: an empty list claims this runs on the harness's own
+# interpreter with no container, no weights and no GPU, and the checker holds
+# it to that.
+#
+# This kit deliberately does NOT take `bindocracy-io`, even though the sibling
+# mosaic-af2-refine kit does and the helper is better at the job. The pair is
+# the test: one kit on the helper, one reading and writing the JSONL contract
+# by hand. docs/custom-optimization.md keeps the raw path valid, and the only
+# way to know it stays valid is to keep a kit on it. It is also what lets the
+# store one day accept a kit wrapped around a binary or a Perl script, which
+# can never import a Python module.
+# ---------------------------------------------------------------------------
+requires: []
+
+inputs: [sequence]
+
+# `[]` is a claim, not an unfilled default: the loss consulted no structure
+# predictor at all, so every scorer in the panel stays available to judge the
+# children.
+loss_models: []
+
+capabilities:
+  changes_length: false
+  max_children: 8           # the script's `--variants` ceiling in practice
+
+metrics:
+  loss:
+    direction: min
+    description: weighted exposed-hydrophobic + charge-gap score, lower better
+  start_loss:
+    direction: min
+    description: the same score at the parent, before any substitution
+  # NOT `net_charge`. That name is registered with a fixed meaning in
+  # adapters/scoring.py, and a declaration that shadows a registered key is
+  # refused so a tool's opinion cannot be mistaken for a measurement.
+  opt_net_charge:
+    direction: none
+    description: the tuner's own net-charge estimate for the child, at pH 7
+  n_substitutions:
+    direction: none
+    description: positions where the child differs from its parent
+
+cost:
+  gpu: none
+  compile_seconds: 0
+  per_parent_seconds: 0.05
+  measured_on:
+    run: validator, 20 parents, 2 variants each
+    cpu: any
+  scales_with: [binder_length, rounds, variants]
+
+args:
+  variants: 2
+
+dependency_args: {}

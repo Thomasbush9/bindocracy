@@ -1,0 +1,163 @@
+# A kit: everything about this optimizer that is true wherever it runs.
+#
+# Nothing here names a path, a GPU, a walltime or a design set. Those belong
+# to a campaign, because a second site would have to change every one of them.
+# What is here is what the author measured or decided once.
+#
+# Check it before a campaign points at it -- seconds, no GPU:
+#
+#   python optimizers/kitcheck.py --kit optimizers/mosaic-af2-refine \
+#       --bindings configs/kit_bindings.yaml \
+#       --config configs/optimize/af2_refine.yaml
+
+kit_schema: 1
+
+name: mosaic-af2-refine
+version: 0.3.0
+kind: optimizer
+summary: >-
+  Refine an existing binder with mosaic, driven by AlphaFold-2 multimer
+  against the campaign's own target alignment. Starts the PSSM from the
+  parent's one-hot rather than from noise, which is the one line that makes
+  it refinement rather than hallucination.
+
+entrypoint: optimizer.py
+python: ">=3.11"
+
+# ---------------------------------------------------------------------------
+# What it needs installed. The harness resolves each name against the
+# campaign's bindings; a name with no binding is a preflight failure, not a
+# crash forty minutes into a queue.
+# ---------------------------------------------------------------------------
+#
+# `verify` is what actually decides, and `version` is only a hint for finding
+# a candidate. That order is deliberate and it is the lesson of this campaign:
+# mosaic.sif carries no usable version, and the thing that mattered -- whether
+# AF2 could take a per-chain MSA -- was a capability the tag could not express.
+# An import that either works or does not is a stronger check than a number
+# somebody remembered to bump.
+requires:
+  - name: bindocracy-io
+    kind: harness_module
+    provided_by: harness
+    version: ">=1"
+    verify:
+      files: ["drivers/bindocracy_io.py"]
+    why: >-
+      Transport only. The helper owns argument parsing, input validation and
+      row identity, so this kit cannot emit a wrong parent_index or a duplicate
+      child ordinal. A store never supplies this; the harness archives it
+      beside the script and puts it on PYTHONPATH.
+
+  - name: mosaic
+    kind: container
+    version: ">=2026.08.18"
+    provides: interpreter
+    verify:
+      import: mosaic.models.af2_msa
+    why: >-
+      AF2 multimer with a per-chain MSA. The image shipped before 2026-08-18
+      raises "AF2 interface does not support MSA yet" at an interface, and
+      nothing in its filename says so.
+
+  - name: alphafold-params
+    kind: weights
+    version: "2022-12-06"
+    mount: read_only
+    verify:
+      files:
+        - params/params_model_1_multimer_v3.npz
+        - params/params_model_5_multimer_v3.npz
+    why: >-
+      AF2 multimer parameters. The optimize launcher binds no weight tree of
+      its own, so this has to be handed to the script rather than found at
+      mosaic's default `~/.alphafold`.
+
+  - name: mosaic-src
+    kind: source_overlay
+    target: /opt/mosaic/src/mosaic
+    optional: true
+    verify:
+      files: ["models/af2_msa.py"]
+    why: >-
+      Binds a fixed host checkout over a stale image. Needed only while the
+      bound container fails the `mosaic` check above; drop it once the image
+      is rebuilt. Note the depth -- this tool binds onto
+      /opt/mosaic/src/mosaic, one level below the scorer's MOSAIC_DEV_SRC.
+
+# ---------------------------------------------------------------------------
+# The contract it satisfies
+# ---------------------------------------------------------------------------
+inputs: [sequence]
+
+# Proposed, and the campaign must restate it. AF2 drives every gradient step
+# and the re-score, so an af2_* column on a child of this kit measures the
+# optimizer rather than the binder. Six scorers stay held out.
+loss_models: [af2]
+
+capabilities:
+  changes_length: false
+  max_children: 1
+
+metrics:
+  loss:
+    direction: min
+    description: >-
+      AF2 ipTM + ipSAE energy of the discrete child, re-scored at
+      --rescore-recycling recycles. The optimizer's opinion, never a
+      measurement.
+  start_loss:
+    direction: min
+    description: >-
+      THE SAME ranking objective, evaluated on the parent. `loss` is
+      uninterpretable without it, and it is only interpretable if the two are
+      the same quantity: an earlier version reported start_loss 10-16 beside
+      loss -1 because one was the training objective and the other the
+      ranking one, and their difference meant nothing.
+  n_substitutions:
+    direction: none
+    description: positions where the child differs from its parent
+  opt_steps:
+    direction: none
+    description: gradient steps actually taken
+
+# ---------------------------------------------------------------------------
+# What it costs. Measured, portable, and the only honest thing a kit can say
+# about time: the campaign derives its own walltime from these plus the
+# parent count and the shard count, neither of which an author can see.
+# ---------------------------------------------------------------------------
+cost:
+  gpu: required
+  compile_seconds: 172
+  per_parent_seconds: 19.4
+  measured_on:
+    run: optimize-af2refine-smoke23c
+    gpu: H100-80GB
+    binder_length: 80
+    target_length: 201
+    steps: 18
+    msa_clusters: 128
+  scales_with: [binder_length, target_length, msa_clusters, steps]
+  note: >-
+    compile_seconds is paid once per binder LENGTH per process, not once per
+    task. A shard spanning many lengths pays it again at each one, which is
+    why the design set is ordered by length and shards are contiguous.
+
+# ---------------------------------------------------------------------------
+# Defaults a campaign may override
+# ---------------------------------------------------------------------------
+args:
+  soft-steps: 12
+  sharpen-steps: 4
+  final-steps: 2
+  recycling-steps: 1
+  rescore-recycling: 3
+  msa-clusters: 128
+  extra-msa: 512
+  epsilon: 0.1
+
+# A resolved requirement reaches the script as context["dependencies"][name].
+# Until the harness reads this file, the campaign passes the same path through
+# `args`, and the script prefers the context and falls back to the flag.
+dependency_args:
+  alphafold-params: --af2-data-dir

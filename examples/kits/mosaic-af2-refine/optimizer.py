@@ -29,21 +29,28 @@ returns three values when handed a `trajectory_fn`, and `start_loss` has to be
 the ranking objective rather than the training one or it does not subtract
 from `loss`.
 
-**Weights.** The optimize tool builds its own `singularity exec` line and does
-not go through `mosaic-exec.sh`, so nothing binds the shared weight tree onto
-`~/.alphafold` inside the image. `--af2-data-dir` is therefore required in
-practice: point it at the directory that holds `params/`.
+**Weights.** Declared in `kit.yaml` as the requirement `alphafold-params`,
+because the optimize tool builds its own `singularity exec` line, does not go
+through `mosaic-exec.sh`, and so binds nothing onto `~/.alphafold` inside the
+image. The harness resolves that name against the campaign's bindings and
+hands the path over as `context["dependencies"]["alphafold-params"]`. Until it
+reads `kit.yaml`, the campaign passes the same path through `args`, so
+`--af2-data-dir` remains the fallback and the two cannot disagree: the context
+wins when present.
 
-**MSA routing.** `mosaic.sif` predates the AF2 MSA work; the image's
-`models/af2.py` still asserts "AF2 interface does not support MSA yet" at an
-interface. Set `runtime.dev_source` in the YAML so the host checkout is bound
-over the image's copy, exactly as the scorer configs do.
+**MSA routing.** Declared as the optional requirement `mosaic-src`. The
+shipped `mosaic.sif` predates the AF2 MSA work and its `models/af2.py` still
+asserts "AF2 interface does not support MSA yet" at an interface, so the kit
+verifies the capability by importing `mosaic.models.af2_msa` rather than by
+trusting a version tag, and the overlay is what satisfies it on a stale image.
+On today's harness that overlay is `runtime.dev_source`, and it binds onto
+`/opt/mosaic/src/mosaic`, one level below the scorer's `MOSAIC_DEV_SRC`.
 
 Check the I/O first. It needs no GPU, no mosaic and no weights, because
 everything below the second banner is skipped by `--dry-run`:
 
     python scripts/validate_optimizer.py \
-        --script optimizers/mosaic_af2_refine.py \
+        --script optimizers/mosaic-af2-refine/optimizer.py \
         --design-set sets/<digest>.json \
         --target-fasta target.fasta \
         --declare loss:min --declare start_loss:min \
@@ -55,26 +62,36 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 import time
 from pathlib import Path
+
+from bindocracy_io import RejectCandidate, run_optimization
+
+# The 20 the design table accepts. A parent outside it is a refusal, not a bug.
+CANONICAL = "ACDEFGHIKLMNPQRSTVWY"
 
 # ---------------------------------------------------------------------------
 # The contract. Nothing above the next banner is about optimization.
 # ---------------------------------------------------------------------------
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
+    """Only this kit's own options.
+
+    `--inputs`, `--outputs` and `--context` belong to `bindocracy_io`, which
+    also owns row identity: it attaches `parent_index` and the child ordinal,
+    so this script cannot get them wrong and cannot emit a duplicate pair.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
-    # The three the harness always passes, in this order.
-    parser.add_argument("--inputs", required=True)
-    parser.add_argument("--outputs", required=True)
-    parser.add_argument("--context", required=True)
-    # Everything below comes from `args:` in the YAML.
     parser.add_argument(
         "--af2-data-dir",
         default="~/.alphafold",
-        help="Directory holding params/. The image has no bind for it.",
+        help=(
+            "Fallback for the `alphafold-params` requirement, used only when "
+            "context['dependencies'] does not carry it. Directory holding params/."
+        ),
     )
     parser.add_argument("--soft-steps", type=int, default=12)
     parser.add_argument("--sharpen-steps", type=int, default=4)
@@ -92,101 +109,104 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epsilon", type=float, default=0.1)
     # Exercise the contract without jax, mosaic or a GPU.
     parser.add_argument("--dry-run", action="store_true")
-    return parser.parse_args()
+    return parser
+
+
+def dependency(context: dict, name: str, fallback: str) -> str:
+    """The path the harness resolved for a requirement this kit declares.
+
+    `kit.yaml` names what this optimizer needs; the campaign says where those
+    things are; the harness resolves one against the other and puts the answer
+    in the context. A script that read a path out of its own arguments instead
+    would be claiming to know a filesystem it has never seen, and a missing
+    dependency would surface as a model constructor failing after the GPU was
+    allocated rather than as a refusal at preflight.
+
+    The fallback exists because the harness does not read `kit.yaml` yet. It is
+    the same value, passed the long way round through `args`.
+    """
+    resolved = (context.get("dependencies") or {}).get(name)
+    return resolved or fallback
 
 
 def main() -> int:
-    args = parse_args()
-    context = json.loads(Path(args.context).read_text())
-
-    structure_dir = Path(context["structure_dir"])
-    structure_dir.mkdir(parents=True, exist_ok=True)
-    trajectory_dir = structure_dir / "trajectories"
-    trajectory_dir.mkdir(parents=True, exist_ok=True)
-
-    # 1-based positions in the target's FASTA, resolved and range-checked when
-    # the run was planned. mosaic slices a contact matrix with 0-based ones.
-    epitope_idx = [spot - 1 for spot in context.get("hotspots") or []] or None
-
-    parents = [
-        json.loads(line)
-        for line in Path(args.inputs).read_text().splitlines()
-        if line.strip()
-    ]
-
-    # One model load and one feature build per binder LENGTH, not per design.
-    # The binder length is baked into the AF2 feature shapes, so a shard
-    # spanning many lengths pays a JIT recompile per length. That is why the
-    # design set is ordered by length and shards are contiguous.
+    # Per-process state. One model load and one feature build per binder
+    # LENGTH, not per design: the length is baked into the AF2 feature shapes,
+    # so a shard spanning many lengths pays a JIT recompile at each one. That
+    # is why the design set is ordered by length and shards are contiguous.
     cache: dict[int, tuple] = {}
+    setup: dict = {}
 
-    with open(args.outputs, "w") as out:
-        for parent in parents:
-            index = parent["index"]
-            started = time.time()
-            try:
-                sequence, loss, start_loss, trajectory = refine(
-                    parent["sequence"],
-                    target_sequence=context["target_sequence"],
-                    msa_path=context.get("target_msa"),
-                    epitope_idx=epitope_idx,
-                    seed=context["seed"] + index,
-                    args=args,
-                    cache=cache,
-                )
-            except Exception as error:  # noqa: BLE001 - one parent must not kill the shard
-                # Reported, not omitted. Absence and refusal look the same in a
-                # query and mean opposite things.
-                out.write(
-                    json.dumps(
-                        {
-                            "parent_index": index,
-                            "failed": f"{type(error).__name__}: {error}",
-                        }
-                    )
-                    + "\n"
-                )
-                out.flush()
-                continue
+    def optimize_parent(parent, context, args):
+        if not setup:
+            args.af2_data_dir = dependency(
+                context, "alphafold-params", args.af2_data_dir
+            )
+            structure_dir = Path(context["structure_dir"])
+            (structure_dir / "trajectories").mkdir(parents=True, exist_ok=True)
+            setup["structure_dir"] = structure_dir
+            # 1-based positions in the target's FASTA, resolved and
+            # range-checked when the run was planned. mosaic slices a contact
+            # matrix with 0-based ones.
+            setup["epitope"] = [
+                spot - 1 for spot in context.get("hotspots") or []
+            ] or None
 
-            # Relative to context['structure_dir']. An absolute path is refused
-            # so that a run directory can be moved; known-issues.md records
-            # that having already cost this campaign a day.
-            relative = f"trajectories/{index}.jsonl"
-            (structure_dir / relative).write_text(
-                "".join(
-                    json.dumps({"step": step, "loss": value}) + "\n"
-                    for step, value in enumerate(trajectory)
-                )
+        index = parent["index"]
+        sequence_in = parent["sequence"]
+        # An expected refusal: a parent this optimizer cannot represent. Only
+        # this one and the NaN below are caught. Everything else propagates and
+        # fails the job on purpose -- catching broadly is how a bug in this
+        # script once wrote four "refusals" and looked like a biological
+        # result.
+        unknown = sorted(set(sequence_in) - set(CANONICAL))
+        if unknown:
+            raise RejectCandidate(f"parent has non-canonical residue(s) {unknown}")
+
+        started = time.time()
+        sequence, loss, start_loss, trajectory = refine(
+            sequence_in,
+            target_sequence=context["target_sequence"],
+            msa_path=context.get("target_msa"),
+            epitope_idx=setup["epitope"],
+            seed=context["seed"] + index,
+            args=args,
+            cache=cache,
+        )
+        if not (math.isfinite(loss) and math.isfinite(start_loss)):
+            raise RejectCandidate(
+                f"AF2 returned a non-finite loss (start {start_loss}, final {loss})"
             )
 
-            substitutions = sum(
-                1 for was, now in zip(parent["sequence"], sequence) if was != now
+        # Relative to context['structure_dir']. An absolute path is refused so
+        # that a run directory can be moved; known-issues.md records that
+        # having already cost this campaign a day.
+        relative = f"trajectories/{index}.jsonl"
+        (setup["structure_dir"] / relative).write_text(
+            "".join(
+                json.dumps({"step": step, "value": value}) + "\n"
+                for step, value in enumerate(trajectory)
             )
-            out.write(
-                json.dumps(
-                    {
-                        "parent_index": index,
-                        "child": 0,
-                        "sequence": sequence,
-                        "metrics": {
-                            # `start_loss` rides along with `loss` on purpose: a
-                            # final loss of 0.31 means nothing without knowing
-                            # it began at 0.33, and "ran, improved nothing" is
-                            # a result worth being able to count.
-                            "loss": loss,
-                            "start_loss": start_loss,
-                            "n_substitutions": substitutions,
-                            "opt_steps": len(trajectory),
-                        },
-                        "trajectory": relative,
-                        "seconds": round(time.time() - started, 2),
-                    }
-                )
-                + "\n"
-            )
-            out.flush()
-    return 0
+        )
+
+        yield {
+            "sequence": sequence,
+            "metrics": {
+                # `start_loss` rides along with `loss` on purpose, and both are
+                # the RANKING objective: a final loss means nothing without the
+                # number it started from, and only if the two subtract.
+                "loss": loss,
+                "start_loss": start_loss,
+                "n_substitutions": sum(
+                    1 for was, now in zip(sequence_in, sequence) if was != now
+                ),
+                "opt_steps": len(trajectory),
+            },
+            "trajectory": relative,
+            "seconds": round(time.time() - started, 2),
+        }
+
+    return run_optimization(optimize_parent, parser=build_parser())
 
 
 # ---------------------------------------------------------------------------

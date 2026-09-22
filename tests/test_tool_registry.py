@@ -29,9 +29,9 @@ from bindocracy.tools import (
 
 def test_every_built_in_tool_is_registered() -> None:
     assert registered_tools() == (
-        "af3", "boltzgen", "chai1", "freebindcraft", "genie3", "mosaic",
-        "of3_upstream", "optimize", "protein_hunter", "proteina_complexa",
-        "pxdesign", "scorer",
+        "af3", "bindcraft2", "boltzgen", "chai1", "freebindcraft", "genie3",
+        "mosaic", "of3_upstream", "optimize", "protein_hunter",
+        "proteina_complexa", "pxdesign", "scorer",
     )
 
 

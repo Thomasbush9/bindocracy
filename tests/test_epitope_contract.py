@@ -13,8 +13,10 @@ from pathlib import Path
 import pytest
 import yaml
 from conftest import (
+    bindcraft2_settings,
     freebindcraft_target,
     pxdesign_spec,
+    write_bindcraft2_configs,
     write_boltzgen_configs,
     write_configs,
     write_freebindcraft_configs,
@@ -464,3 +466,54 @@ def test_a_hotspot_free_freebindcraft_run_claims_no_conditioning(
     manifest = plan(load_configs(*freebindcraft_configs), tmp_path / "run")
 
     assert manifest.workflow["epitope_enforcement"] == {"conditioned": False}
+
+
+# --- BindCraft 2 -----------------------------------------------------------
+#
+# The one tool here that can do more than condition on an epitope. It measures
+# hotspot contact on every refolded candidate, so a campaign can threshold it
+# and reject a design that drifted off the patch. Whether a campaign does is
+# recorded, because conditioning without a ceiling is the weaker thing wearing
+# the same word -- and it is what let FreeBindCraft accept two designs on a
+# neighbouring patch.
+
+
+def test_bindcraft2_puts_the_campaign_epitope_on_the_command(tmp_path: Path) -> None:
+    import json
+
+    general, model = write_bindcraft2_configs(tmp_path, hotspots=EPITOPE)
+    manifest = plan(load_configs(general, model), tmp_path / "run")
+
+    argv = launch_spec(manifest, 0).argv
+    block = json.loads(flag(argv, "--set").split("targets=", 1)[-1])
+    assert block["hotspots"] == "A2,A4"
+
+
+def test_bindcraft2_records_whether_the_epitope_was_verified(tmp_path: Path) -> None:
+    general, model = write_bindcraft2_configs(
+        tmp_path, hotspots=EPITOPE, settings=bindcraft2_settings()
+    )
+    manifest = plan(load_configs(general, model), tmp_path / "run")
+
+    enforcement = manifest.workflow["epitope_enforcement"]
+    assert enforcement["conditioned"] is True
+    assert enforcement["verified_after_generation"] is True
+
+
+def test_bindcraft2_refuses_an_epitope_it_cannot_place(tmp_path: Path) -> None:
+    general, model = write_bindcraft2_configs(tmp_path, hotspots=["A2", "A4444"])
+
+    with pytest.raises(ConfigPreflightError, match="4444"):
+        load_configs(general, model)
+
+
+def test_bindcraft2_refuses_an_authored_epitope(tmp_path: Path) -> None:
+    """The campaign owns it; an authored copy would be recorded and not used."""
+    general, model = write_bindcraft2_configs(
+        tmp_path,
+        hotspots=EPITOPE,
+        settings=bindcraft2_settings(targets=[{"name": "x", "hotspots": "A9"}]),
+    )
+
+    with pytest.raises(ConfigPreflightError, match="targets"):
+        load_configs(general, model)

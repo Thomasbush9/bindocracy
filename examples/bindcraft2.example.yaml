@@ -1,0 +1,71 @@
+# TEMPLATE. Real configs live outside the repository, beside the campaign data,
+# because their absolute paths belong to one machine. Copy, edit, and point a
+# workflow index at your copy.
+
+schema_version: 1
+name: bindcraft2-dio3-run21
+tool: bindcraft2
+
+# The one JSON document BindCraft 2 is configured by: the binder format and
+# length, the loss weights, the stage schedule and the acceptance thresholds.
+# Archived per run, run from the archive, and folded whole into the stored
+# config, because the thresholds are the definition of n_passed and live nowhere
+# else that can be queried.
+#
+# It must NOT set project_folder, number_of_final_designs, max_trajectories,
+# campaign_seed, resume or targets. The harness passes all six with `--set`,
+# which wins over the document, so an authored value would be recorded and not
+# used. Preflight refuses one rather than overwriting it. `target` (a preset
+# target inside the image) and `workers_per_gpu` are refused for the same reason.
+#
+# It MUST set binder_lengths. That is the one science parameter with no safe
+# default: it decides the padded complex size, and with it how much card memory
+# each worker needs and how many workers fit on a card.
+#
+# A minimal document that works:
+#   {"binder_lengths": [65, 70], "min_hotspot_contact_final": 0.5}
+settings:
+  template: /absolute/path/to/binder_design/configs/bindcraft2/dio3_cut.json
+
+sampling:
+  jobs: 1
+  # ACCEPTED designs, and a stopping condition rather than a table size. Several
+  # workers accept independently, so a task overshoots: the 2026-09-22 DIO3 run
+  # asked for 10 and delivered 11. Fewer than this means the trajectory budget
+  # ran out first.
+  designs_per_job: 10
+  # Trajectory ATTEMPTS. Not designs, and not successful trajectories: an
+  # attempt terminated at the first stage gate still counts. On that run 184
+  # attempts yielded 29 completed trajectories, 248 scored candidates and 11
+  # accepted designs, so budget roughly six attempts per completed trajectory
+  # and about 17 attempts per accepted design.
+  max_trajectories: 200
+  # campaign_seed, offset by the task id. BindCraft 2 draws every trajectory
+  # from it, so unlike FreeBindCraft a run here repeats and two tasks differ by
+  # design rather than by chance.
+  seed_base: 19
+  # Leave unset to let BC2 pack each card to its free memory, up to seven
+  # workers. Pin it when the allocation's host memory cannot hold that many:
+  # each worker keeps its own copy of the parameters at about 4 GB, and BC2
+  # sizes its own cap from the NODE's memory rather than the cgroup this job
+  # gets, so it will not protect you. On four H100s the 2026-09-22 run packed
+  # five workers per card, 20 in all, at 14.6 GB of card memory each.
+  # workers_per_gpu: 5
+
+runtime:
+  container: /absolute/path/to/binder_design/images/bindcraft2.sif
+  # Node-local scratch. Not on Lustre; see docs/known-issues.md section 2.1.
+  node_tmp_root: /tmp
+
+resources:
+  # A campaign fans out across every card it can see without being asked, one
+  # worker per slice of free memory, so more GPUs is the whole scaling story.
+  gpus: 4
+  cpus: 32
+  # Size this from the worker count, not from the tool: 20 workers at 4 GB each
+  # wants 80 GB, and BC2's own host-memory cap reads the node rather than the
+  # cgroup, so Slurm is what will actually stop an over-packed job.
+  memory_gb: 192
+  # The 2026-09-22 run spent its 200-trajectory budget in 1h23m on four H100s
+  # against a 201-residue target with a 65-70 binder. Four hours is generous.
+  walltime: "04:00:00"

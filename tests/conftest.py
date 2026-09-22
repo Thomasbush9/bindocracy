@@ -1741,3 +1741,142 @@ def optimize_loaded(optimize_configs, optimize_config_files):
         preflight=preflight_optimize(general, model),
         general_path=general_path, model_path=model_path,
     )
+
+
+# --- BindCraft 2 -----------------------------------------------------------
+
+BINDCRAFT2_TARGET = "ACDEFG"
+BINDCRAFT2_FIXTURES = Path(__file__).parent / "fixtures" / "bindcraft2"
+
+
+def bindcraft2_settings(**overrides) -> dict:
+    """A campaign document that authors only what the harness does not own."""
+    document = {"binder_lengths": [65, 70], "min_hotspot_contact_final": 0.5}
+    document.update(overrides)
+    return document
+
+
+def write_bindcraft2_configs(
+    root: Path,
+    *,
+    hotspots: list[str] | None = None,
+    settings: dict | None = None,
+    **overrides,
+) -> tuple[Path, Path]:
+    """A general + BindCraft 2 pair, with the PDB it designs against."""
+    root.mkdir(parents=True, exist_ok=True)
+    fasta = root / "target.fasta"
+    fasta.write_text(f">target\n{BINDCRAFT2_TARGET}\n")
+    pdb = write_proteina_target_pdb(root / "target.pdb", BINDCRAFT2_TARGET)
+    container = root / "bindcraft2.sif"
+    container.write_bytes(b"fixture")
+
+    document = bindcraft2_settings() if settings is None else settings
+    settings_path = root / "dio3_cut.json"
+    settings_path.write_text(json.dumps(document, indent=2))
+
+    general_path = root / "general.yaml"
+    general_path.write_text(yaml.safe_dump({
+        "schema_version": 1,
+        "campaign": {"name": "test-campaign"},
+        "target": {
+            "name": "test-target",
+            "sequence_fasta": str(fasta),
+            "structure_pdb": str(pdb),
+            "chain_id": "A",
+            "hotspots": hotspots or [],
+        },
+        "cluster": {
+            "executor": "slurm",
+            "account": "test-account",
+            "default_partition": "test-gpu",
+        },
+    }, sort_keys=False))
+
+    model = {
+        "schema_version": 1,
+        "name": "bindcraft2-test",
+        "tool": "bindcraft2",
+        "settings": {"template": str(settings_path)},
+        "sampling": {
+            "jobs": 1,
+            "designs_per_job": 2,
+            "max_trajectories": 6,
+            "seed_base": 19,
+        },
+        "runtime": {"container": str(container), "node_tmp_root": str(root / "nodetmp")},
+        "resources": {"gpus": 4, "cpus": 32, "memory_gb": 192, "walltime": "04:00:00"},
+    }
+    for section, values in overrides.items():
+        model[section].update(values)
+    (root / "nodetmp").mkdir(exist_ok=True)
+
+    model_path = root / "bindcraft2.yaml"
+    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
+    return general_path, model_path
+
+
+@pytest.fixture
+def bindcraft2_configs(tmp_path: Path) -> tuple[Path, Path]:
+    return write_bindcraft2_configs(tmp_path)
+
+
+def write_bindcraft2_task(
+    run_dir: Path,
+    task_id: int,
+    *,
+    ranked: bool = True,
+    structures: bool = True,
+    state: bool = True,
+    candidate_rows: str | None = None,
+    ranked_rows: str | None = None,
+    status: dict | None = None,
+) -> Path:
+    """Lay out one BindCraft 2 task from the committed real-output fixture.
+
+    The fixture is six unmodified candidate rows of one real trajectory -- three
+    that passed and three the filters rejected -- plus the one accepted design
+    built from them, and two trajectories that terminated at different stages.
+    """
+    campaign = run_dir / "tasks" / f"{task_id:04d}" / "campaign"
+    for stage, name, source, override in (
+        ("1_Trajectories", "!_Trajectories.csv", "trajectories.csv", None),
+        ("2_Refolded", "!_Refolded.csv", "refolded.csv", candidate_rows),
+        ("3_Ranked", "!_Ranked.csv", "ranked.csv", ranked_rows),
+    ):
+        if stage == "3_Ranked" and not ranked:
+            continue
+        (campaign / stage).mkdir(parents=True, exist_ok=True)
+        text = (
+            override
+            if override is not None
+            else (BINDCRAFT2_FIXTURES / source).read_text()
+        )
+        (campaign / stage / name).write_text(text)
+
+    if state:
+        (campaign / ".campaign_state.json").write_text(
+            (BINDCRAFT2_FIXTURES / "campaign_state.json").read_text()
+        )
+
+    if structures:
+        import csv as _csv
+
+        complexes = campaign / "2_Refolded" / "Complexes"
+        monomers = campaign / "2_Refolded" / "BinderMonomer"
+        complexes.mkdir(parents=True, exist_ok=True)
+        monomers.mkdir(parents=True, exist_ok=True)
+        table = campaign / "2_Refolded" / "!_Refolded.csv"
+        for row in _csv.DictReader(table.open(newline="")):
+            (complexes / f"{row['design']}.cif").write_text("data_fixture\n")
+            (monomers / f"{row['design']}_monomer.cif").write_text("data_fixture\n")
+        if ranked:
+            accepted = campaign / "3_Ranked"
+            for row in _csv.DictReader((accepted / "!_Ranked.csv").open(newline="")):
+                (accepted / f"{row['design']}.cif").write_text("data_fixture\n")
+
+    if status is not None:
+        (run_dir / "tasks" / f"{task_id:04d}" / "status.json").write_text(
+            json.dumps(status)
+        )
+    return campaign

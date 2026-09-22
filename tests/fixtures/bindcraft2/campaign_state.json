@@ -1,0 +1,29 @@
+{
+  "accepted": 1,
+  "attempted": [
+    "c7f74f2f18ee1581",
+    "dcb8e5542f3783fc",
+    "4019d3abc0f74fe7"
+  ],
+  "autotune": {
+    "accepted": 9,
+    "alternating": false,
+    "loss": 0.8421015625000001,
+    "overrides": {},
+    "restores": {},
+    "reviewed": 162
+  },
+  "rejections": {
+    "candidates_rejected": 3,
+    "candidates_scored": 6,
+    "failed_filters": {
+      "Unbound_Binder_pLDDT": 3
+    },
+    "terminated": {
+      "anneal": 1,
+      "completed": 1,
+      "screen": 1
+    }
+  },
+  "trajectories": 3
+}

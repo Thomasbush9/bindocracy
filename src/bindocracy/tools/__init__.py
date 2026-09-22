@@ -9,6 +9,7 @@ from importlib import import_module
 
 from bindocracy.tools.af3 import AF3Plugin
 from bindocracy.tools.base import ToolPlugin
+from bindocracy.tools.bindcraft2 import BindCraft2Plugin
 from bindocracy.tools.boltzgen import BoltzGenPlugin
 from bindocracy.tools.chai1 import Chai1Plugin
 from bindocracy.tools.freebindcraft import FreeBindCraftPlugin
@@ -34,6 +35,7 @@ from bindocracy.tools.registry import (
 from bindocracy.tools.scorer import ScorerPlugin
 
 register(MosaicPlugin)
+register(BindCraft2Plugin)
 register(BoltzGenPlugin)
 register(Genie3Plugin)
 register(PXDesignPlugin)
@@ -56,6 +58,7 @@ for _module in os.environ.get("BINDOCRACY_PLUGINS", "").split(","):
 
 __all__ = [
     "AF3Plugin",
+    "BindCraft2Plugin",
     "BoltzGenPlugin",
     "Chai1Plugin",
     "FreeBindCraftPlugin",

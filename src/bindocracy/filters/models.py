@@ -134,6 +134,19 @@ class FilterSet(FilterModel):
         unknown = set(self.gating_rules) - set(names)
         if unknown:
             raise ValueError(f"gating_rules names no such rule: {min(unknown)}")
+        # A filter pass writes one decision per rule plus one for the set as a
+        # whole, and `decisions.decision_id` is a primary key derived from that
+        # name. A set named after one of its own rules makes the two rows the
+        # same row: the ingest would collide, and the run summary would count
+        # the set-level pass into that rule's tally and report `n_passed` as
+        # zero. Refused here because the failure surfaces at ingest, one stage
+        # away from the config that caused it.
+        if self.name in set(names):
+            raise ValueError(
+                f"filter set is named {self.name!r}, which is also one of its rules; "
+                "the set-level verdict and that rule's verdict would be stored under "
+                "one id. Name the set for the policy and the rule for the claim."
+            )
         return self
 
     @property

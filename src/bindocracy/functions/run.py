@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from bindocracy.config.models import ConfigModel, GeneralConfig
-from bindocracy.config.preflight import ConfigPreflightError, read_single_fasta
+from bindocracy.config.preflight import (
+    ConfigPreflightError,
+    read_single_fasta,
+    target_hotspot_positions,
+)
 from bindocracy.functions.contract import FunctionInput
-from bindocracy.functions.models import CustomFunction
+from bindocracy.functions.models import (
+    BUILTIN_FUNCTIONS,
+    CustomFunction,
+    ScoringFunction,
+    builtin,
+)
 from bindocracy.functions.runner import FunctionError, preflight_custom, run_custom, write_summary
 from bindocracy.runs.designset import DesignSet, DesignSetError
 from bindocracy.runs.inputs import TargetDigest
@@ -34,19 +43,96 @@ class FunctionRunError(RuntimeError):
     """A frozen selection cannot be scored as configured."""
 
 
+# The functions this repository ships, named rather than restated. A built-in
+# declares no metrics because its metrics are already in the registry with a
+# fixed meaning; naming it is the whole config.
+BuiltinName = Literal["epitope", "sequence"]
+
+
 class FunctionRunConfig(ConfigModel):
+    """One function run: a script, or the name of one this repository ships.
+
+    Exactly one of `builtin` and `function`. They are separate fields rather
+    than one union because they carry opposite obligations: a custom function
+    must declare what its numbers mean, and a built-in must not, since
+    restating a registered metric's direction in YAML is a second place for it
+    to be wrong.
+
+    Until 2026-09-22 only `function` existed, so `epitope` and `sequence` were
+    implemented, tested, documented as the two worked examples -- and reachable
+    from no command. A config naming `epitope` was refused twice over: as a
+    built-in for declaring no `metrics`, and as a custom function for declaring
+    metric names the registry already owns. That is the same shape as the
+    `readers.epitope` bug one level up, so it is fixed the same way: the thing
+    that cannot run is refused at the config, and the thing that should run has
+    a way to be named.
+    """
+
     schema_version: Literal[1] = 1
     name: str = Field(min_length=1)
     tool: Literal["function"] = "function"
     design_set: Path
-    function: CustomFunction
+    # A function this repository ships: `epitope` or `sequence`.
+    builtin: BuiltinName | None = None
+    # A user-supplied script. See docs/scoring-functions.md tier 3.
+    function: CustomFunction | None = None
     # An evaluator run name or ID, never a model-wide search across runs.
     structures_from: str | None = None
 
+    @model_validator(mode="after")
+    def exactly_one_function(self) -> Self:
+        if (self.builtin is None) == (self.function is None):
+            raise ValueError(
+                "name exactly one of `builtin` (a function this repository ships: "
+                f"{sorted(BUILTIN_FUNCTIONS)}) or `function` (a script of your own)"
+            )
+        return self
 
-def _structures(connection, config: FunctionRunConfig, design_set: DesignSet):
+
+def resolve_function(
+    config: FunctionRunConfig, general: GeneralConfig, target_sequence: str
+) -> ScoringFunction:
+    """The function this run executes, with what only the campaign can supply.
+
+    `epitope` is the case that needs anything: it measures contacts against the
+    campaign's hotspots, and it takes them as 1-based positions in the target's
+    FASTA rather than author numbering, because residue ids in a predicted pose
+    are positional. The mapping is the shared, checked one every other stage
+    uses, so the epitope a design was optimized against and the epitope it is
+    measured against are the same residues by construction.
+
+    A campaign with no `target.hotspots` is refused rather than run. The driver
+    would report coverage and offset as absent -- correctly, since no epitope
+    was named -- and store only the two geometry metrics, which is a run that
+    succeeds and does not answer the question it was started for.
+    """
+    if config.function is not None:
+        return config.function
+    if config.builtin != "epitope":
+        return builtin(config.builtin)
+
+    hotspots = target_hotspot_positions(
+        general.target.hotspots,
+        chain_id=general.target.chain_id,
+        target_length=len(target_sequence),
+        target_name=general.target.name,
+    )
+    if not hotspots:
+        raise ConfigPreflightError(
+            "the epitope function measures contacts against target.hotspots, and "
+            f"campaign {general.campaign.name!r} names none. Coverage and offset "
+            "would be stored as absent and the run would answer nothing. Name the "
+            "epitope in the general config, or run a function that does not need "
+            "one."
+        )
+    return builtin("epitope", args=("--hotspots", ",".join(str(spot) for spot in hotspots)))
+
+
+def _structures(
+    connection, config: FunctionRunConfig, function: ScoringFunction, design_set: DesignSet
+):
     """Resolve exactly one complex pose at replicate zero per frozen member."""
-    if "structure" not in config.function.inputs:
+    if "structure" not in function.inputs:
         return {}, None
     if config.structures_from is None:
         raise FunctionRunError("structure input requires structures_from: an evaluator run name or ID")
@@ -74,7 +160,7 @@ def _structures(connection, config: FunctionRunConfig, design_set: DesignSet):
             path = Path(output_uri) / path
         if not path.is_file():
             raise FunctionRunError(f"required structure not found: {path}")
-        if config.function.prefix == "source_model" and not model:
+        if function.prefix == "source_model" and not model:
             raise FunctionRunError(f"structure for design {design_id} has no source model")
         resolved[design_id] = (path.resolve(), model)
     missing = [entry.design_id for entry in design_set.entries if entry.design_id not in resolved]
@@ -116,7 +202,8 @@ def run_function(
             raise FunctionRunError("design-set identity does not match its frozen members")
         target_sequence = read_single_fasta(general.target.sequence_fasta)
         target = TargetDigest.of(general.target.name, target_sequence)
-        preflight_custom(config.function)
+        function = resolve_function(config, general, target_sequence)
+        preflight_custom(function)
         with read_only(database) as connection:
             stored_target = connection.execute(
                 "SELECT value FROM _meta WHERE key = 'target_sha256'"
@@ -134,7 +221,7 @@ def run_function(
                     raise FunctionRunError(f"frozen design is absent from named database: {entry.design_id}")
                 if row.sequence != entry.sequence or row.length != entry.length:
                     raise FunctionRunError(f"frozen sequence identity differs for design {entry.design_id}")
-            structures, source_run = _structures(connection, config, design_set)
+            structures, source_run = _structures(connection, config, function, design_set)
     except (DesignSetError, SelectionError, ConfigPreflightError, OSError, FunctionError) as error:
         raise FunctionRunError(str(error)) from error
 
@@ -168,7 +255,7 @@ def run_function(
     run_id = new_id()
     try:
         result = run_custom(
-            config.function, inputs, run_id=run_id,
+            function, inputs, run_id=run_id,
             work_dir=output / "function", measured_at=started,
         )
     except FunctionError as error:
@@ -188,7 +275,12 @@ def run_function(
             "scope_id": design_set.scope_id,
         },
         workflow_metadata={
-            "function": config.function.name,
+            "function": function.name,
+            # What the script was actually invoked with, beyond --inputs and
+            # --outputs. For the epitope function this is the resolved hotspot
+            # list, so the epitope a measurement was made against is readable
+            # from the run rather than re-derived from the general config.
+            "function_args": list(function.args),
             "script_sha256": result.script_sha256,
             "helper_sha256": result.helper_sha256,
             "target": target.model_dump(mode="json"),

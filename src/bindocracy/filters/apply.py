@@ -241,11 +241,16 @@ def apply_filter_set(
             created_at=created_at,
         )
         records.extend(design_records)
-        for record in design_records:
-            if record.name in passed_by_rule and record.passed:
+        # The set-level record is the last one and carries the set's name,
+        # which `FilterSet` refuses to let collide with a rule's. Counted
+        # positionally rather than by name so the two tallies cannot merge even
+        # if that guarantee were ever relaxed.
+        *rule_records, overall_record = design_records
+        for record in rule_records:
+            if record.passed:
                 passed_by_rule[record.name] += 1
-            elif record.name == filter_set.name and record.passed:
-                n_passed += 1
+        if overall_record.passed:
+            n_passed += 1
 
     summary = {
         "filter_set": filter_set.name,

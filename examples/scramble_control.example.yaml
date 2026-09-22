@@ -1,0 +1,75 @@
+# The negative control arm: composition-matched scrambles of real designs.
+#
+# Run this over the SAME frozen design set the campaign scores, then score the
+# children with the same models and the same protocol. The scrambles and the
+# designs then differ in exactly one thing -- the order of the residues -- so
+# the gap between the two distributions is what the design process bought, and
+# the overlap is the false-positive rate a threshold has to clear.
+#
+# Validate before submitting; it needs no GPU and takes seconds:
+#
+#   python bindocracy/scripts/validate_optimizer.py \
+#       --script bindocracy/examples/optimizers/scramble_control.py \
+#       --design-set design_sets/<digest>.json \
+#       --target-fasta <target>.fasta \
+#       --declare identity_to_parent:none --declare is_control:none \
+#       --max-children 2 --script-args --variants 2
+#
+# The children are NOT designs. Name the run so that is obvious, keep them out
+# of every `designset build` that feeds an optimizer, and read them only as the
+# distribution a threshold is judged against.
+
+schema_version: 1
+
+# Metric prefix: `identity_to_parent` is stored as
+# `scramble_identity_to_parent`.
+name: scramble
+tool: optimize
+
+design_set: /abs/path/design_sets/<digest>.json
+
+script: /abs/path/bindocracy/examples/optimizers/scramble_control.py
+# `--mode reverse` is the harder control: it preserves local composition
+# windows a full shuffle destroys, so a predictor that separates designs from
+# reversals is making a stronger claim than one that only beats shuffles.
+args: ["--variants", "2", "--mode", "shuffle"]
+
+inputs: [sequence]
+
+# True, and the reason it matters: this script consults no model, so every
+# scorer -- including the held-out judge -- stays available to score the
+# controls. A control arm judged by a model that had a say in it would not be
+# a control.
+loss_models: []
+
+metrics:
+  identity_to_parent:
+    direction: none
+    description: >-
+      fraction of positions where the scramble holds the parent's residue. A
+      control that is largely identical to what it controls for is not one;
+      this is the column that lets that be checked rather than assumed.
+  is_control:
+    direction: none
+    description: always 1, so control children are separable in a query
+
+max_children: 2
+seed: 42
+timeout_seconds: 600
+# A permutation cannot change length, and saying so keeps the epitope
+# function's binder-found-by-length identification unambiguous.
+length_delta: 0
+
+sharding:
+  jobs: 1
+
+# No runtime block: standard library only, so the harness's own interpreter on
+# the submitting host is the right place for it.
+
+resources:
+  gpus: 1
+  cpus: 2
+  memory_gb: 8
+  walltime: "00:20:00"
+
+driver_script: /abs/path/bindocracy/drivers/optimize/run_optimizer.py

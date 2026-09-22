@@ -180,7 +180,7 @@ def test_the_rejected_alphabet_is_named_in_the_error() -> None:
 def test_loss_models_is_required(tmp_path) -> None:
     """The field a later selection needs to avoid measuring its own optimizer.
     An omission is refused; `[]` is how you claim the loss saw no model."""
-    from tests.conftest import write_optimize_configs
+    from conftest import write_optimize_configs
 
     _, model_path = write_optimize_configs(tmp_path)
     payload = json.loads(OptimizeConfig.model_validate(

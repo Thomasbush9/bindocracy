@@ -265,6 +265,27 @@ it explicitly. A name that is not a model this campaign scores with is refused
 at preflight, because a misspelling would exclude nothing later while looking
 like it had.
 
+### The rule is now enforced, not just stated
+
+`filter apply` refuses a policy whose thresholds name a model that already had
+a say in the designs it is filtering. The check reads `metadata.loss_models`
+off the frozen set itself and compares it against the model prefix of every
+metric the filter tests, so a filter gated on `af2_iptm` over children an AF2
+loss produced is refused with the count of designs each metric shaped. Set
+`allow_self_selection: true` to proceed, which is honest for ranking within one
+optimizer's own output and dishonest for anything else.
+
+The audit is written into the filter run's `count_details.independence`
+whether or not it refused, so the independence of a selection is a fact in the
+database rather than a claim in a comment.
+
+**What it cannot see.** Only optimizers record `loss_models`; generators do not,
+so a design straight out of hallucination contributes nothing to this check even
+though the generator had a loss of its own. That limit is deliberate — a table
+of "which model each tool probably optimizes against" would make the check look
+complete while resting on assumptions nothing in the database supports. Reading
+the generator's own config is still a manual step.
+
 ---
 
 ## What gets stored

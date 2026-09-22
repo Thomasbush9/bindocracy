@@ -413,3 +413,92 @@ def test_no_hotspots_means_absent_not_zero(tmp_path) -> None:
     assert math.isnan(values["epitope_offset"])
     # The interface itself is still a real measurement.
     assert values["n_interface_residues"] > 0
+
+
+# --- the built-ins have to be reachable from a command ----------------------
+
+
+def test_a_builtin_function_can_be_named_and_a_custom_one_supplied(tmp_path):
+    """Until 2026-09-22 neither built-in could be run by any command.
+
+    `FunctionRunConfig.function` accepted only a `CustomFunction`, so `epitope`
+    was refused twice over: as a built-in for declaring no `metrics`, and as a
+    custom function for declaring metric names the registry already owns. It
+    was implemented, tested, documented as a worked example, and unreachable --
+    the same shape as the `readers.epitope` bug one level up.
+    """
+    from bindocracy.functions.run import FunctionRunConfig
+
+    named = FunctionRunConfig.model_validate({
+        "name": "epitope-pilot", "design_set": str(tmp_path / "set.json"),
+        "builtin": "epitope", "structures_from": "score-boltz2-pilot",
+    })
+    assert named.builtin == "epitope"
+    assert named.function is None
+
+    # Exactly one, and one is required.
+    with pytest.raises(ValueError, match="exactly one"):
+        FunctionRunConfig.model_validate({
+            "name": "neither", "design_set": str(tmp_path / "set.json"),
+        })
+    with pytest.raises(ValueError, match="exactly one"):
+        FunctionRunConfig.model_validate({
+            "name": "both", "design_set": str(tmp_path / "set.json"),
+            "builtin": "sequence",
+            "function": {"name": "charge", "script": str(tmp_path / "s.py"),
+                         "metrics": {"my_charge": {"direction": "none"}}},
+        })
+
+
+def test_the_epitope_function_is_given_the_campaign_hotspots(tmp_path):
+    """Resolved to FASTA positions, or the run is refused.
+
+    A built-in with no `--hotspots` reports coverage and offset as absent --
+    correctly, since no epitope was named -- and stores only the two geometry
+    metrics. That is a run that succeeds and does not answer the question it
+    was started for, so a campaign naming no hotspots is refused instead.
+    """
+    from bindocracy.config.models import GeneralConfig
+    from bindocracy.config.preflight import ConfigPreflightError
+    from bindocracy.functions.run import FunctionRunConfig, resolve_function
+
+    fasta = tmp_path / "target.fasta"
+    fasta.write_text(">t\n" + "A" * 201 + "\n")
+    payload = {
+        "schema_version": 1,
+        "campaign": {"name": "c"},
+        "target": {"name": "t", "sequence_fasta": str(fasta), "chain_id": "A",
+                   "hotspots": ["A110", "A112", "A131"]},
+        "cluster": {"executor": "slurm", "account": "acct",
+                    "default_partition": "gpu"},
+    }
+    general = GeneralConfig.model_validate(payload)
+    config = FunctionRunConfig.model_validate({
+        "name": "epi", "design_set": str(tmp_path / "set.json"),
+        "builtin": "epitope", "structures_from": "score-boltz2",
+    })
+
+    function = resolve_function(config, general, "A" * 201)
+    assert function.args == ("--hotspots", "110,112,131")
+    assert function.prefix == "source_model"
+    # A built-in declares no metrics of its own; they come from the registry.
+    assert set(function.specs) == {
+        "epitope_coverage", "n_epitope_contacts", "n_interface_residues",
+        "epitope_offset",
+    }
+
+    # Author numbering that is not FASTA position is refused, not clamped.
+    payload["target"]["hotspots"] = ["A410"]
+    with pytest.raises(ConfigPreflightError, match="outside the target"):
+        resolve_function(config, GeneralConfig.model_validate(payload), "A" * 201)
+
+    # No epitope named at all.
+    payload["target"]["hotspots"] = []
+    with pytest.raises(ConfigPreflightError, match="names none"):
+        resolve_function(config, GeneralConfig.model_validate(payload), "A" * 201)
+
+    # A sequence-only function needs nothing from the campaign.
+    sequence_config = config.model_copy(
+        update={"builtin": "sequence", "structures_from": None}
+    )
+    assert resolve_function(sequence_config, general, "A" * 201).args == ()

@@ -9,6 +9,7 @@ a GPU to check.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -326,3 +327,68 @@ def test_duplicate_thresholds_and_unknown_gating_rules_are_refused():
     )
     with pytest.raises(ValueError, match="no such rule"):
         FilterSet(name="s", rules=(rule,), gating_rules=("nope",))
+
+
+def test_a_set_named_after_one_of_its_rules_is_refused():
+    """The set-level verdict and a rule verdict would share a decision_id.
+
+    `decisions.decision_id` is a primary key derived from the name, so the two
+    rows collide at ingest -- one stage away from the config that caused it --
+    and the run summary counts the set-level pass into the rule's tally,
+    reporting n_passed as zero.
+    """
+    rule = FilterRule(
+        name="worth_optimizing",
+        thresholds=(Threshold(metric="boltz2_iptm", op=">=", value=0.8, aggregate="mean"),),
+    )
+    with pytest.raises(ValueError, match="also one of its rules"):
+        FilterSet(name="worth_optimizing", rules=(rule,))
+    # The ordinary spelling, where the set names a policy and the rule a claim.
+    assert FilterSet(name="worth-optimizing-2026-09", rules=(rule,)).gating == ("worth_optimizing",)
+
+
+def test_a_filter_may_not_select_on_a_model_that_designed_the_candidates():
+    """Held out is a property of the whole path, not of which stage a model runs in.
+
+    An optimizer that drove its children against AF2 records `af2` in every
+    child's loss_models. A filter gated on `af2_iptm` over those children
+    measures AF2's agreement with itself and reports it as a second opinion,
+    and nothing about the numbers would look wrong.
+    """
+    from bindocracy.filters.config import FilterConfig
+    from bindocracy.filters.run import FilterRunError, check_independence, metric_model
+
+    assert metric_model("protenix_mini_iptm") == "protenix_mini"
+    assert metric_model("esmfold2_iptm") == "esmfold2"
+    # A custom function's metric names no model and is not the subject of this check.
+    assert metric_model("sequence_net_charge") is None
+
+    config = FilterConfig(
+        name="final",
+        design_set=Path("/nonexistent/set.json"),
+        evaluator_runs=("score-af2",),
+        filter_set=FilterSet(
+            name="final-policy",
+            rules=(
+                FilterRule(
+                    name="confident",
+                    thresholds=(
+                        Threshold(metric="af2_iptm", op=">=", value=0.7, aggregate="mean"),
+                    ),
+                ),
+            ),
+        ),
+    )
+    with pytest.raises(FilterRunError, match="already had a say"):
+        check_independence(config, {"af2": 8}, 8)
+
+    # A model that shaped nothing in this set is free to judge it.
+    audit = check_independence(config, {"boltz2": 8}, 8)
+    assert audit["self_selecting_metrics"] == {}
+    assert audit["designed_by"] == {"boltz2": 8}
+
+    # Ranking within one optimizer's own output is honest, and has to say so.
+    allowed = config.model_copy(update={"allow_self_selection": True})
+    audit = check_independence(allowed, {"af2": 8}, 8)
+    assert audit["self_selecting_metrics"] == {"af2_iptm": 8}
+    assert audit["allowed"] is True

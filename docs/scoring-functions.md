@@ -196,6 +196,50 @@ A built-in declares no metrics, because its metrics are already in the registry
 with a fixed meaning. A custom function must declare, because nobody else knows
 what its numbers mean.
 
+### Running one
+
+Name it. The script, the inputs, the prefix and the metric keys are all fixed
+by the function, so a config that restated them would only be a second place
+for them to be wrong:
+
+```yaml
+schema_version: 1
+name: epitope-pilot
+tool: function
+design_set: /abs/sets/<digest>.json
+builtin: epitope
+structures_from: score-boltz2-pilot   # required; epitope reads a pose
+```
+
+`builtin` and `function` are mutually exclusive and one is required. The
+command is the same either way:
+
+```bash
+bindocracy function run campaign.duckdb \
+  --general general.yaml --config epitope-pilot.yaml \
+  --output-dir runs/epitope-pilot
+```
+
+**The epitope function takes its hotspots from the general config**, resolved
+to 1-based positions in the target's FASTA by the same checked mapping the
+optimizer plans with — so the epitope a design was built against and the
+epitope it is measured against are the same residues by construction. The
+resolved list is recorded in the run's `function_args`. A campaign naming no
+`target.hotspots` is refused rather than run: coverage and offset would be
+stored as absent and the run would answer nothing.
+
+`epitope` needs one complex pose per design at replicate 0, which means the
+scoring run that produced them must have been configured with
+`save_structures: true`. Scoring runs that predate that field saved no poses,
+and the function cannot be backfilled over them — it can only be backfilled
+over structures that were actually kept.
+
+Until 2026-09-22 neither built-in was reachable from any command: the run
+config accepted only a custom function, and `epitope` was refused both for
+declaring no `metrics` and, when spelled as a custom function, for naming
+metric keys the registry already owns. That is the same shape as the
+`readers.epitope` bug one level up, and it is why this section exists.
+
 ### `sequence` — the negative-control arm
 
 Seven sequence-only properties: length, net charge, molecular weight,

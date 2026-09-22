@@ -16,7 +16,7 @@ from pathlib import Path
 
 from bindocracy.config.load import sha256_file
 from bindocracy.config.models import GeneralConfig
-from bindocracy.config.preflight import parse_hotspots
+from bindocracy.config.preflight import ConfigPreflightError, target_hotspot_positions
 from bindocracy.runs.designset import DesignSet, DesignSetError
 from bindocracy.runs.selection import SelectionError, read_only
 from bindocracy.store.records import sha256_text
@@ -146,45 +146,20 @@ def preflight_optimize(general: GeneralConfig, model: OptimizeConfig) -> Optimiz
 def _resolve_hotspots(general: GeneralConfig, target_length: int) -> tuple[int, ...]:
     """The campaign epitope as 1-based positions in the target's FASTA.
 
-    `target.hotspots` is author numbering with an optional chain (`A110`), which
-    is how the campaign writes it and how a crystal structure numbers it. What
-    a script can actually use is a position in the sequence it is handed,
-    because residue ids in a *predicted* pose are positional -- 0..200 for a
-    201-residue target -- and carry none of the author numbering. That is the
-    same trap `drivers/functions/epitope_metrics.py` records, and getting it
-    wrong twice there is why this is resolved at plan time now.
-
-    The mapping is assumed to be the identity and then CHECKED, rather than
-    assumed silently. For this campaign it is: the DIO3 target PDB is numbered
-    1..201, verified. A number outside the sequence proves it is not, and that
-    raises here instead of scoring a confident zero later -- because an epitope
-    the binder is measured against on the wrong numbering is not a weaker
-    measurement, it is a wrong one that looks like a result.
+    The mapping, its checks and the reasoning live in
+    `config/preflight.py::target_hotspot_positions`, shared with the epitope
+    function so that the epitope a run is planned against and the epitope it is
+    later measured against cannot drift apart.
     """
-    if not general.target.hotspots:
-        return ()
-
-    parsed = parse_hotspots(general.target.hotspots)
-    chain = general.target.chain_id.upper()
-    wrong_chain = sorted({spot.chain for spot in parsed if spot.chain and spot.chain != chain})
-    if wrong_chain:
-        raise OptimizePreflightError(
-            f"target.hotspots names chain(s) {wrong_chain} but the target chain is "
-            f"{chain!r}; an epitope on another chain is not this target's epitope"
+    try:
+        return target_hotspot_positions(
+            general.target.hotspots,
+            chain_id=general.target.chain_id,
+            target_length=target_length,
+            target_name=general.target.name,
         )
-
-    numbers = sorted({spot.number for spot in parsed})
-    out_of_range = [number for number in numbers if not 1 <= number <= target_length]
-    if out_of_range:
-        raise OptimizePreflightError(
-            f"hotspot(s) {out_of_range} fall outside the target's 1..{target_length} "
-            "residues, so the campaign's author numbering is not the same as FASTA "
-            f"position for this target ({general.target.name}).\n"
-            "Map them against target.structure_pdb and write FASTA positions in the "
-            "config. Refusing rather than clamping: an epitope measured on the wrong "
-            "numbering reads as a real miss."
-        )
-    return tuple(numbers)
+    except ConfigPreflightError as error:
+        raise OptimizePreflightError(str(error)) from error
 
 
 def _resolve_structures(

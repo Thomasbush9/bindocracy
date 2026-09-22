@@ -61,6 +61,58 @@ def hotspot_numbers(residues: tuple[str, ...]) -> set[int]:
     return {hotspot.number for hotspot in parse_hotspots(residues)}
 
 
+def target_hotspot_positions(
+    residues: tuple[str, ...],
+    *,
+    chain_id: str,
+    target_length: int,
+    target_name: str,
+) -> tuple[int, ...]:
+    """The campaign epitope as 1-based positions in the target's own FASTA.
+
+    `target.hotspots` is author numbering with an optional chain (`A110`),
+    which is how a crystal structure numbers it. What anything reading a
+    *predicted* pose can use is a position in the sequence it was handed,
+    because residue ids in a prediction are positional -- 0..200 for a
+    201-residue target -- and carry none of the author numbering.
+
+    The mapping is assumed to be the identity and then CHECKED rather than
+    assumed silently. A hotspot on another chain, or past the end of the
+    sequence, proves it is not the identity here, and that raises instead of
+    scoring a confident zero later: an epitope measured on the wrong numbering
+    is not a weaker measurement, it is a wrong one that looks like a result.
+
+    Shared because three stages need the same mapping from the same field --
+    optimization plans with it, the epitope function measures against it, and a
+    filter gates on what that function produced. Three copies of this would be
+    three chances for them to disagree about what the epitope is.
+    """
+    if not residues:
+        return ()
+
+    parsed = parse_hotspots(residues)
+    chain = chain_id.upper()
+    wrong_chain = sorted({spot.chain for spot in parsed if spot.chain and spot.chain != chain})
+    if wrong_chain:
+        raise ConfigPreflightError(
+            f"target.hotspots names chain(s) {wrong_chain} but the target chain is "
+            f"{chain!r}; an epitope on another chain is not this target's epitope"
+        )
+
+    numbers = sorted({spot.number for spot in parsed})
+    out_of_range = [number for number in numbers if not 1 <= number <= target_length]
+    if out_of_range:
+        raise ConfigPreflightError(
+            f"hotspot(s) {out_of_range} fall outside the target's 1..{target_length} "
+            "residues, so the campaign's author numbering is not the same as FASTA "
+            f"position for this target ({target_name}).\n"
+            "Map them against target.structure_pdb and write FASTA positions in the "
+            "config. Refusing rather than clamping: an epitope measured on the wrong "
+            "numbering reads as a real miss."
+        )
+    return tuple(numbers)
+
+
 def require_alignment_of(msa: Path, target_sequence: str, *, described_as: str) -> None:
     """Refuse an alignment whose query is not the campaign target.
 

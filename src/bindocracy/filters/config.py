@@ -92,6 +92,11 @@ class FilterConfig(ConfigModel):
 
     filter_set: FilterSet
 
+    # Permit thresholds on a model that already had a say in these designs.
+    # Off by default: `run.py::check_independence` explains what it prevents
+    # and why "held out" cannot be read off the run graph after the fact.
+    allow_self_selection: bool = False
+
 
 def build_filter_run(
     *,
@@ -103,6 +108,7 @@ def build_filter_run(
     run_name: str,
     output_uri: str,
     started_at: datetime | None = None,
+    independence: dict[str, Any] | None = None,
 ) -> CollectedRun:
     """Apply a filter set and package the result for the ordinary ingest path.
 
@@ -161,6 +167,11 @@ def build_filter_run(
             "scope_id": design_set.scope_id,
             "evaluator_runs": list(config.evaluator_runs),
             "campaign": general.campaign.name,
+            # Which models had already shaped these designs when the policy was
+            # applied, and whether any of them is one it selected on. Stored
+            # with the verdicts so the independence of a selection is a fact in
+            # the database rather than a claim in a comment.
+            "independence": independence or {},
         },
         output_uri=output_uri,
         created_at=started,

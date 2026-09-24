@@ -1,10 +1,11 @@
 # The scoring stage
 
-Status: **scorer integrated; downstream selection partly library-only,
-2026-09-08.** Scorer configs run through the existing tool-agnostic Snakemake
-workflow as `evaluate` runs. Design-set building and filtering still lack CLI
-commands. Sections 1–7 below preserve the original design discussion; §9
-documents the current target-preparation command.
+Status: **scoring, filtering, frozen selection, and stored ranking have CLI
+interfaces (2026-09-24).** Registered scorers run through the shared Snakemake
+workflow as `evaluate` runs. `designset build`, `filter apply`, and `rank apply`
+provide CPU-side selection and persisted decisions. Sections 1–8 preserve the
+original design discussion; §9 covers target preparation, §10 records the earlier
+scientific priorities, and §11 documents the current ranking interface.
 
 `harness-design.md` closes by naming what is missing: *"No cross-tool quality
 comparison exists. Every score comes from a different scorer, mostly the same
@@ -44,7 +45,7 @@ two different kinds of thing:
 | `evaluate` | a real `ToolPlugin` | Runs a model on a GPU inside a container, fans out over shards, writes a run directory an adapter parses. Exactly what the plugin seam describes. |
 | `filter` | a library function plus a CLI command | Reads the database, evaluates arithmetic, writes verdicts. No container, no tasks, no run directory. |
 | `cluster` | probably a plugin | Foldseek and an exhaustive all-vs-all are real compute, but CPU. Undecided; see §7. |
-| `rank` | a library function | Same shape as `filter`. |
+| `rank` | a library function plus `rank apply` | Scoped ordering and named cohort memberships; same persistence path as `filter`. |
 
 `docs/adding-a-tool.md` says to name a missing contract rather than work around
 one. The missing contract is a **database-to-database run**: something that
@@ -188,11 +189,12 @@ thing that has no GPU. Revisit only if clustering becomes a scheduled CPU job.
 
 ## 6. What is left
 
-Ordered as they need doing.
+The original implementation checklist follows. The CLI surface is now available:
+`bindocracy designset build`, `bindocracy filter apply`, and `bindocracy rank apply`;
+see §11 for stored ranking and reusable cohort handoffs.
 
-1. **CLI surface.** `bindocracy designset build`, `bindocracy filter apply`,
-   and something to read designs out. There is currently no command that reads
-   a design from the database, so ranking a library means opening a SQL client.
+1. **CLI surface — implemented.** Explicit database selections, threshold policies,
+   and ranking/cohort policies no longer require ad hoc SQL/Python glue.
 2. **Sequence metrics and the negative controls.** Length, net charge and
    molecular weight are specified in `adapters/scoring.py` and not computed.
    They cost no GPU and they are the bar every real metric must clear — the
@@ -379,3 +381,57 @@ Recommended next implementation: **structure export, truthful reader validation,
 then epitope/physical-interface measurements**. Additional optimization losses
 should wait until those outputs can reveal whether a score improvement is a
 better binding hypothesis or merely an exploited model preference.
+
+## 11. Stored ranking and cohort selection
+
+[`examples/ranking.example.yaml`](../examples/ranking.example.yaml) defines a
+global Chai mean-iPTM top-50 policy and shows per-generator recipe overrides.
+The source must be an explicit frozen DesignSet; evaluator runs must be named
+explicitly. The command does not generate or fold sequences.
+
+```bash
+uv run bindocracy rank apply /path/to/campaign.duckdb \
+  --general /path/to/general.yaml --policy /path/to/ranking.yaml \
+  --output-dir /path/to/rankings
+
+# Use the printed ranking run ID, not an ambiguous reused policy name.
+uv run bindocracy designset build /path/to/campaign.duckdb \
+  --passed-filter top50 --filter-run RANK_RUN_ID --out-dir /path/to/selected
+```
+
+Each metric input declares its replica subset, aggregation (`mean`, `median`,
+`min`, or `max`), and optional minimum coverage. By default every specified replica
+must be finite and successful. This distinguishes a native aggregate at replica 0
+from five independent stored replica rows. Per-input evaluator scopes can narrow,
+but never widen, the top-level evaluator list.
+
+Ranking is lexicographic, with explicit direction for each priority and ascending
+design ID as the final tie-breaker. A priority may use the conservative minimum
+of several named inputs after their individual aggregation. No weighted score or
+cross-tool normalization is inferred.
+
+- `group_by: global` ranks one population; `generator` ranks each producing tool
+  independently and accepts `by_generator` recipe overrides.
+- Exact-sequence deduplication retains the best-ranked eligible observation within
+  each scope, not whichever database row happened to come first.
+- Named `head` and/or `tail` cohorts never overlap. `shortage: error` refuses an
+  undersized eligible population; explicit `truncate` fills head first, then tail
+  from remaining candidates. Missing, failed, nonfinite, or ambiguous measurements
+  are excluded with reasons, never classified as the worst designs.
+- Native-pass gating is not implicit. Freeze that eligibility first with
+  `designset build --passed-filter NAME --filter-run RUN_ID`. The source run may
+  be a native generation/evaluation run, a filter run, or a rank run, provided it
+  actually carries filter decisions. Ambiguous names remain errors.
+
+The ranking run stores scoped `rank` decisions and `filter` membership decisions
+for each cohort and their union (default name `selected`). It creates no new
+designs and does not alter measurements or earlier verdicts. Resolved policy,
+source membership, and consumed metrics identify the run; identical reapplication
+is a no-op, while a changed metric snapshot or policy produces a separate run.
+
+The content-addressed output directory contains `collected.json`, `config.json`
+(including the frozen source and resolved policy), `summary.txt`, and per-cohort
+JSON/FASTA DesignSets. Empty cohorts are explicitly empty, not a fallback to the
+whole source; the existing `designset build` command still refuses empty queries.
+Use the selected manifest in a scoring/optimization config, then review a
+[frozen campaign plan](../workflow/README.md) before submitting any compute.

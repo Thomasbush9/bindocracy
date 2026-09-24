@@ -42,6 +42,9 @@ class WorkflowIndex(ConfigModel):
     run_root: Path
     general_config: Path
     runs: tuple[RunRequest, ...] = Field(min_length=1)
+    # Present only in a frozen campaign index. Native workflow indexes retain
+    # their normal authored-config behavior.
+    campaign_plan: Path | None = None
 
     @model_validator(mode="after")
     def names_must_be_unique(self) -> Self:

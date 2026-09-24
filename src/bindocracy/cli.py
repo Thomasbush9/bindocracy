@@ -12,6 +12,7 @@ import typer
 from pydantic import ValidationError
 
 from bindocracy import __version__
+from bindocracy.campaign.cli import app as campaign_app
 from bindocracy.config import (
     ConfigLoadError,
     ConfigNotFoundError,
@@ -24,6 +25,7 @@ from bindocracy.filters.config import FilterConfig
 from bindocracy.filters.config import summarise as summarise_filter
 from bindocracy.filters.run import FilterRunError, run_filter
 from bindocracy.functions.run import FunctionRunConfig, FunctionRunError, run_function
+from bindocracy.ranking.cli import app as rank_app
 from bindocracy.runs import ingest_bundle, ingest_collected, write_collected
 from bindocracy.runs.designset import DesignSet, DesignSetError
 from bindocracy.runs.designset import summarise as summarise_set
@@ -55,6 +57,8 @@ filter_app = typer.Typer(help="Apply a stored filter policy to a frozen design s
 app.add_typer(filter_app, name="filter")
 function_app = typer.Typer(help="Score a frozen database selection with a custom function.")
 app.add_typer(function_app, name="function")
+app.add_typer(campaign_app, name="campaign")
+app.add_typer(rank_app, name="rank")
 
 
 @target_app.command("prepare-msa")

@@ -18,8 +18,11 @@ use the login node only to edit inputs, inspect help, and submit jobs.
   anything; several tools produce confident, well-formed output when misconfigured
 - **[Campaign database and output-adapter contract](docs/database.md)** — the
   single-target schema, empty-database command, and normalized parser interface
-- **[Generation workflow](workflow/README.md)** — the Snakemake rule graph that
-  takes any registered tool's config to designs in DuckDB, and how to run it
+- **[Campaign workflow](workflow/README.md)** — frozen execution plans, explicit
+  approval, controller/worker lifecycle, and the shared Snakemake rule graph
+  that takes registered tools to DuckDB
+- **[Stored ranking and cohort selection](docs/scoring-stage.md#11-stored-ranking-and-cohort-selection)**
+  — reproducible global or per-generator head/tail selections and frozen handoffs
 - **[Adding a tool](docs/adding-a-tool.md)** — the five things a tool supplies,
   and the one line that registers it
 - **[Scoring functions](docs/scoring-functions.md)** — conditions (things that

@@ -318,23 +318,31 @@ def test_naming_a_filter_run_without_a_rule_is_refused() -> None:
         DesignQuery(filter_runs=("some-run",))
 
 
-def test_an_ambiguous_filter_run_name_is_refused(campaign, tmp_path) -> None:
-    """Two runs share the config's `name` after a revision, and selecting on
-    the name would union two contradictory policies -- which silently gives you
-    the looser one. The run_id is offered because it is what is unique."""
+def test_filter_run_identity_keeps_revised_policies_separate(campaign, tmp_path) -> None:
     database, general, general_path = campaign
     _, _, manifest = build(database, DesignQuery(), tmp_path / "sets")
-    _apply(database, general, general_path,
-           _filter_yaml(tmp_path / "a.yaml", manifest, threshold=0.5), tmp_path / "r1")
-    _apply(database, general, general_path,
-           _filter_yaml(tmp_path / "b.yaml", manifest, threshold=0.8), tmp_path / "r2")
+    loose = _apply(
+        database, general, general_path,
+        _filter_yaml(tmp_path / "a.yaml", manifest, threshold=0.5), tmp_path / "r1",
+    )
+    strict = _apply(
+        database, general, general_path,
+        _filter_yaml(tmp_path / "b.yaml", manifest, threshold=0.8), tmp_path / "r2",
+    )
 
-    with pytest.raises(SelectionError, match="2 filter runs are named 'policy'"):
+    with pytest.raises(SelectionError):
         build(
             database,
             DesignQuery(passed_filter=("worth_it",), filter_runs=("policy",)),
             tmp_path / "sets",
         )
+    for result, expected in ((loose, {"d0", "d1", "d3"}), (strict, {"d0", "d3"})):
+        chosen, _, _ = build(
+            database,
+            DesignQuery(passed_filter=("worth_it",), filter_runs=(result.run.run_id,)),
+            tmp_path / result.run.run_id,
+        )
+        assert {entry.design_id for entry in chosen.entries} == expected
 
 
 def test_the_resolved_run_id_is_what_the_set_records(campaign, tmp_path) -> None:

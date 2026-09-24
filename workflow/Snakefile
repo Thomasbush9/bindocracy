@@ -22,13 +22,21 @@
 
 from pathlib import Path
 
-from bindocracy.runs.index import read_workflow_index
+from bindocracy.runs.index import load_workflow_index, read_workflow_index
 from bindocracy.runs.steps import collect_step, generate_step, ingest_step, prepare_step
 from bindocracy.tools import load_configs, plugin_for, resources
 
 INDEX = read_workflow_index(config)
 RUN_ROOT = INDEX.run_root
 DATABASE = INDEX.database
+FROZEN_RUNS = None
+if INDEX.campaign_plan is not None:
+    from bindocracy.campaign.plan import load_plan
+
+    frozen_plan = load_plan(INDEX.campaign_plan)
+    if INDEX != load_workflow_index(frozen_plan["workflow_index"]):
+        raise ValueError("workflow configuration differs from the approved campaign plan")
+    FROZEN_RUNS = {run["name"]: run for run in frozen_plan["runs"]}
 
 # Validated at DAG time, so a bad config fails in a second rather than in the
 # queue. This is also where the task count comes from, which is why no
@@ -38,14 +46,27 @@ LOADED = {
     for request in INDEX.runs
 }
 TASKS = {
-    name: [f"{task_id:04d}" for task_id in range(plugin_for(loaded.tool).tool_plan(loaded).jobs)]
+    name: [
+        f"{task_id:04d}"
+        for task_id in range(
+            FROZEN_RUNS[name]["tasks"] if FROZEN_RUNS is not None
+            else plugin_for(loaded.tool).tool_plan(loaded).jobs
+        )
+    ]
     for name, loaded in LOADED.items()
 }
+RESOURCES = (
+    {name: run["resources"] for name, run in FROZEN_RUNS.items()}
+    if FROZEN_RUNS is not None else {
+        name: {**resources(loaded), "gpu": loaded.model.resources.gpus}
+        for name, loaded in LOADED.items()
+    }
+)
 
 
 def slurm(field):
-    """One launch resource, resolved at DAG time from the configs alone."""
-    return lambda wildcards: resources(LOADED[wildcards.run])[field]
+    """One launch resource, frozen by a campaign or resolved from native config."""
+    return lambda wildcards: RESOURCES[wildcards.run][field]
 
 
 def config_inputs(wildcards):
@@ -56,6 +77,11 @@ def config_inputs(wildcards):
     a changed config could sit behind an untouched run.json while the launch
     used different values.
     """
+    # Planning already prepared and hashed every manifest. Newly copied config
+    # timestamps must not invalidate successful tasks when adopting/resuming a
+    # run; the campaign guard above checks their contents instead.
+    if FROZEN_RUNS is not None:
+        return []
     loaded = LOADED[wildcards.run]
     return [str(loaded.general_path), str(loaded.model_path)]
 
@@ -93,6 +119,7 @@ rule generate:
         slurm_account=slurm("slurm_account"),
         slurm_partition=slurm("slurm_partition"),
         gres=slurm("gres"),
+        gpu=slurm("gpu"),
         cpus_per_task=slurm("cpus_per_task"),
         mem_mb=slurm("mem_mb"),
         runtime=slurm("runtime"),

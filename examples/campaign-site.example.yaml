@@ -1,0 +1,18 @@
+# Copy and replace these site-specific placeholders; there are no account defaults.
+# Planning is CPU-only. This explicitly requests a CPU controller; a GPU-backed
+# controller is only used if you deliberately change gpus and partition below.
+controller:
+  account: YOUR_ACCOUNT
+  partition: YOUR_CPU_PARTITION
+  cpus: 4
+  memory_gb: 16
+  walltime: "24:00:00"
+  gpus: 0
+  # constraint: YOUR_CONSTRAINT
+
+# Snakemake can keep this many worker jobs active. The GPU ceiling also bounds
+# workers with multi-GPU requests; it includes the controller's allocation.
+max_workers: 8
+max_total_gpus: 8
+nofile: 65536
+latency_wait: 60

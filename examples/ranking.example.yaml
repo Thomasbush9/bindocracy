@@ -1,0 +1,78 @@
+# First freeze explicit eligibility with `bindocracy designset build`.
+# No native-pass filter is added by ranking. Paths are relative to this YAML.
+# Replace the source manifest and run ID with your stored records.
+schema_version: 1
+name: chai_mean_iptm_top50
+tool: rank
+design_set: ../design_sets/REPLACE_WITH_SOURCE_DIGEST.json
+evaluator_runs: [REPLACE_WITH_CHAI_RUN_ID]
+group_by: global
+inputs:
+  chai_iptm:
+    metric: chai1_iptm
+    replicas: [0, 1, 2, 3, 4]
+    aggregate: mean
+    min_coverage: 5
+priorities:
+  - inputs: [chai_iptm]
+    direction: max
+deduplicate_sequences: true
+cohorts:
+  - name: top50
+    end: head
+    count: 50
+union_name: selected
+shortage: error
+
+# To select independently within each generator, set group_by: generator and
+# replace cohorts with:
+# cohorts:
+#   - {name: best50, end: head, count: 50}
+#   - {name: worst20, end: tail, count: 20}
+# shortage: truncate
+# Head is allocated first; tail uses remaining candidates. No overlap, even
+# when fewer than 70 eligible unique sequences exist. Empty remains empty.
+# Ties always use ascending design ID. Dedup keeps the best-ranked sequence
+# representative within each scope, never the first DB row.
+#
+# Intrinsic recipes can replace inputs/priorities (and evaluator_runs must
+# explicitly include their generating runs). For example:
+# inputs:
+#   fbc:
+#     metric: freebindcraft_i_pTM
+#     replicas: [0]             # replica 0 ALREADY contains the native average
+#     aggregate: mean
+#   genie:
+#     metric: genie3_iptm
+#     replicas: [0, 1, 2, 3, 4] # five folds, not an aggregate plus four folds
+#     aggregate: mean
+#     min_coverage: 5
+#   px_af2:
+#     metric: pxdesign_af2_iptm
+#     replicas: [0]
+#     aggregate: mean
+#   px_ptx:
+#     metric: pxdesign_ptx_iptm
+#     replicas: [0]
+#     aggregate: mean
+# priorities: []
+# by_generator:
+#   freebindcraft:
+#     - {inputs: [fbc], direction: max}
+#   genie3:
+#     - {inputs: [genie], direction: max}
+#   pxdesign:
+#     - {inputs: [px_af2, px_ptx], combine: min, direction: max}
+# Add successive priorities for lexicographic tie-breaking, not a weighted sum.
+# Each input can further restrict evaluator_runs to explicit run IDs; otherwise
+# it uses the top-level evaluator_runs. Duplicate metric/replica rows from two
+# runs are excluded as ambiguous, never silently pooled.
+#
+# Run: bindocracy rank apply campaign.duckdb --general general.yaml \
+#        --policy ranking.example.yaml --output-dir ranking
+# Retrieve with the EXISTING selector (run ID is printed by rank apply):
+# bindocracy designset build campaign.duckdb --passed-filter top50 \
+#   --filter-run RANK_RUN_ID --out-dir selected
+# The union is retrieved the same way with --passed-filter selected.
+# Empty cohorts are exported as zero-entry manifests/FASTA by rank apply;
+# designset build intentionally retains its existing empty-query refusal.

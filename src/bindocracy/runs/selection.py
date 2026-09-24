@@ -129,11 +129,18 @@ def select(database: str | Path, query: DesignQuery) -> tuple[tuple[DesignRow, .
     """
     with read_only(database) as connection:
         if query.passed_filter:
-            query = query.model_copy(update={
-                "filter_runs": resolve_run_ids(
-                    connection, query.filter_runs, kind="filter"
+            run_ids = resolve_run_ids(connection, query.filter_runs)
+            decision_runs = connection.execute(
+                "SELECT DISTINCT run_id FROM decisions WHERE kind = 'filter' AND run_id IN "
+                f"({', '.join('?' for _ in run_ids)})",
+                list(run_ids),
+            ).fetchall()
+            unsupported = set(run_ids) - {row[0] for row in decision_runs}
+            if unsupported:
+                raise SelectionError(
+                    f"run(s) have no filter decisions: {', '.join(sorted(unsupported))}"
                 )
-            })
+            query = query.model_copy(update={"filter_runs": run_ids})
         designs = select_designs(connection, query)
 
     if not designs:

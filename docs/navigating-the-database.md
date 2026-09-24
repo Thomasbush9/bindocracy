@@ -187,6 +187,22 @@ design that failed can be asked which rule failed it. A design with no metric
 for a thresholded name gets an explicit failing verdict rather than vanishing —
 missing is a failure, never a pass.
 
+`bindocracy rank apply` writes a `rank` run with scoped ordering decisions and
+named `filter` decisions for cohort membership. This deliberately reuses the
+existing selector:
+
+```bash
+uv run bindocracy designset build campaign.duckdb \
+  --passed-filter top50 --filter-run RANK_RUN_ID --out-dir selected
+```
+
+`--filter-run` identifies the source of filter **decisions**, not only runs whose
+kind is `filter`: native generation/evaluation verdicts and rank memberships are
+also valid. Reused run names are refused when ambiguous; use the exact run ID.
+Ranking preserves all original designs/metrics and stores exclusion reasons.
+See [stored ranking policies](scoring-stage.md#11-stored-ranking-and-cohort-selection)
+for coverage, deduplication, group-wise ordering, and head/tail selection.
+
 ## Two habits worth having
 
 **Read through `store/query.py`, not raw SQL, when writing code.** It takes a

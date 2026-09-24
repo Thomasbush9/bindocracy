@@ -1,0 +1,203 @@
+# A kit: everything about this optimizer that is true wherever it runs.
+#
+# Nothing here names a path, a GPU, a walltime or a design set. Those belong to
+# a campaign, because a second site would have to change every one of them.
+#
+# Check it before a campaign points at it -- seconds, no GPU:
+#
+#   python scripts/check_kit.py --kit examples/kits/rfd-refine \
+#       --bindings /path/to/bindings.yaml \
+#       --config   /path/to/configs/optimize/rfd_interface.yaml
+
+kit_schema: 1
+
+name: rfd-refine
+version: 0.1.0
+kind: optimizer
+summary: >-
+  Re-diffuse an existing binder's backbone with RFdiffusion, then recover a
+  sequence by inverse folding. Two stages, run as two runs: `interface`
+  partially re-diffuses the whole binder against the target's hotspots;
+  `scaffold` holds the contacting residues fixed as a motif and regenerates
+  everything else at the same length.
+
+entrypoint: optimizer.py
+python: ">=3.11"
+
+# ---------------------------------------------------------------------------
+# What it needs installed.
+#
+# NOTE this kit declares NO `provides: interpreter`. It runs on the harness's
+# own python and shells out to two images, because neither image can do the
+# whole job: rfd.sif holds RFdiffusion and no sequence designer, and
+# RFdiffusion emits poly-glycine backbones. Nesting one container inside the
+# other is not available here, so the host drives both.
+# ---------------------------------------------------------------------------
+requires:
+  - name: bindocracy-io
+    kind: harness_module
+    provided_by: harness
+    version: ">=1"
+    verify:
+      files: ["drivers/bindocracy_io.py"]
+    why: >-
+      Transport only. The helper owns argument parsing, input validation and
+      row identity, so this kit cannot emit a wrong parent_index or a duplicate
+      child ordinal.
+
+  - name: rfdiffusion
+    kind: container
+    version: "rosettacommons/rfdiffusion, as converted 2026-08-06"
+    # An import that runs INSIDE the image. `files:` cannot reach in here --
+    # a container's bound path is the .sif itself, and the checkpoints live
+    # within it, so a file check would look for them beside the image and fail
+    # on a perfectly good binding.
+    verify:
+      import: rfdiffusion
+    why: >-
+      RFdiffusion itself. All nine checkpoints ship inside the image at
+      /app/RFdiffusion/models and no /models bind is needed -- the external
+      weights described in older notes belong to `rfdiff.def`, an ESMFold2
+      variant that was never built. ⚠ THIS IMAGE CANNOT RUN ON AN H100: torch
+      1.12.1+cu116 stops at sm_86 with no PTX to JIT from, and every CUDA op
+      fails, verified down to a bare host-to-device copy. Schedule on A100.
+
+  - name: proteinmpnn
+    kind: container
+    version: "ColabDesign ProteinMPNN, weights v_48_020"
+    verify:
+      import: colabdesign.mpnn
+    why: >-
+      Inverse folding. RFdiffusion designs shape, not sequence, and the
+      contract requires a sequence per child, so this step is what turns a
+      backbone into a design -- it is not a refinement, and a run without it
+      cannot emit a row at all. Two images were ruled out by probing rather
+      than by assumption: `rfd.sif` holds only /app/RFdiffusion and ships no
+      sequence designer, and mosaic's ProteinMPNN is a JAX reimplementation
+      used as a differentiable loss term, with no PDB loader and no sampling
+      entry point. `freebindcraft.sif` satisfies this: ColabDesign's
+      `mk_mpnn_model` exposes `prep_inputs(chain=, fix_pos=)` and
+      `sample_parallel(batch=, temperature=)`, and `fix_pos` is what lets
+      stage 2 hold the interface. Whatever is bound must CHOOSE residues from
+      geometry alone -- see `loss_models` below.
+
+# ---------------------------------------------------------------------------
+# The contract it satisfies
+# ---------------------------------------------------------------------------
+#
+# `structure` needs `structures_from:` in the campaign config, and the run is
+# refused at plan time if any parent has no pose. That refusal is wanted: this
+# kit re-diffuses a backbone and has nothing to do with a parent that has none.
+inputs: [sequence, structure]
+
+# `[]` is a claim, not an unfilled default: the loss consulted no structure
+# predictor at all. Diffusion consults none by construction, and ProteinMPNN is
+# an INVERSE-FOLDING model -- it reads geometry and writes residues; it does
+# not predict a fold. So every scorer in the panel stays available to judge
+# these children, which is the whole point of running this arm.
+#
+# Two things would falsify that claim, and both are choices a campaign could
+# make by accident:
+#   * scoring MPNN candidates with a folding model and keeping the best. The
+#     entrypoint deliberately ranks on MPNN's own score instead.
+#   * reading anything into these children's CHAI numbers. The starting
+#     geometry came from a Chai-1 pose, so Chai had a say in where this binder
+#     was before RFdiffusion touched it -- not through a loss, but not through
+#     nothing either. Judge with a model that saw neither.
+loss_models: []
+
+capabilities:
+  # Stage `scaffold` regenerates the gaps between fixed motifs at EXACTLY their
+  # original length, so a child matches its parent. Deliberate: every JAX
+  # scorer recompiles per binder length and the design set is ordered by length
+  # to keep that cost down, so variable-length children would be paid for twice
+  # -- once here and again in the screen that judges them.
+  changes_length: false
+  # The entrypoint clamps --num-designs to the campaign's max_children, so a
+  # config that asks for fewer does not silently burn GPU on rows the host
+  # rejects. Keep this >= the `num-designs` default below.
+  max_children: 8
+
+metrics:
+  n_binder_contacts:
+    direction: none
+    description: >-
+      Binder residues with any heavy atom within --contact-cutoff of the
+      target, measured on the PARENT pose. The size of what stage 2 protects.
+      NOT `n_interface_residues`: that name is registered with a fixed meaning
+      (TARGET residues contacted, direction max) and `optimize/config.py`
+      refuses any optimizer that shadows a registered key -- correctly, since
+      this counts the other side of the interface and does not point the same
+      way.
+  n_fixed:
+    direction: none
+    description: >-
+      Residues actually held fixed by the contig. Zero at stage `interface`,
+      where nothing is pinned. Compare against n_interface_residues: they
+      should agree at stage `scaffold`, and a gap means the contig dropped
+      something.
+  n_substitutions:
+    direction: none
+    description: positions where the child differs from its parent
+  seq_identity:
+    direction: none
+    description: >-
+      Fraction of positions identical to the parent, 0..1. Expected near 1 at
+      the fixed segments and low elsewhere; a stage-2 child with low identity
+      ACROSS the interface means the lock did not hold.
+  mpnn_score:
+    direction: min
+    description: >-
+      The inverse-folding model's own score for the kept sequence, off its
+      FASTA header. A sequence-design confidence, not an interface measurement,
+      and not comparable to any ipTM.
+  stage_id:
+    direction: none
+    description: 0 = interface, 1 = scaffold
+
+# ---------------------------------------------------------------------------
+# What it costs.
+# ---------------------------------------------------------------------------
+cost:
+  gpu: required
+  # UNMEASURED PLACEHOLDERS. Nothing has run this kit. RFdiffusion's own
+  # published throughput is roughly a minute per 100-residue backbone at 50
+  # denoising steps on an A100, and partial diffusion at --partial-t 20 is
+  # cheaper than a full trajectory -- but neither number was taken here, and
+  # the inverse-folding step is unbenchmarked because the image is unresolved.
+  # Replace both from a one-parent pilot; check_kit.py prints what they imply
+  # against what the config reserved.
+  compile_seconds: 60
+  per_parent_seconds: 600
+  measured_on:
+    run: NONE -- placeholder, not GPU-verified
+    gpu: A100-40GB (assumed; H100 cannot run this image at all)
+    binder_length: 80
+    target_length: 201
+    num_designs: 4
+  scales_with: [binder_length, target_length, num_designs, partial_t, diffuser_t, mpnn_samples]
+  note: >-
+    Cost is per PARENT and multiplies by --num-designs, so this arm is priced
+    for a small, chosen set rather than a cohort. The campaign's reason for
+    running it only on the best parents is here rather than in the science: at
+    four backbones a parent it is roughly an order of magnitude dearer per
+    design than sequence refinement.
+
+# ---------------------------------------------------------------------------
+# Defaults a campaign may override.
+# ---------------------------------------------------------------------------
+args:
+  stage: interface
+  partial-t: 20
+  diffuser-t: 50
+  contact-cutoff: 5.0
+  num-designs: 4
+  mpnn-samples: 8
+  mpnn-temperature: 0.1
+
+# A resolved requirement reaches the script as context["dependencies"][name].
+# Until the harness reads this file, the campaign passes the same paths through
+# `args`, and the script prefers the context and falls back to the flag.
+dependency_args:
+  rfdiffusion: --rfd-sif
+  proteinmpnn: --mpnn-sif

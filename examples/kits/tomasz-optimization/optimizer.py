@@ -1,68 +1,53 @@
 #!/usr/bin/env python3
-"""Refine an existing binder with the DIO3 campaign's soft-sharp CYCLING protocol.
+"""Refine binders by WRAPPING the DIO3 campaign's own `run_design.py`.
 
-This is the protocol worked out over rounds 21-29 of the DIO3 campaign
-(`tomasz/mosaic_test/pipelines/RUN_PARAMETERS.md`), packaged as a kit. Three
-things distinguish it from `examples/optimizers/mosaic_refine.py`, and the
-first is the reason the kit exists.
+This kit used to reimplement that script's soft-sharp cycling protocol. It no
+longer does, and the reason is worth stating because it cost a GPU run to learn:
+a reimplementation of a 900-line script silently diverges. The first version
+diverged in six places, three of them invisible without a GPU, and the one that
+mattered most was this -- `run_design.py --init-noise-random`'s own help text:
 
-**1. Soft-sharp CYCLING, not one pass.** The campaign measured
-`3 x (90 soft + 30 sharp)` against a single `1 x (250 + 30)` baseline on 48
-parents at the catalytic pocket: +37% at ipTM >= 0.7, +40% at >= 0.8, and the
-best `worst@5` in the sweep, for +28% GPU. Re-running *soft* genuinely
-re-searches -- cycle 2 beat cycle 1 by 0.58 median loss, three times what
-perturbing the sharp start bought -- and JAX compiles once, so later cycles are
-nearly free (measured 290 s on cycle 1, then 22 s on cycles 2 and 3).
+    Without this, --init-noise is a PURE FUNCTION of the seed sequence:
+    x = (1-w)*seeded + w/n_tokens. Every replica of the same parent therefore
+    starts from the IDENTICAL point, so spawning K children to diversify a
+    converged design does nothing.
 
-Between cycles the iterate is **argmax-ed to a one-hot vertex and then blended
-back toward uniform**. The argmax is the point: it forces commitment to a
-discrete sequence before the next soft phase. Carrying a soft blend forward is
-not the same operation and does not reproduce the result.
+The reimplementation had exactly that bug. Asking for two children per parent
+produced two children from the same starting point. So this file is now a
+translator, not an optimizer: it turns the harness's contract into a
+`run_design.py` invocation and turns that script's output back into child rows.
+Nothing scientific happens here.
 
-Do not scale this up. `3 x (250 + 30)` -- 840 steps, three times the compute --
-was the *worst* cycling arm on every column the campaign measured.
+**Why the JSONL contract is written by hand** rather than through
+`bindocracy_io.run_optimization`: that helper calls back once per parent, but
+`run_design.py` vmaps B independent trajectories in ONE process and pays its JIT
+compile once for the whole batch. Per-parent calls would pay it per parent. So
+this reads every parent, groups them by binder length (the script takes a single
+`--binder-length`), and invokes the script once per chunk.
+`docs/custom-optimization.md` keeps the raw path valid for exactly this case.
 
-**2. An optional straight-through estimator on the sharp stage** (`--hard-sharp`).
-During the soft phase the structure models never see a protein:
-`losses/boltz2.py` writes the probability vector straight into `res_type`, so
-the model folds the probability-weighted average of the amino-acid embeddings.
-The optimizer reaches low-loss points no discrete sequence can occupy, and
-sharpening is the bill -- measured at 7.77 loss units on one diagnosed
-trajectory. `HardSequence` below closes that gap.
+**How a trajectory maps back to a parent.** `run_design.py:469` picks a seed
+sequence with `seqs[(seed * batch + b) % len(seqs)]`. Writing the chunk's
+`--init-fasta` with exactly `batch` entries makes that reduce to `seqs[b]`, for
+any seed -- so the mapping is exact rather than inferred. Each parent is
+repeated `--replicates` times consecutively, and `--init-noise-random` gives
+each repeat its own Dirichlet draw keyed off the seed, which is what makes them
+genuinely different children.
 
-It is **off by default and must be piloted per site.** It gave 2.2x the designs
-at ipTM >= 0.7 at the catalytic pocket and 1.5x at Y84, and was strictly worse
-on every column at two other sites.
+**Two traps honoured**, both recorded in `RUN_PARAMETERS.md`:
+`designs_seed*.json` `results` is sorted by LOSS, not batch order, and the batch
+item is `r["trajectory"]` -- so the join uses that field and never the
+enumeration index.
 
-**3. The loss model is chosen per parent lineage** (`--model`). A design whose
-generator already folded against Boltz-2 must not be refined against Boltz-2,
-or every later Boltz-2 number measures this optimizer. `boltz2` for AF2-lineage
-parents, `af2` for Boltz-lineage ones. See `kit.yaml`.
+**There is no `start_loss`.** `run_design.py` computes no parent baseline, and
+inventing one here by re-running the objective would be a second implementation
+of the thing this rewrite exists to stop duplicating. `cycle1_loss` is reported
+instead as a within-run reference, and the parent's own quality is already
+measured in the database by an independent scorer -- which is the comparison
+that matters anyway.
 
-This departs from the source campaign, which used OpenFold3 as its second
-model. `mosaic.models.of3` is a port and the port is broken -- the harness
-deprecates it on evidence that it scores BELOW a sequence-only control -- so
-driving a gradient through it would be driving one through noise. AF2 is the
-substitute. Two consequences: AF2 has no diffusion sampler, so `--num-samples`
-does nothing on that path; and AF2 already hardens PART of its input natively
-(`models/af2.py:226`, "Do not touch this"), so `--hard-sharp` stacks a full
-straight-through estimator on a partial one. Compare an `af2` STE arm only
-against its own non-STE control, never against a `boltz2` one.
-
-**Status: NOT GPU-verified.** The contract plumbing is exercised by
-`--dry-run`. Nobody has run this file on a node. Run two or three parents and
-read `start_loss` against `loss` before committing a set.
-
-Check the I/O first -- no GPU, no mosaic, seconds:
-
-    python scripts/validate_optimizer.py \
-        --script examples/kits/tomasz-optimization/optimizer.py \
-        --design-set sets/<digest>.json --target-fasta target.fasta \
-        --declare loss:min --declare start_loss:min \
-        --declare n_substitutions:none --declare seq_identity:none \
-        --declare opt_cycles:none --declare best_cycle:none \
-        --declare hard_sharp:none --declare loss_model_id:none \
-        --max-children 1 --script-args --dry-run
+Status: the wrapper is exercised by `--dry-run`; the script it wraps is the one
+the source campaign ran for thirty rounds.
 """
 
 from __future__ import annotations
@@ -71,654 +56,471 @@ import argparse
 import json
 import math
 import random
+import os
+import subprocess
+import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
-from bindocracy_io import RejectCandidate, run_optimization
-
-# The 20 the design table accepts. A parent outside it is a refusal, not a bug.
 CANONICAL = "ACDEFGHIKLMNPQRSTVWY"
-
-# Recorded on every child so a query can separate populations that are not
-# comparable. `loss` is the ranking objective and IS comparable across these;
-# the training loss is not, which is why it never leaves the trajectory file.
-MODEL_IDS = {"boltz2": 0.0, "af2": 1.0}
-
-# AF2 has no diffusion sampler and asserts if handed one, so it takes a
-# different builder and ignores --num-samples.
-HAS_SAMPLER = {"boltz2": True, "af2": False}
-
-# The campaign's measured schedule (design_config.py:393-396). Absolute
-# stepsizes, NOT scaled by binder length -- that is this protocol's
-# parameterization and changing it changes the protocol.
-#
-# `max_gradient_norm` is deliberately absent: the campaign leaves it None and
-# simplex_APGM then defaults to sqrt(binder_length), about 8.9 for an 80-mer.
-# Pinning it to 1.0 (as the length-scaled mosaic-af2-refine kit does, because
-# ITS stepsize is length-scaled) would make every effective step ~9x smaller
-# than the schedule that was measured, and the run would simply look like
-# "cycling did not help".
-SOFT = {"stepsize": 0.1, "momentum": 0.9, "scale": 1.0}
-SHARP = {"stepsize": 0.025, "momentum": 0.5, "scale": 2.0}
-# With a one-hot forward pass there is nothing left to squeeze, so the sharp
-# stage drops to scale 1.0 and runs longer: the estimator has to move argmaxes
-# rather than concentrate mass.
-SHARP_STE_SCALE = 1.0
-
-
-# ---------------------------------------------------------------------------
-# The contract. Nothing above the next banner is about optimization.
-# ---------------------------------------------------------------------------
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--model",
-        choices=sorted(MODEL_IDS),
-        default="boltz2",
-        help=(
-            "Folding model that drives the loss. Pick the one the parent's "
-            "GENERATOR did not already fold against: boltz2 for AF2-lineage "
-            "parents (freebindcraft, genie3, proteina_complexa, pxdesign), "
-            "af2 for Boltz-lineage parents (boltzgen, protein_hunter)."
-        ),
-    )
-    parser.add_argument(
-        "--af2-data-dir",
-        default="~/.alphafold",
-        help=(
-            "Directory holding params/, for --model af2. The optimize launcher "
-            "builds its own singularity line and binds no weight tree, so AF2 "
-            "cannot find them at mosaic's default and has to be handed this."
-        ),
-    )
+    # The three the harness always passes, in this order.
+    parser.add_argument("--inputs", required=True, type=Path)
+    parser.add_argument("--outputs", required=True, type=Path)
+    parser.add_argument("--context", required=True, type=Path)
 
+    parser.add_argument(
+        "--design-script",
+        required=True,
+        help="Absolute path to the campaign's run_design.py. Its sibling "
+             "design_config.py is imported by name, so the two must stay together.",
+    )
+    parser.add_argument(
+        "--models",
+        default="boltz2",
+        help="Comma-separated backends passed straight through to --models. Pick "
+             "the one the parent's GENERATOR did not already fold against: af2 "
+             "for Boltz-lineage parents, boltz2 for AF2-lineage ones.",
+    )
+    parser.add_argument(
+        "--replicates",
+        type=int,
+        default=2,
+        help="Children per parent, each from its own Dirichlet-perturbed start. "
+             "Clamped to the campaign's max_children.",
+    )
+    parser.add_argument(
+        "--max-batch",
+        type=int,
+        default=4,
+        help="Trajectories vmapped in one invocation. GPU memory scales with "
+             "this times the complex length; the source campaign lost 32 tasks "
+             "to OOM at 4 once the complex passed ~296 residues.",
+    )
+    # The campaign's measured schedule: 3 x (90 + 30) beat a single 1 x (250+30)
+    # by +37% at ipTM >= 0.7 for +28% GPU, and 3 x (250+30) was the WORST arm.
     parser.add_argument("--cycles", type=int, default=3)
     parser.add_argument("--soft-steps", type=int, default=90)
     parser.add_argument("--sharp-steps", type=int, default=30)
-    parser.add_argument(
-        "--cycle-noise",
-        type=float,
-        default=0.1,
-        help=(
-            "Blend back toward uniform after the between-cycle argmax. 0.0 "
-            "restarts the soft phase from a bare vertex, which has no gradient."
-        ),
-    )
-
-    parser.add_argument(
-        "--hard-sharp",
-        action="store_true",
-        help=(
-            "Sharp stage sees a one-hot sequence with soft gradients. Inverts "
-            "at some sites; pilot before committing a round to it."
-        ),
-    )
-    parser.add_argument(
-        "--hard-sharp-steps",
-        type=int,
-        default=60,
-        help="Sharp steps when --hard-sharp is set; overrides --sharp-steps.",
-    )
-
+    parser.add_argument("--init-noise", type=float, default=0.15)
+    parser.add_argument("--cycle-noise", type=float, default=0.15)
     parser.add_argument("--recycling-steps", type=int, default=1)
-    parser.add_argument("--rescore-recycling", type=int, default=3)
+    parser.add_argument(
+        "--esmc-weight",
+        type=float,
+        default=0.0,
+        help="The wrapped script's own default is 0.5. ZERO HERE: measured on "
+             "this cluster, esmc_pll returns NaN every step, which turns the "
+             "total into mosaic's 1e6 non-finite sentinel and leaves no usable "
+             "gradient, while the structure loss beside it is healthy. "
+             "Suspected to be the missing transformer_engine fallback. Flip to "
+             "0.5 once that is diagnosed; MPNN at weight 1.0 still supplies "
+             "sequence-plausibility pressure meanwhile.",
+    )
+    parser.add_argument(
+        "--weights",
+        default="",
+        help="MOSAIC_WEIGHTS tree, holding plain-named caches (alphafold/, "
+             "boltz/, hf/ ...). run_design.py builds its models with no "
+             "data_dir and so reaches for ~/.alphafold, ~/.boltz and friends; "
+             "the campaign's mosaic-exec.sh normally bind-mounts them into a "
+             "synthetic HOME, and this harness has no bind hook, so the wrapper "
+             "rebuilds that HOME as symlinks instead. Without it, af2 finds no "
+             "params and boltz2 finds no checkpoint.",
+    )
     parser.add_argument(
         "--num-samples",
         type=int,
         default=4,
-        help=(
-            "Diffusion samples per loss evaluation. IGNORED for --model af2, "
-            "which has no sampler. Memory scales with this times the complex "
-            "length; a 201-residue target with a 95+ residue binder overflowed "
-            "an 80 GB H100 at 4 in the source campaign."
-        ),
+        help="Diffusion samples per evaluation, for samplers that have one. "
+             "Ignored for af2, which asserts it is handed none.",
     )
-    # AF2's MSA stacks dominate memory and step time in a gradient loop, so
-    # these sit below the scoring protocol's 512 / 2048. Ignored for boltz2.
-    parser.add_argument("--msa-clusters", type=int, default=128)
+    parser.add_argument(
+        "--msa-clusters",
+        type=int,
+        default=128,
+        help="af2 only. design_config's own default is 512/2048, the full "
+             "scoring protocol; a gradient loop cannot afford it.",
+    )
     parser.add_argument("--extra-msa", type=int, default=512)
-    # How far to start from the parent. 0.0 pins the PSSM to it and leaves the
-    # optimizer no gradient; 1.0 is a fresh start, which is hallucination.
-    parser.add_argument("--epsilon", type=float, default=0.1)
-
+    parser.add_argument("--hard-sharp", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
 
 def main() -> int:
-    # Per-process state. One model load and one feature build per binder
-    # LENGTH, not per design: the length is baked into the feature shapes, so
-    # a shard spanning many lengths pays a JIT recompile at each one. That is
-    # why the design set is ordered by length and shards are contiguous.
-    cache: dict[int, tuple] = {}
-    setup: dict = {}
+    args = build_parser().parse_args()
+    context = json.loads(args.context.read_text())
+    work = Path(context["work_dir"])
+    structure_dir = Path(context["structure_dir"])
+    (structure_dir / "trajectories").mkdir(parents=True, exist_ok=True)
+    work.mkdir(parents=True, exist_ok=True)
 
-    def optimize_parent(parent, context, args):
-        if not setup:
-            structure_dir = Path(context["structure_dir"])
-            (structure_dir / "trajectories").mkdir(parents=True, exist_ok=True)
-            setup["structure_dir"] = structure_dir
-            # 1-based positions in the target's FASTA, resolved and
-            # range-checked when the run was planned. mosaic slices a contact
-            # matrix with 0-based ones.
-            setup["epitope"] = [
-                spot - 1 for spot in context.get("hotspots") or []
-            ] or None
+    parents = [
+        json.loads(line)
+        for line in args.inputs.read_text().splitlines()
+        if line.strip()
+    ]
+    replicates = max(1, min(args.replicates, context.get("max_children") or 1))
 
-        index = parent["index"]
-        sequence_in = parent["sequence"]
-
-        # An expected refusal: a parent this optimizer cannot represent. Only
-        # this one and the non-finite check below are caught. Everything else
-        # propagates and fails the job on purpose -- catching broadly is how a
-        # bug comes to look like a biological result.
-        unknown = sorted(set(sequence_in) - set(CANONICAL))
+    # One --binder-length per invocation, so length decides the grouping. The
+    # design set is already ordered by length and shards are contiguous, so in
+    # practice a shard spans few groups and pays few compiles.
+    by_length: dict[int, list[dict]] = defaultdict(list)
+    refusals: list[dict] = []
+    for parent in parents:
+        unknown = sorted(set(parent["sequence"]) - set(CANONICAL))
         if unknown:
-            raise RejectCandidate(f"parent has non-canonical residue(s) {unknown}")
+            refusals.append({
+                "parent_index": parent["index"],
+                "failed": f"parent has non-canonical residue(s) {unknown}",
+            })
+            continue
+        by_length[len(parent["sequence"])].append(parent)
 
-        started = time.time()
-        result = refine(
-            sequence_in,
-            target_sequence=context["target_sequence"],
-            msa_path=context.get("target_msa"),
-            epitope_idx=setup["epitope"],
-            seed=context["seed"] + index,
-            args=args,
-            cache=cache,
-        )
-        if not (math.isfinite(result.loss) and math.isfinite(result.start_loss)):
-            raise RejectCandidate(
-                f"{args.model} returned a non-finite loss "
-                f"(start {result.start_loss}, final {result.loss})"
-            )
+    with args.outputs.open("w") as sink:
+        for row in refusals:
+            sink.write(json.dumps(row) + "\n")
+        sink.flush()
 
-        # Relative to context['structure_dir']. An absolute path is refused so
-        # a run directory can be moved; known-issues.md records that having
-        # already cost this campaign a day. allow_nan=False so a diverged step
-        # writes a loud error here rather than bare `NaN`, which Python emits
-        # happily and a strict JSON reader rejects later.
-        relative = f"trajectories/{index}.jsonl"
-        (setup["structure_dir"] / relative).write_text(
-            "".join(
-                json.dumps(row, allow_nan=False) + "\n"
-                for row in _finite(result.trajectory)
-            )
-        )
-
-        substitutions = sum(
-            1 for was, now in zip(sequence_in, result.sequence) if was != now
-        )
-        yield {
-            "sequence": result.sequence,
-            "metrics": {
-                # `loss` and `start_loss` are BOTH the ranking objective, one
-                # on the discrete child and one on the discrete parent. A final
-                # loss means nothing without the number it started from, and
-                # only if the two subtract. The training objective is a
-                # different and much larger quantity, stays in the trajectory
-                # file, and with --hard-sharp is not even comparable between
-                # runs.
-                "loss": result.loss,
-                "start_loss": result.start_loss,
-                # NOTE a parent cysteine is mapped to alanine before the walk
-                # (NoCys leaves a 19-token alphabet), so a C in the parent
-                # counts as a substitution even if the optimizer never moved
-                # that position.
-                "n_substitutions": float(substitutions),
-                "seq_identity": 1.0 - substitutions / max(1, len(sequence_in)),
-                # The cycles actually RUN, not the cycles requested: --cycles 0
-                # still does one, and storing the request beside one cycle's
-                # work would misreport it.
-                "opt_cycles": float(result.cycles_run),
-                "best_cycle": float(result.best_cycle),
-                "hard_sharp": 1.0 if args.hard_sharp else 0.0,
-                "loss_model_id": MODEL_IDS[args.model],
-            },
-            "trajectory": relative,
-            "seconds": round(time.time() - started, 2),
-        }
-
-    return run_optimization(optimize_parent, parser=build_parser())
-
-
-def _finite(rows):
-    """Trajectory rows with non-finite values dropped rather than serialized.
-
-    A diverged step is worth knowing about, but it belongs in the metrics path
-    (which refuses the child) rather than in a JSONL file a later reader will
-    choke on.
-    """
-    for row in rows:
-        value = row.get("value")
-        if value is None or math.isfinite(value):
-            yield row
-
-
-# ---------------------------------------------------------------------------
-# The optimization. Everything mosaic-specific is below here.
-# ---------------------------------------------------------------------------
-
-
-class Result:
-    """What one parent produced. A class rather than a tuple because the
-    trajectory rows and the winning cycle are easy to transpose positionally."""
-
-    __slots__ = ("sequence", "loss", "start_loss", "trajectory", "best_cycle",
-                 "cycles_run")
-
-    def __init__(self, sequence, loss, start_loss, trajectory, best_cycle, cycles_run):
-        self.sequence = sequence
-        self.loss = loss
-        self.start_loss = start_loss
-        self.trajectory = trajectory
-        self.best_cycle = best_cycle
-        self.cycles_run = cycles_run
-
-
-# Built once per process, not once per parent. `eqx.filter_jit` keys its cache
-# on the pytree treedef, which includes the CLASS object -- so defining a fresh
-# subclass per parent would miss the cache every time and recompile the whole
-# structure model, which is exactly what the per-length `cache` exists to avoid.
-_HARD_SEQUENCE = None
-
-
-def _hard_sequence_class():
-    """`HardSequence`, vendored from the campaign's `run_design.py:270`.
-
-        forward:  stop_gradient(hard - soft) + soft  ==  hard
-        backward: d/dsoft == 1
-
-    Applied at the OUTERMOST loss, so the structure model, ESM-C and the MPNN
-    recovery term all see the same discrete sequence. Wrapping outside `NoCys`
-    is correct: argmax over the 19 no-cysteine columns is the same choice as
-    argmax over 20 with C excluded.
-
-    CAVEAT, and the reason this belongs on the sharp stage only: the gradient
-    is deliberately wrong. Moving the soft values changes nothing until some
-    position's argmax flips, then the loss jumps. That makes it a refinement
-    operator near a good solution rather than a search operator from a diffuse
-    start -- which is the regime a refinement kit is in, since the start IS a
-    sequence somebody has.
-    """
-    global _HARD_SEQUENCE
-    if _HARD_SEQUENCE is None:
-        import equinox as eqx
-        import jax
-        import jax.numpy as jnp
-
-        class HardSequence(eqx.Module):
-            inner: object
-
-            def __call__(self, sequence, key=None):
-                hard = jax.nn.one_hot(
-                    jnp.argmax(sequence, axis=-1), sequence.shape[-1]
+        chunk_id = 0
+        for length in sorted(by_length):
+            group = by_length[length]
+            # Whole parents per chunk: splitting a parent's replicates across
+            # two invocations would give them unrelated seeds for no reason and
+            # make the pair incomparable.
+            per_chunk = max(1, args.max_batch // replicates)
+            for start in range(0, len(group), per_chunk):
+                chunk = group[start:start + per_chunk]
+                seed = (
+                    context["seed"]
+                    + context.get("shard", 0) * 1_000_003
+                    + chunk_id * 101
                 )
-                ste = jax.lax.stop_gradient(hard - sequence) + sequence
-                return self.inner(ste, key=key)
+                chunk_id += 1
+                try:
+                    children = run_chunk(
+                        chunk, length, seed, replicates, context, work, args
+                    )
+                except Exception as error:  # noqa: BLE001
+                    # Reported per parent so the shard continues and the counts
+                    # say which parents were tried. Deliberately broad ONLY
+                    # here, around a subprocess whose failure modes belong to
+                    # the cluster rather than to this script.
+                    for parent in chunk:
+                        sink.write(json.dumps({
+                            "parent_index": parent["index"],
+                            "failed": f"{type(error).__name__}: {error}",
+                        }) + "\n")
+                    sink.flush()
+                    continue
+                for row in children:
+                    sink.write(json.dumps(row, allow_nan=False) + "\n")
+                sink.flush()
+    return 0
 
-        _HARD_SEQUENCE = HardSequence
-    return _HARD_SEQUENCE
+
+# The bind map `singularity/mosaic-exec.sh` applies, reproduced as symlinks.
+# Plain names in the weight tree, dotted names in HOME -- which is the whole
+# reason the indirection exists rather than pointing HOME at the tree directly.
+CACHE_MAP = {
+    "alphafold": ".alphafold",
+    "boltz": ".boltz",
+    "protenix": ".protenix",
+    "openfold3": ".openfold3",
+    "hf": ".cache/huggingface",
+}
 
 
-def _assert_mosaic_source_is_current() -> None:
-    """Fail at startup rather than at hour two of a queued job.
+def cache_home(work: Path, weights: str) -> dict[str, str]:
+    """A synthetic HOME whose dotfile caches point into the weight tree.
 
-    Two capabilities this objective needs arrived in the host checkout AFTER
-    the shared image was built (2026-07-22), and neither is expressible as a
-    version tag -- which is why `kit.yaml` verifies files and this re-checks
-    the capability itself:
-
-      * `DistogramIPTMProxy.epitope_idx` (commit 6a32fe0, 2026-08-13). Without
-        it the proxy rewards confident contact ANYWHERE on the target, which
-        RUN_PARAMETERS records as silently optimizing a different objective.
-        Verified absent from the shipped image.
-      * `models/af2_msa.py` (2026-08-18), for `--model af2` only. The shipped
-        image still asserts "AF2 interface does not support MSA yet".
-
-    Checked by inspection rather than by trusting the binding, because a source
-    overlay bound at the wrong DEPTH resolves silently: this tool binds onto
-    /opt/mosaic/src/mosaic, one level below the scorer's MOSAIC_DEV_SRC.
+    The harness's optimize launcher exposes no bind hook and no env field, so
+    this cannot be done the way mosaic-exec.sh does it. But the wrapped script
+    is a SUBPROCESS of this one, so its environment is ours to set -- which
+    reaches the same place without patching either the harness or the script.
     """
-    import inspect
-
-    import mosaic.losses.structure_prediction as sp
-
-    if "epitope_idx" not in inspect.getsource(sp.DistogramIPTMProxy):
-        raise SystemExit(
-            "mosaic.losses.structure_prediction.DistogramIPTMProxy has no "
-            "`epitope_idx`; this is the pre-2026-08-13 image, where the proxy "
-            "rewards contact anywhere on the target and the objective is NOT "
-            "the one this kit claims to run. Bind the `mosaic-src` overlay "
-            "onto /opt/mosaic/src/mosaic -- see kit.yaml."
-        )
-
-
-def _assert_af2_takes_an_msa() -> None:
-    try:
-        import mosaic.models.af2_msa  # noqa: F401
-    except ImportError as error:
-        raise SystemExit(
-            "mosaic.models.af2_msa is not importable, so AF2 cannot fold "
-            "against the campaign alignment and will assert mid-run. Bind the "
-            "`mosaic-src` overlay onto /opt/mosaic/src/mosaic -- see kit.yaml "
-            f"-- or run with --model boltz2. ({error})"
-        ) from error
+    if not weights:
+        return {}
+    root = Path(weights)
+    home = work / "cache-home"
+    for plain, dotted in CACHE_MAP.items():
+        source = root / plain
+        if not source.exists():
+            continue
+        link = home / dotted
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if not link.exists():
+            link.symlink_to(source)
+    home.mkdir(parents=True, exist_ok=True)
+    return {"HOME": str(home), "HF_HOME": str(home / ".cache" / "huggingface")}
 
 
-def _build(binder_length, *, target_sequence, msa_path, epitope_idx, args):
-    """The campaign's objective, its ranking objective, and a jitted evaluator.
+def design_config(length, seeds_fasta, batch, seed, epitope, context, args):
+    """The config `run_design.py --config` consumes, with the epitope INJECTED.
 
-    The training weights are the constants held fixed across rounds 12-20.
+    This is the wrapped script's production path, not a shortcut: the source
+    campaign's `pipeline_node.py` writes exactly such a file and injects
+    `epitope_idx` into it, and `RUN_PARAMETERS.md` calls the resulting
+    `optimize/config_seed*.json` "the run's actual parameters, after injection".
+    Driving the script from its own CLI flags instead leaves every
+    `epitope_idx` at None -- measured: the first wrapper run came back with
+    `epitope_idx: [None, None]`, i.e. a contact term that rewards contact
+    ANYWHERE on the target. Since `BinderTargetContact.epitope_idx` is the term
+    RUN_PARAMETERS shows controls placement, that silently discards the whole
+    point of selecting on-site parents.
+
+    ⚠ `--config` bypasses `config_from_args`, so anything that would have come
+    from a CLI flag has to be set HERE. `--seed`, `--out`, `--soft-sharp-cycles`,
+    `--cycle-noise`, `--init-noise-random`, `--hard-sharp` and `--dump-cycles`
+    are read from argv directly and still apply; `--batch`, `--models`,
+    `--soft-steps`, `--sharp-steps`, `--init-fasta` and `--esmc-weight` do not.
+
+    The weights are the constants held fixed across rounds 12-20.
     `BinderTargetContact` at 2.0 and UNCAPPED is the term that controls
     placement: clipping it doubled the distance to target and halved the
     usable count.
     """
-    import equinox as eqx
-    import jax.numpy as jnp
-    import mosaic.losses.structure_prediction as sp
-    from mosaic.common import TOKENS
-    from mosaic.losses.esmc import ESMCPseudoLikelihood, load_esmc
-    from mosaic.losses.protein_mpnn import InverseFoldingSequenceRecovery
-    from mosaic.losses.transformations import ClippedLoss, NoCys
-    from mosaic.proteinmpnn.mpnn import load_mpnn_sol
-    from mosaic.structure_prediction import TargetChain
+    models = []
+    for name in (m.strip() for m in args.models.split(",")):
+        if not name:
+            continue
+        if name == "af2":
+            # No sampling_steps: design_config.validate refuses it for af2,
+            # because the model itself asserts it was handed none.
+            params = {"recycling_steps": args.recycling_steps,
+                      "max_msa_clusters": args.msa_clusters,
+                      "max_extra_msa": args.extra_msa}
+        else:
+            params = {"recycling_steps": args.recycling_steps,
+                      "sampling_steps": 25, "num_samples": args.num_samples}
+        models.append({"name": name, "weight": 1.0, "params": params})
 
-    _assert_mosaic_source_is_current()
+    sequence_models = []
+    if args.esmc_weight > 0:
+        sequence_models.append({
+            "name": "esmc", "weight": args.esmc_weight,
+            "params": {"checkpoint": "biohub/ESMC-300M",
+                       "clip_lower": 2.0, "clip_upper": 100.0},
+        })
 
-    if args.model == "af2":
-        from mosaic.models.af2 import AlphaFold2
-
-        _assert_af2_takes_an_msa()
-        folder = AlphaFold2(
-            data_dir=args.af2_data_dir,
-            multimer=True,
-            max_msa_clusters=args.msa_clusters,
-            max_extra_msa=args.extra_msa,
-        )
-    else:
-        from mosaic.models.boltz2 import Boltz2
-
-        folder = Boltz2()
-
-    # backbone_noise 0.0 and temp 0.1 are the campaign's values. The reference
-    # AF2 kit uses 0.05 / 0.001; a 100x colder MPNN makes the recovery target a
-    # near-argmax rather than an average, which is a materially different
-    # designability pressure at weight 1.0.
-    mpnn = load_mpnn_sol(0.0)
-    # -inf for Cys so MPNN does not propose what NoCys removed from the
-    # optimizer's alphabet.
-    bias = jnp.zeros((binder_length, 20)).at[:, TOKENS.index("C")].set(-1e6)
-
-    # STRUCTURE-CONDITIONED terms only. Everything here is called by the model
-    # loss as `term(sequence=..., output=..., key=...)`, so a term that does
-    # not accept `output` cannot live in this sum -- see the ESM-C note below.
-    objective = (
-        2.0 * sp.BinderTargetContact(epitope_idx=epitope_idx, contact_distance=20.0)
-        + 1.0 * sp.WithinBinderContact()
-        + 1.0 * sp.HelixLoss()
-        + 1.0 * sp.DistogramRadiusOfGyration()
-        + 2.0 * sp.DistogramIPTMProxy(epitope_idx=epitope_idx, contact_distance=12.0)
-        + 1.0 * sp.PLDDTLoss()
-        + 1.0 * sp.IPSAE_min()
-        + 1.0 * InverseFoldingSequenceRecovery(mpnn, temp=jnp.array(0.1), bias=bias)
-    )
-
-    features, _ = folder.binder_features(
-        binder_length=binder_length,
-        chains=[
-            TargetChain(
-                sequence=target_sequence,
-                use_msa=msa_path is not None,
-                msa_path=msa_path,
-            )
+    return {
+        "target": {"fasta": context["target_sequence"],
+                   "msa": context.get("target_msa"),
+                   "use_msa": bool(context.get("target_msa"))},
+        "binder": {"length": length, "no_cys": True,
+                   "init_fasta": str(seeds_fasta), "init_noise": args.init_noise},
+        "models": models,
+        "losses": [
+            {"name": "BinderTargetContact", "weight": 2.0,
+             "params": {"contact_distance": 20.0, "epitope_idx": epitope}},
+            {"name": "WithinBinderContact", "weight": 1.0, "params": {}},
+            {"name": "HelixLoss", "weight": 1.0, "params": {}},
+            {"name": "DistogramRadiusOfGyration", "weight": 1.0, "params": {}},
+            # epitope_idx deliberately ABSENT here. Restricted to the 3-residue
+            # hotspot list the proxy's top-k pool is so small that the clip
+            # pins it at exactly 0 -- no value and no gradient, measured on
+            # GPU, and the same failure the source campaign hit at 8 A in round
+            # 3. Its own conclusion is that restricting this term never
+            # produced the targeting anyway.
+            {"name": "DistogramIPTMProxy", "weight": 2.0,
+             "params": {"contact_distance": 12.0}},
+            {"name": "PLDDTLoss", "weight": 1.0, "params": {}},
+            {"name": "IPSAE_min", "weight": 1.0, "params": {}},
         ],
-    )
-
-    # AF2 has no diffusion sampler, so there is no multisample loss and no
-    # num_samples: one trunk is all there is to average.
-    def build(loss, recycling):
-        if HAS_SAMPLER[args.model]:
-            return folder.build_multisample_loss(
-                loss=loss,
-                features=features,
-                recycling_steps=recycling,
-                num_samples=args.num_samples,
-            )
-        return folder.build_loss(
-            loss=loss, features=features, recycling_steps=recycling
-        )
-
-    # ESM-C IS APPLIED TO THE SOFT SEQUENCE DIRECTLY, OUTSIDE THE STRUCTURE
-    # LOSS. It has to be: `Boltz2Loss.__call__` invokes its inner loss as
-    # `self.loss(sequence=..., output=..., key=...)`, and
-    # `ESMCPseudoLikelihood.__call__` is `(seq_standard_tokens, *, key)` --
-    # no `output`, no `sequence=` keyword. Putting it inside raises TypeError
-    # on the first gradient step, after every model is already on the GPU.
-    # `run_design.py:421-422` adds sequence terms to the built structure loss
-    # and `NoCys` wraps the sum, which is what this reproduces.
-    sequence_term = 0.5 * ClippedLoss(
-        ESMCPseudoLikelihood(load_esmc("biohub/ESMC-300M")), 2.0, 100.0
-    )
-    loss_function = NoCys(build(objective, args.recycling_steps) + sequence_term)
-
-    # The ranking objective is built from THE SAME features as the training
-    # loss, so the two describe the same complex. Building a second set from a
-    # literal poly-alanine chain would give the diffusion and confidence
-    # modules an alanine atom layout with a `res_type` claiming the designed
-    # sequence -- a chimera whose ipTM would still subtract cleanly from
-    # `start_loss` and so would never be caught.
-    ranking = build(
-        1.0 * sp.IPTMLoss()
-        + 0.5 * sp.TargetBinderIPSAE()
-        + 0.5 * sp.BinderTargetIPSAE(),
-        args.rescore_recycling,
-    )
-    ranking = NoCys(ranking)
-
-    # Evaluation happens five-plus times per parent; eager forward passes over
-    # a ~280-residue complex are far slower and hungrier than jitted ones.
-    return loss_function, ranking, eqx.filter_jit(ranking)
+        "sequence_models": sequence_models,
+        "optimizer": {
+            "soft": {"n_steps": args.soft_steps, "stepsize": 0.1,
+                     "momentum": 0.9, "scale": 1.0, "logspace": False,
+                     "max_gradient_norm": None},
+            "sharp": {"n_steps": args.sharp_steps, "stepsize": 0.025,
+                      "momentum": 0.5, "scale": 2.0, "logspace": False,
+                      "max_gradient_norm": None},
+        },
+        "mpnn": {"weights": "soluble", "backbone_noise": 0.0, "terms": [
+            {"name": "InverseFoldingSequenceRecovery", "weight": 1.0,
+             "params": {"temp": 0.1}},
+        ]},
+        "run": {"batch": batch, "seed": seed},
+    }
 
 
-def refine(
-    parent_sequence: str,
-    *,
-    target_sequence: str,
-    msa_path: str | None,
-    epitope_idx: list[int] | None,
-    seed: int,
-    args: argparse.Namespace,
-    cache: dict[int, tuple],
-) -> Result:
-    """Walk one parent downhill over `--cycles` soft-sharp cycles."""
+def run_chunk(chunk, length, seed, replicates, context, work, args):
+    """One `run_design.py` invocation over `len(chunk) * replicates` trajectories."""
+    batch = len(chunk) * replicates
+    out = work / f"chunk-{seed}"
+    out.mkdir(parents=True, exist_ok=True)
+
+    # EXACTLY `batch` entries, each parent repeated `replicates` times in order.
+    # That is what makes run_design.py:469's modulo reduce to seqs[b].
+    seeds_fasta = out / "init.fasta"
+    with seeds_fasta.open("w") as handle:
+        for parent in chunk:
+            for replicate in range(replicates):
+                handle.write(f">p{parent['index']}_r{replicate}\n{parent['sequence']}\n")
+
+    started = time.time()
     if args.dry_run:
-        return _dry_run(parent_sequence, seed, args)
+        payload, cycles = _dry_run(chunk, replicates, seed, args)
+    else:
+        # 1-based positions in the target's FASTA, resolved and range-checked
+        # when the run was planned; the loss terms slice with 0-based ones.
+        epitope = [spot - 1 for spot in context.get("hotspots") or []] or None
+        config_path = out / "config.json"
+        config_path.write_text(json.dumps(
+            design_config(length, seeds_fasta, batch, seed, epitope, context, args),
+            indent=2, sort_keys=True,
+        ))
+        command = [
+            sys.executable, args.design_script,
+            # --target is still required by argparse even when --config carries
+            # it, so it is passed twice and the config is what is used.
+            "--target", context["target_sequence"],
+            "--config", str(config_path),
+            "--out", str(out),
+            "--seed", str(seed),
+            # Read from argv directly, so they survive --config.
+            "--init-noise-random",
+            "--soft-sharp-cycles", str(max(1, args.cycles)),
+            "--cycle-noise", str(args.cycle_noise),
+            "--dump-cycles",
+        ]
+        if args.hard_sharp:
+            command.append("--hard-sharp")
 
-    import equinox as eqx
-    import jax
-    import jax.numpy as jnp
-    from mosaic.common import TOKENS
-    from mosaic.losses.transformations import NoCys
-    from mosaic.optimizers import simplex_APGM
-
-    binder_length = len(parent_sequence)
-    if binder_length not in cache:
-        cache[binder_length] = _build(
-            binder_length,
-            target_sequence=target_sequence,
-            msa_path=msa_path,
-            epitope_idx=epitope_idx,
-            args=args,
+        environment = {**os.environ, **cache_home(work, args.weights)}
+        done = subprocess.run(
+            command, capture_output=True, text=True, check=False, env=environment
         )
-    loss_function, ranking, jit_rank = cache[binder_length]
+        # The script's log is the only record of per-term aux, so it is kept
+        # beside the output whether or not the invocation succeeded.
+        (out / "run_design.log").write_text((done.stdout or "") + (done.stderr or ""))
+        if done.returncode != 0:
+            tail = (done.stderr or done.stdout or "").strip().splitlines()[-12:]
+            raise RuntimeError(
+                f"run_design.py exited {done.returncode}:\n" + "\n".join(tail)
+            )
+        payload = json.loads((out / f"designs_seed{seed}.json").read_text())
+        cycles_path = out / f"cycles_seed{seed}.json"
+        cycles = json.loads(cycles_path.read_text()) if cycles_path.exists() else None
 
-    sharp_loss = loss_function
-    sharp_scale = SHARP["scale"]
-    sharp_steps = args.sharp_steps
-    if args.hard_sharp:
-        sharp_loss = _hard_sequence_class()(loss_function)
-        sharp_scale = SHARP_STE_SCALE
-        sharp_steps = args.hard_sharp_steps
-    jit_sharp = eqx.filter_jit(sharp_loss)
+    elapsed = time.time() - started
+    return _rows(chunk, replicates, seed, payload, cycles, elapsed, context, args)
 
-    # THE ONE LINE THAT MAKES THIS REFINEMENT RATHER THAN HALLUCINATION. The
-    # hallucination driver starts the PSSM from Gumbel noise; this starts it at
-    # the PARENT's one-hot, so the walk leaves a sequence somebody already has.
-    # NoCys leaves a 19-token alphabet; cysteine is spliced back at zero
-    # probability by NoCys.sequence once the walk is over.
-    alphabet = [token for token in TOKENS[:20] if token != "C"]
-    seeded = [alphabet.index(residue) for residue in parent_sequence.replace("C", "A")]
-    one_hot = jax.nn.one_hot(jnp.array(seeded), len(alphabet))
-    x = one_hot * (1.0 - args.epsilon) + args.epsilon / len(alphabet)
 
-    def decode(pssm) -> str:
-        return "".join(TOKENS[t] for t in NoCys.sequence(pssm).argmax(-1))
+def _rows(chunk, replicates, seed, payload, cycles, elapsed, context, args):
+    """`designs_seed*.json` -> child rows.
 
-    trajectory: list[dict] = []
-    best_x, best_value, best_cycle = None, None, 1
-    key = jax.random.key(seed)
-    cycles = max(1, args.cycles)
+    ⚠ `results` is sorted by LOSS, not batch order, and the batch item is
+    `r["trajectory"]`. Using the enumeration index instead scrambles the join
+    inside every batch -- a trap `RUN_PARAMETERS.md` records as having survived
+    undetected in the source campaign's own analysis script for days.
+    """
+    structure_dir = Path(context["structure_dir"])
+    per_cycle = _cycle_losses(cycles)
+    models = [m.strip() for m in args.models.split(",") if m.strip()]
+    rows = []
+    for result in payload.get("results", []):
+        b = int(result["trajectory"])
+        which, replicate = divmod(b, replicates)
+        if which >= len(chunk):
+            continue
+        parent = chunk[which]
+        sequence = result["sequence"]
+        # `changes_length: false` is a claim the host enforces; skipping here
+        # names the trajectory instead of failing the shard.
+        if len(sequence) != len(parent["sequence"]):
+            continue
+        loss = float(result["loss"])
+        if not math.isfinite(loss):
+            continue
 
-    for cycle in range(1, cycles + 1):
-        stage = {"cycle": cycle, "stage": "soft"}
-        offset = len(trajectory)
-        record = lambda aux, _x, s=stage, o=offset: trajectory.append(
-            {**s, "step": len(trajectory) - o, "value": float(aux["loss"])}
+        relative = f"trajectories/{parent['index']}-{replicate}.json"
+        (structure_dir / relative).write_text(json.dumps(
+            {"trajectory": b, "seed": seed, "cycles": per_cycle.get(b, [])}, indent=1
+        ))
+
+        substitutions = sum(
+            1 for was, now in zip(parent["sequence"], sequence) if was != now
         )
-
-        # ---- soft stage ----
-        # simplex_APGM returns (final_iterate, best_iterate, trajectory).
-        # Continue from the FINAL iterate: best_x is a snapshot whose momentum
-        # history belongs to a different point, and mosaic itself records that
-        # its recorded score was evaluated at the extrapolated point rather
-        # than at x. run_design.py:547 takes the final iterate here for exactly
-        # that reason; taking best_x instead quietly runs a different protocol.
-        key, soft_key = jax.random.split(key)
-        x_soft, _, _ = simplex_APGM(
-            loss_function=loss_function,
-            x=x,
-            n_steps=args.soft_steps,
-            stepsize=SOFT["stepsize"],
-            momentum=SOFT["momentum"],
-            scale=SOFT["scale"],
-            logspace=False,
-            # None, not 1.0 -- see the SOFT/SHARP note above.
-            max_gradient_norm=None,
-            # Passed explicitly: without a key simplex_APGM draws one from an
-            # unseeded numpy RNG, and re-running a preempted shard would give
-            # different children while the run record still named one seed.
-            key=soft_key,
-            trajectory_fn=record,
-        )
-
-        # ---- sharp stage ----
-        stage = {"cycle": cycle, "stage": "sharp"}
-        offset = len(trajectory)
-        record = lambda aux, _x, s=stage, o=offset: trajectory.append(
-            {**s, "step": len(trajectory) - o, "value": float(aux["loss"])}
-        )
-        key, sharp_key = jax.random.split(key)
-        # Here the BEST iterate is what the reference keeps (run_design.py:581)
-        # -- the sharp stage is not resumed from, it is the endpoint.
-        _, cycle_x, _ = simplex_APGM(
-            loss_function=sharp_loss,
-            x=x_soft,
-            n_steps=sharp_steps,
-            stepsize=SHARP["stepsize"],
-            momentum=SHARP["momentum"],
-            scale=sharp_scale,
-            logspace=False,
-            max_gradient_norm=None,
-            key=sharp_key,
-            trajectory_fn=record,
-        )
-
-        # ---- keep the best across cycles ----
-        # Re-evaluated rather than taken from the optimizer, which makes cycles
-        # comparable to each other. Matches run_design.py:602-607.
-        key, eval_key = jax.random.split(key)
-        value = float(jit_sharp(cycle_x, key=eval_key)[0])
-        if best_value is None or value < best_value:
-            best_x, best_value, best_cycle = cycle_x, value, cycle
-
-        # The decoded sequence at each cycle boundary. This is what makes
-        # "how much identity survived" answerable THROUGH the optimization
-        # rather than only end to end.
-        trajectory.append(
-            {
-                "cycle": cycle,
-                "stage": "endpoint",
-                "value": value,
-                "sequence": decode(cycle_x),
-            }
-        )
-
-        # ---- re-soften for the next cycle ----
-        # ARGMAX to a one-hot vertex, THEN blend toward uniform. The argmax is
-        # the point -- it forces commitment to a discrete sequence before the
-        # next soft phase. Carrying a soft blend forward is a different
-        # operation and does not reproduce the measured result.
-        if cycle < cycles:
-            weight = args.cycle_noise
-            hard = jax.nn.one_hot(jnp.argmax(cycle_x, axis=-1), cycle_x.shape[-1])
-            x = (1.0 - weight) * hard + weight * (1.0 / cycle_x.shape[-1])
-
-    sequence = decode(best_x)
-
-    # Both numbers are the RANKING objective on a discrete sequence: the child
-    # here, the parent below. Same function, same key, so they subtract -- and
-    # so they stay comparable across --hard-sharp, which shifts the TRAINING
-    # loss by several units and would otherwise make the pair meaningless.
-    # NoCys-wrapped, so both take the 19-token simplex the walk used.
-    def as_simplex(seq: str):
-        return jax.nn.one_hot(
-            jnp.array([alphabet.index(r) for r in seq.replace("C", "A")]),
-            len(alphabet),
-        )
-
-    final, _ = jit_rank(as_simplex(sequence), key=jax.random.key(0))
-    start, _ = jit_rank(as_simplex(parent_sequence), key=jax.random.key(0))
-
-    return Result(
-        sequence, float(final), float(start), trajectory, best_cycle, cycles
-    )
+        metrics = {
+            "loss": loss,
+            "n_substitutions": float(substitutions),
+            "seq_identity": 1.0 - substitutions / max(1, len(parent["sequence"])),
+            "opt_replicate": float(replicate),
+            "opt_seed": float(seed),
+            "opt_cycles": float(max(1, args.cycles)),
+            "hard_sharp": 1.0 if args.hard_sharp else 0.0,
+            # Flags rather than one id, so a comma-separated --models stays
+            # representable and a query can ask "did AF2 shape this design?"
+            "lm_af2": 1.0 if "af2" in models else 0.0,
+            "lm_boltz2": 1.0 if "boltz2" in models else 0.0,
+        }
+        history = per_cycle.get(b, [])
+        if history:
+            metrics["cycle1_loss"] = float(history[0])
+            # Which cycle produced the winner. If this is almost always 1,
+            # cycling did not earn its GPU.
+            metrics["best_cycle"] = float(
+                min(range(len(history)), key=lambda i: history[i]) + 1
+            )
+        rows.append({
+            "parent_index": parent["index"],
+            "child": replicate,
+            "sequence": sequence,
+            "metrics": metrics,
+            "trajectory": relative,
+            "seconds": round(elapsed / max(1, len(chunk) * replicates), 2),
+        })
+    return rows
 
 
-def _dry_run(parent_sequence: str, seed: int, args: argparse.Namespace) -> Result:
-    """Contract plumbing without jax, mosaic, weights or a GPU.
+def _cycle_losses(cycles):
+    """trajectory -> [loss at each cycle boundary], from `cycles_seed*.json`."""
+    out: dict[int, list[float]] = defaultdict(list)
+    if not cycles:
+        return out
+    for entry in cycles.get("cycles", []) or []:
+        for design in entry.get("designs", []) or []:
+            out[int(design["trajectory"])].append(float(design["loss"]))
+    return out
 
-    The validator's whole value is that it costs seconds. Loading Boltz-2 or
-    AF2 plus ESM-C costs minutes and proves nothing about the row shapes, which
-    is the only thing the validator checks.
+
+def _dry_run(chunk, replicates, seed, args):
+    """The row shapes without mosaic, a GPU or the wrapped script.
+
+    Mirrors `designs_seed*.json` including its sort-by-loss ordering, so the
+    join in `_rows` is exercised rather than accidentally correct.
     """
     rng = random.Random(seed)
     alphabet = "ADEFGHIKLMNPQRSTVWY"
-    mutated = list(parent_sequence)
-    for position in rng.sample(range(len(mutated)), k=min(3, len(mutated))):
-        mutated[position] = rng.choice(alphabet)
-
-    sharp_steps = args.hard_sharp_steps if args.hard_sharp else args.sharp_steps
-    cycles = max(1, args.cycles)
-    trajectory: list[dict] = []
-    value = 1.0
-    for cycle in range(1, cycles + 1):
-        for stage, count in (("soft", args.soft_steps), ("sharp", sharp_steps)):
-            for step in range(max(0, count)):
-                value -= 0.001
-                trajectory.append(
-                    {"cycle": cycle, "stage": stage, "step": step, "value": value}
-                )
-        trajectory.append(
-            {
-                "cycle": cycle,
-                "stage": "endpoint",
-                "value": value,
+    results = []
+    for which, parent in enumerate(chunk):
+        for replicate in range(replicates):
+            mutated = list(parent["sequence"])
+            for position in rng.sample(range(len(mutated)), k=min(4, len(mutated))):
+                mutated[position] = rng.choice(alphabet)
+            results.append({
+                "trajectory": which * replicates + replicate,
+                "seed": seed,
+                "loss": round(rng.uniform(10.0, 25.0), 4),
                 "sequence": "".join(mutated),
-            }
-        )
-    return Result("".join(mutated), value, 1.0, trajectory, cycles, cycles)
+            })
+    results.sort(key=lambda r: r["loss"])
+    cycles = [
+        {"cycle": cycle + 1, "designs": [
+            {"trajectory": r["trajectory"], "seed": seed,
+             "loss": r["loss"] + (max(1, args.cycles) - cycle - 1) * 0.5,
+             "sequence": r["sequence"]}
+            for r in results
+        ]}
+        for cycle in range(max(1, args.cycles))
+    ]
+    return {"results": results}, {"cycles": cycles}
 
 
 if __name__ == "__main__":

@@ -1,36 +1,28 @@
 # A kit: everything about this optimizer that is true wherever it runs.
 #
-# Nothing here names a path, a GPU, a walltime or a design set. Those belong to
-# a campaign, because a second site would have to change every one of them.
-#
-# Check it before a campaign points at it -- seconds, no GPU:
+# This one WRAPS the DIO3 campaign's own `run_design.py` rather than
+# reimplementing its protocol. An earlier version reimplemented it and diverged
+# in six places; the entrypoint's docstring names them. What is here is only the
+# manifest -- nothing about the protocol itself, because this kit does not own it.
 #
 #   python scripts/check_kit.py --kit examples/kits/tomasz-optimization \
 #       --bindings /path/to/bindings.yaml \
-#       --config   /path/to/configs/optimize/refine_boltz2.yaml
+#       --config   /path/to/configs/optimize/refine-boltz2.yaml
 
 kit_schema: 1
 
 name: tomasz-optimization
-version: 0.1.0
+version: 0.2.0
 kind: optimizer
 summary: >-
-  Refine an existing binder with the DIO3 campaign's soft-sharp CYCLING
-  protocol: 3 x (90 soft + 30 sharp), argmax-and-re-soften between cycles, with
-  an optional straight-through estimator on the sharp stage. The PSSM starts at
-  the parent's one-hot rather than at noise, which is what makes it refinement
-  rather than hallucination. The folding model that drives the loss is chosen
-  per parent lineage.
+  Refine an existing binder with the DIO3 campaign's soft-sharp cycling
+  protocol, by invoking the campaign's own run_design.py with --init-fasta and
+  --init-noise-random and translating its designs_seed*.json into child rows.
+  Each parent gets N children from independently perturbed starts.
 
 entrypoint: optimizer.py
 python: ">=3.11"
 
-# ---------------------------------------------------------------------------
-# What it needs installed. `verify` is what decides; `version` is only a hint
-# for finding a candidate. That order is the lesson of this campaign:
-# mosaic.sif carries no usable version, and every property that has actually
-# mattered here was a capability no tag expressed.
-# ---------------------------------------------------------------------------
 requires:
   - name: bindocracy-io
     kind: harness_module
@@ -39,10 +31,12 @@ requires:
     verify:
       files: ["drivers/bindocracy_io.py"]
     why: >-
-      Transport only. The helper owns argument parsing, input validation and
-      row identity, so this kit cannot emit a wrong parent_index or a duplicate
-      child ordinal. A store never supplies this; the harness archives it
-      beside the script and puts it on PYTHONPATH.
+      Archived beside the script by the harness and put on PYTHONPATH. NOTE
+      this kit does not import it: run_design.py batches B trajectories in one
+      process, so the entrypoint reads and writes the JSONL contract by hand to
+      keep one invocation per chunk instead of one per parent. The requirement
+      stays declared because the harness archives the helper regardless, and
+      docs/custom-optimization.md keeps the raw path a supported contract.
 
   - name: mosaic
     kind: container
@@ -51,40 +45,37 @@ requires:
     verify:
       import: mosaic.optimizers
     why: >-
-      simplex_APGM, the loss terms, ProteinMPNN and the structure models. The
-      `--model boltz2` path is satisfied by the shipped image: Boltz-2 reads
-      the campaign's local a3m there. NEITHER path is complete without the
-      `mosaic-src` overlay below -- this import probes that mosaic is present,
-      not that it is current, and the two capabilities this kit needs are
-      younger than the image.
+      The interpreter and every model run_design.py loads. `sys.executable`
+      inside this container is what invokes the wrapped script, so the two
+      share one environment by construction rather than by configuration.
 
-  - name: alphafold-params
+  - name: design-scripts
+    kind: source_overlay
+    verify:
+      files: ["run_design.py", "design_config.py"]
+    why: >-
+      THE WRAPPED SCRIPT. `run_design.py` imports `design_config` by bare name,
+      so the two must sit in one directory and that directory is what this
+      requirement names. It is a `source_overlay` rather than a container
+      because it is a working tree, not an image: RUN_PARAMETERS.md records
+      ~673 uncommitted lines across 11 files, so "anyone reproducing this work
+      needs the working tree, not the SHA". Preflight digesting that tree is
+      what makes a run's record mean anything.
+
+  - name: mosaic-weights
     kind: weights
-    version: "2022-12-06"
     mount: read_only
-    optional: true
     verify:
-      files:
-        - params/params_model_1_multimer_v3.npz
-        - params/params_model_5_multimer_v3.npz
+      files: ["alphafold/params", "boltz"]
     why: >-
-      AF2 multimer parameters, for `--model af2` only. The optimize launcher
-      builds its own singularity line and binds no weight tree, so AF2 cannot
-      find them at mosaic's default ~/.alphafold and has to be handed the path.
-      Optional because a `--model boltz2` run needs nothing here.
-
-  - name: esmc-weights
-    kind: weights
-    optional: true
-    verify:
-      files: ["models--biohub--ESMC-300M"]
-    why: >-
-      The objective carries a 0.5-weighted ESM-C pseudolikelihood, clipped to
-      [2, 100]. `load_esmc` pulls ESMC-300M (~1.3 GB) from HuggingFace on first
-      use, which a compute node with no outbound network cannot do. Bind a
-      warmed HF cache, or warm it once on a login node. Marked optional because
-      a site whose cache is already populated needs no binding. NOTE the repo
-      id is case-sensitive and the shared cache is too: `biohub/ESMC-300M`.
+      REQUIRED for every run. design_config.py builds its models with NO
+      data_dir -- `AlphaFold2(multimer=True, ...)`, `Boltz2()` -- so they reach
+      for ~/.alphafold and ~/.boltz. The campaign's mosaic-exec.sh bind-mounts
+      this tree's plain-named caches onto those dotted names inside a synthetic
+      HOME; this harness has no bind hook, so the wrapper rebuilds that HOME as
+      symlinks and hands it to the subprocess. Verified empirically: neither
+      ~/.alphafold nor a populated ~/.boltz exists on this cluster, so without
+      it af2 finds no params and boltz2 finds no checkpoint.
 
   - name: mosaic-src
     kind: source_overlay
@@ -92,167 +83,134 @@ requires:
     verify:
       files: ["models/af2_msa.py", "losses/structure_prediction.py"]
     why: >-
-      REQUIRED FOR EVERY RUN, not just `--model af2`. Two capabilities this
-      objective needs are younger than the 2026-07-22 image and neither is
-      expressible as a version tag. (1) `DistogramIPTMProxy.epitope_idx`,
-      added 2026-08-13 and VERIFIED ABSENT from the shipped image: without it
-      that 2.0-weighted term rewards confident contact anywhere on the target,
-      which RUN_PARAMETERS records as silently optimizing a different
-      objective. (2) `models/af2_msa.py`, added 2026-08-18, for `--model af2`:
-      the shipped image still asserts "AF2 interface does not support MSA yet".
-      `mosaic_setup/mosaic/src/mosaic` satisfies both. Note the DEPTH -- this
-      tool binds onto /opt/mosaic/src/mosaic, one level below the scorer's
-      MOSAIC_DEV_SRC -- which is why the entrypoint re-checks the CAPABILITY
-      by source inspection rather than trusting this binding: a file check
-      cannot see a missing dataclass field, and a wrong depth resolves
-      silently.
+      REQUIRED FOR EVERY RUN. Two capabilities are younger than the 2026-07-22
+      image and neither is expressible as a version tag.
+      `DistogramIPTMProxy.epitope_idx` (2026-08-13) is VERIFIED ABSENT from the
+      shipped image, and `models/af2_msa.py` (2026-08-18) is what lets af2 fold
+      against the campaign alignment at all. `mosaic_setup/mosaic/src/mosaic`
+      satisfies both. Note the DEPTH: this binds onto /opt/mosaic/src/mosaic,
+      one level below the scorer's MOSAIC_DEV_SRC.
 
-# ---------------------------------------------------------------------------
-# The contract it satisfies
-# ---------------------------------------------------------------------------
 inputs: [sequence]
 
-# Proposed here, restated by the campaign, never inherited.
+# Proposed here, restated by the campaign, never inherited. Both names because
+# `--models` selects one per run and the harness compares this list for
+# equality, so one kit cannot serve two lineages with narrow claims. Every
+# child carries `lm_af2` and `lm_boltz2` flags, so which model actually shaped
+# a design is a query rather than an inference from the run name.
 #
-# WHY BOTH NAMES. `--model` selects one of these per run, so a single run's
-# children are shaped by exactly one. The harness compares this list against
-# the campaign config for equality, so a kit that named one model could not
-# serve both lineages, and two near-identical kits would be worse than one
-# honest superset. The claim this list makes is therefore "a child of this kit
-# may have been driven by either", which is true and conservative.
-#
-# The cost is precision: a Boltz-2-driven child is marked as though OF3 had a
-# say too. It costs nothing for the intended readout, because ESMFold2 is the
-# held-out judge and is in neither. A campaign that later wants to rank these
-# children with Boltz-2 or OF3 should copy this kit, narrow the list to the one
-# model that run used, and move the version -- which is what the checker's
-# "the kit is the wrong one or its version needs to move" is telling you.
-#
-# Each child also carries `loss_model_id` (0 = boltz2, 1 = af2), so which model
-# actually drove a given design is a query, not an inference from the run name.
-#
-# WHY NOT OF3, which the source campaign used as its second model.
-# `mosaic.models.of3` is a port and the harness deprecates it: on GFP it
-# returns pLDDT 38.5 and a structure 24 A from the six-model consensus where
-# the official image returns 88.7 and 3.9 A, and on the labelled Nipah-G set it
-# scored 0.597 -- BELOW the 0.642 a sequence-only control reaches. A gradient
-# through that is a gradient through noise. The official OpenFold3 is on disk
-# as the `of3_upstream` tool, but that is a scorer with no loss interface and
-# cannot drive an optimizer. Protenix would also be clean for Boltz-lineage
-# parents and does have a sampler, but adding it widens this exclusion for
-# coverage the campaign does not need: two models already serve both lineages,
-# and every other scorer -- esmfold2, protenix, of3_upstream, boltz1, promera
-# -- stays available to judge these children.
+# ESMFold2 is in neither and stays the held-out judge.
 loss_models: [af2, boltz2]
 
 capabilities:
   changes_length: false
-  max_children: 1
+  # Children per parent, each from its own Dirichlet-perturbed start. Two is the
+  # useful minimum; one child cannot distinguish a converged optimizer from a
+  # lucky one.
+  max_children: 8
 
 metrics:
   loss:
     direction: min
     description: >-
-      Ranking objective -- ipTM + both ipSAE terms -- on the DISCRETE child at
-      --rescore-recycling recycles. The optimizer's opinion, never a
-      measurement. Comparable across --hard-sharp because it is evaluated on a
-      discrete sequence either way.
-  start_loss:
+      run_design.py's OWN final objective value for the winning cycle -- the
+      optimizer's opinion of a child, never a measurement of it. Not comparable
+      across --hard-sharp, which changes the forward pass, nor against a run
+      with a different --models or --esmc-weight.
+  cycle1_loss:
     direction: min
     description: >-
-      THE SAME ranking objective on the discrete parent. `loss` is
-      uninterpretable without it and only interpretable if the two are the same
-      quantity. The nine-term TRAINING objective is a different and much larger
-      number; it stays in the trajectory file and must never be reported here.
+      The same objective at the FIRST cycle boundary. `loss` alone is a bare
+      number; this is the within-run reference it moved from. A parent baseline
+      is deliberately not computed here -- see the entrypoint docstring -- and
+      the parent's real quality is already in the database from an independent
+      scorer.
+  best_cycle:
+    direction: none
+    description: >-
+      Which cycle produced the winner, 1-based. The direct test of whether
+      cycling earned its GPU: if this is almost always 1, it did not.
+  opt_cycles:
+    direction: none
+    description: soft-sharp cycles requested
   n_substitutions:
     direction: none
     description: positions where the child differs from its parent
   seq_identity:
     direction: none
     description: >-
-      Fraction of positions identical to the parent, 0..1. Redundant with
-      n_substitutions and declared anyway because it is the quantity this round
-      is actually reading, and deriving it in every query invites the length to
-      be got wrong.
-  opt_cycles:
+      Fraction of positions identical to the parent, 0..1. Read this before
+      anything else: a 360-step schedule was designed to invent binders from
+      noise, and seeding it from a parent does not by itself keep the child
+      near one. The first GPU run came back at 0.03-0.08.
+  opt_replicate:
     direction: none
-    description: soft-sharp cycles requested
-  best_cycle:
+    description: which independent optimization of this parent, 0-based
+  opt_seed:
     direction: none
     description: >-
-      Which cycle produced the winning iterate, 1-based. The direct test of
-      whether cycling earned its GPU: if this is almost always 1, it did not.
+      The seed handed to run_design.py for this child's chunk. Two children of
+      one parent differ only through this and the Dirichlet draw it keys, so
+      without it the run cannot be reproduced from its own record.
   hard_sharp:
     direction: none
-    description: >-
-      1 when the straight-through estimator ran, else 0. Separates two
-      populations whose TRAINING losses are not comparable.
-  loss_model_id:
+    description: 1 when the straight-through estimator ran, else 0
+  lm_af2:
     direction: none
-    description: which folding model drove the loss -- 0 = boltz2, 1 = af2
+    description: 1 when af2 was in --models
+  lm_boltz2:
+    direction: none
+    description: 1 when boltz2 was in --models
 
-# ---------------------------------------------------------------------------
-# What it costs. The campaign derives a walltime from these plus the parent
-# count and the shard count, neither of which an author can see.
-# ---------------------------------------------------------------------------
 cost:
   gpu: required
-  # UNMEASURED PLACEHOLDERS. Nothing has run this kit on a node. The numbers
-  # below are order-of-magnitude only, extrapolated from the source campaign's
-  # ~13 s/step at batch 4 on a 201-residue target -- a different quantity from
-  # this kit's `--num-samples`, so the extrapolation is weak in both directions.
-  # Replace both from a 2-3 parent pilot before reserving a real queue;
-  # check_kit.py prints what they imply against what the config reserved.
-  compile_seconds: 300
-  per_parent_seconds: 1500
+  # MEASURED through THIS wrapper on 2026-09-25: two chunks of one parent x two
+  # replicates, 385 s and 423 s per child, 27 min of task wall for 4 children
+  # including model load and two JIT compiles (one per binder length).
+  compile_seconds: 240
+  per_parent_seconds: 405
   measured_on:
-    run: NONE -- placeholder, not GPU-verified
-    gpu: H100-80GB (assumed)
-    binder_length: 80
+    run: refine-af2-canary, 2 parents x 2 replicates, exit 0
+    gpu: H100-80GB
+    binder_length: 71
     target_length: 201
     cycles: 3
-    steps: 360
-  scales_with: [binder_length, target_length, cycles, soft_steps, sharp_steps, num_samples]
+    models: af2
+    esmc_weight: 0
+  scales_with: [binder_length, target_length, cycles, soft_steps, sharp_steps, replicates, max_batch]
   note: >-
-    compile_seconds is paid once per binder LENGTH per process, not once per
-    task, which is why the design set is ordered by length and shards are
-    contiguous. Cycling is much cheaper than its step count suggests -- JAX
-    compiles once, and the source campaign measured a soft stage at 290 s on
-    cycle 1 then 22 s on cycles 2 and 3. Memory, not time, is the hazard:
-    a 201-residue target with a binder of 95+ residues overflowed an 80 GB
-    H100 at four samples in the source campaign. Route long parents to a
-    141 GB card or lower --num-samples.
+    per_parent_seconds is for ONE child; the campaign multiplies by
+    `replicates` as well as by the parent count. compile_seconds is paid per
+    binder LENGTH per invocation, which is why parents are grouped by length
+    and chunked -- the design set is length-ordered so a shard spans few groups.
+    Memory, not time, is the hazard: `--max-batch` trajectories times the
+    complex length is what overflowed an 80 GB H100 in the source campaign
+    once the complex passed ~296 residues.
 
-# ---------------------------------------------------------------------------
-# Defaults a campaign may override. These are the source campaign's MEASURED
-# recommendation, not guesses: 3 x (90 + 30) beat a single 1 x (250 + 30) pass
-# by +37% at ipTM >= 0.7 and +40% at >= 0.8 for +28% GPU, and 3 x (250 + 30)
-# -- 840 steps -- was the WORST cycling arm on every column. More optimization
-# is actively harmful past a point.
-# ---------------------------------------------------------------------------
 args:
-  model: boltz2
+  models: boltz2
+  replicates: 2
+  max-batch: 4
+  # No default: it is a site path, supplied by the campaign as `--weights`.
+  # The campaign's measured recommendation. 3 x (90+30) beat a single
+  # 1 x (250+30) by +37% at ipTM >= 0.7 for +28% GPU; 3 x (250+30) -- 840 steps
+  # -- was the WORST cycling arm on every column.
   cycles: 3
   soft-steps: 90
   sharp-steps: 30
-  cycle-noise: 0.1
-  # OFF by default and deliberately so. The straight-through estimator gave
-  # 2.2x the designs at ipTM >= 0.7 at one site and 1.5x at another, and was
-  # strictly worse on every column at two more. Nothing yet predicts the sign,
-  # so it is piloted per site rather than promoted to a default.
-  # A store_true flag. `launch.py` passes kit args through as a flat string
-  # list, so transcribe this as the bare `--hard-sharp` (or omit it), never as
-  # `--hard-sharp false` -- argparse aborts on the value.
-  hard-sharp: false
-  hard-sharp-steps: 60
+  # 0.15 both, which is the wrapped script's own default and what the pipeline
+  # used when it re-seeded R23's designs into R24-A.
+  init-noise: 0.15
+  cycle-noise: 0.15
   recycling-steps: 1
-  rescore-recycling: 3
-  num-samples: 4
-  # AF2 only; ignored on the boltz2 path. A gradient loop, not a one-shot
-  # score, so these are below the scoring protocol's 512 / 2048.
-  msa-clusters: 128
-  extra-msa: 512
-  epsilon: 0.1
+  # The wrapped script defaults to 0.5. Zero here because esmc_pll returns NaN
+  # on this cluster, which poisons the whole objective; see the entrypoint.
+  esmc-weight: 0.0
+  # A store_true flag: transcribe as a bare `--hard-sharp` or omit it, never as
+  # `--hard-sharp false`. Off by default -- it gave 2.2x at one site and was
+  # strictly worse at two others.
+  hard-sharp: false
 
 dependency_args:
-  alphafold-params: --af2-data-dir
+  design-scripts: --design-script
+  mosaic-weights: --weights

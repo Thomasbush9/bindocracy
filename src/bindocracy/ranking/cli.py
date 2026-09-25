@@ -6,6 +6,7 @@ from typing import Annotated
 import typer
 from pydantic import ValidationError
 
+from bindocracy.cli_output import emit, fail
 from bindocracy.config.load import ConfigLoadError, load_yaml
 from bindocracy.config.models import GeneralConfig
 from bindocracy.ranking.models import RankingPolicy
@@ -54,10 +55,14 @@ def rank_apply(
         TargetMismatchError,
         OSError,
     ) as error:
-        typer.echo(str(error), err=True)
-        raise typer.Exit(code=2) from error
-    typer.echo(summarise(collected))
-    typer.echo("ingested" if inserted else "already ingested; nothing to do")
-    typer.echo(f"outputs: {collected.run.output_uri}")
-    for name, manifest in manifests.items():
-        typer.echo(f"{name}: {manifest}")
+        fail(error)
+    text = [
+        summarise(collected),
+        "ingested" if inserted else "already ingested; nothing to do",
+        f"outputs: {collected.run.output_uri}",
+        *(f"{name}: {manifest}" for name, manifest in manifests.items()),
+    ]
+    emit(
+        {"run": collected.run, "inserted": inserted, "cohorts": manifests},
+        text="\n".join(text),
+    )

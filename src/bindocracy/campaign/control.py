@@ -442,7 +442,7 @@ def _submit(plan, plan_path, journal, scheduler, *, recover=False):
     return _view(plan, journal)
 
 
-def submit(plan_path, approve, *, scheduler=None):
+def submit(plan_path, approve, *, scheduler=None, require_fresh=False):
     """Launch once. Repeated submit reports the existing attempt, never duplicates."""
     plan_path = Path(plan_path).resolve()
     plan = _approved(plan_path, approve)
@@ -450,6 +450,8 @@ def submit(plan_path, approve, *, scheduler=None):
     with _locked(plan):
         journal = _read(plan)
         if journal["attempts"]:
+            if require_fresh:
+                raise CampaignError("qualification requires a fresh plan with no previous attempts")
             _reconcile(plan, journal, scheduler)
             return _view(plan, journal)
         return _submit(plan, plan_path, journal, scheduler)

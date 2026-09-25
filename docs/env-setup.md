@@ -113,3 +113,51 @@ Account is `kempner_bsabatini_lab`, partition `kempner_h100` (with the documente
 RFdiffusion exception on `kempner`/A100 — see `known-issues.md`). These belong in
 a Snakemake profile rather than on the command line; that profile is not written
 yet.
+
+## Read-only campaign readiness
+
+Before freezing a plan, check the same typed index, tool preflights, declared
+inputs and resource mappings used by execution:
+
+```bash
+.venv/bin/bindocracy campaign check workflow.yaml --site site.yaml
+.venv/bin/bindocracy --json campaign check workflow.yaml --site site.yaml --probe-site
+# The legacy multi-index entrypoint uses the identical library implementation:
+.venv/bin/python scripts/check_index.py first.yaml second.yaml --site site.yaml
+```
+
+Config paths retain the workflow's current-working-directory semantics; they
+are not silently rebased relative to the index file. All runs are checked, so
+one missing config does not hide another run's independent failure. Checks do
+not create plans, reserve run directories, submit/cancel jobs, run containers,
+or open campaign databases for writing. Tool preflights that need stored parent
+structures or metrics use their existing read-only database queries.
+
+Reports separate `static_status` from `scheduler_status` and the overall
+`status`: `blocked` takes precedence over `unknown`, which takes precedence over
+`ready`. Missing site policy leaves controller budgets unknown. Without
+`--probe-site`, scheduler readiness is **unknown**, not ready. Both blocked and
+unknown reports exit nonzero (1); JSON mode still retains the complete report
+under `result`, because the check itself completed.
+
+The opt-in probes use only `sinfo`, `scontrol show config` and `sacctmgr show
+assoc`, with a five-second timeout for each query (at most three queries per
+index). Missing clients, inaccessible accounting, permission failures and
+timeouts remain unknown, with a reason and remedy. Account associations are
+scoped to the current cluster. An unavailable configured partition is blocked.
+Visible partitions and associations establish neither QOS eligibility nor
+quota, scheduler admission, free nodes, GPU functionality or successful model
+execution. A `ready` report covers only the stated checks, not those guarantees.
+
+Optimizer scripts can have dependencies beyond their declared runtime assets.
+The index does not declare kit bindings, so these remain unknown rather than
+inferring a neighboring `kit.yaml`. For a kit, additionally run the existing
+checker with its **explicit** inputs:
+
+```bash
+.venv/bin/python scripts/check_kit.py --kit PATH_TO_KIT \
+  --bindings PATH_TO_BINDINGS --config PATH_TO_OPTIMIZER_CONFIG --no-probe
+```
+
+That disk-only kit report does not certify imports inside a container; readiness
+never starts a container just to test an import.

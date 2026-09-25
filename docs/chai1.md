@@ -34,19 +34,83 @@ alignment was never used — the same failure that made OpenFold3 and Protenix
 incomparable for a month. So `preflight_chai1` resolves the filename by Chai's
 own rule before anything is allocated and refuses the run if it is missing.
 
-Chai wants `.aligned.pqt`, **not** the campaign's `.a3m`. Convert once per
-target:
+Chai wants `.aligned.pqt`, **not** the campaign's `.a3m`. Materialize existing
+inputs once, without folding, MSA search, network access or container execution:
 
 ```bash
-mkdir -p /tmp/a3m
-cp .../DIO3.a3m /tmp/a3m/uniref90.a3m      # stem names the source database
-singularity run --cleanenv images/chai1.sif \
-    a3m-to-pqt /tmp/a3m --output-directory chai_msas/dio3_cut
+bindocracy target materialize --general general.yaml \
+    --output-dir target-inputs --format chai --format pxdesign \
+    --msa-source uniref90
 ```
 
-The campaign's alignment is already converted at
-`binder_design/chai_msas/dio3_cut/` (3,032 sequences,
-`cbd2ba0f...aligned.pqt`).
+`--msa-source` must describe the actual database that produced the input, not
+the desired model. Supported sources are `uniref90`, `uniprot`, `bfd_uniclust`
+and `mgnify`. It can be omitted only when `target.msa` has that source as its
+filename stem (also accepting `hits_SOURCE` or `SOURCE_hits`). Unknown sources
+are refused rather than silently labelled UniRef90. Pairing keys remain empty:
+this command does not infer taxonomy or paired homologs.
+
+Set Chai's `runtime.msa_directory` to the absolute path of
+`target-inputs/chai/`. It contains `<sha256-of-uppercase-query>.aligned.pqt`,
+with the four string columns from Chai 0.6.1's `AlignedParquetModel`:
+`sequence`, `source_database`, `pairing_key`, `comment`. The first row's source
+is `query`; subsequent rows retain their A3M sequence, insertions and header.
+The schema and filename rule were inspected in the installed Chai container's
+`/opt/chai-lab/chai_lab/data/parsing/msas/aligned_pqt.py` and `data_source.py`;
+the host writes ordinary Parquet using PyArrow, not an approximate custom format.
+
+Set PXDesign's target-chain `msa` directory to the absolute path of
+`target-inputs/pxdesign/`. `non_pairing.a3m` retains all input records;
+`pairing.a3m` contains only the target query and explicitly means **no paired
+homologs supplied**, as supported by Protenix's query-only alignment path.
+This is a single-target handoff, not construction of a multimeric paired MSA.
+Both are checked against the existing target FASTA. The materializer refuses
+mismatched queries, nonuniform match-state widths, empty records, multimer
+metadata, dots (different consumer semantics), unsupported uppercase residue
+tokens and insertions exceeding Chai's 255-residue counter. It never drops
+malformed or duplicate rows to make an input appear valid.
+
+Additional repeatable choices `--format pdb` and `--format cif` produce
+`target.pdb` and `target.cif`, using existing `target.structure_pdb` or
+`target.structure_cif`. A matching representation is validated and copied
+unchanged; otherwise Biotite converts it and the result is parsed again.
+All chains, atom serials, author residue numbers and insertion codes must
+survive, and the complete configured target chain must match its FASTA.
+No cropping, missing-residue reconstruction or renumbering is performed.
+Conversion is deliberately limited to single-model coordinate-only inputs:
+alternate locations, unsupported metadata/connectivity, unit cells, differing
+mmCIF author/label identities, meaningful entity assignments, PDB field overflow
+and numeric precision loss are refused. PDB-to-mmCIF conversion leaves unknown
+entity identifiers missing rather than inventing assignments. Rich structures
+can still be copied in their original format.
+If both representations are requested, their atom identities and coordinates
+must agree. Conversion does not rewrite the general config or PXDesign spec;
+review their author-versus-label residue conventions before referencing the
+produced paths.
+
+`materialization.json` records the target configuration, source paths and
+SHA-256 hashes, declared transformations and every produced path/hash.
+The output directory must be absent or an identical previous materialization;
+even an unrelated empty directory is refused. A private sibling tree is fully
+validated, then an exclusive empty-directory reservation and POSIX atomic rename
+publish the complete tree. This also works on Lustre filesystems without
+`RENAME_NOREPLACE`. Readers see an empty reservation or the complete result,
+never partially copied formats. An uncatchable interruption can leave an empty
+reservation; retry refuses it rather than adopting it automatically.
+Repeated calls preserve existing bytes and modification times; changed inputs,
+tampered outputs, additional files or symlinks are refused. A failed conversion
+publishes none of the requested formats. PyArrow and Biotite are runtime
+dependencies, loaded only by the formats that need them.
+
+The focused regression file is `tests/test_target_materialize.py`. Its two
+opt-in consumer checks parse synthetic `ACD`/`AaC-` fixtures using the installed
+CPU parsers, with no folding or search:
+
+```bash
+CHAI_TEST_IMAGE="$(realpath ../images/chai1.sif)" \
+PXDESIGN_TEST_IMAGE="$(realpath ../images/pxdesign.sif)" \
+    uv run pytest -q tests/test_target_materialize.py
+```
 
 Only the target needs one. Chai will warn about the binder chain having no MSA;
 that is correct and matches every other scorer here — a de novo binder has no

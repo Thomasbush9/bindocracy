@@ -45,9 +45,9 @@ def read_only(database: str | Path) -> Iterator[duckdb.DuckDBPyConnection]:
         connection.close()
 
 
-def known_run_names(connection: duckdb.DuckDBPyConnection, kind: str | None = None) -> tuple[
-    str, ...
-]:
+def known_run_names(
+    connection: duckdb.DuckDBPyConnection, kind: str | None = None
+) -> tuple[str, ...]:
     """Run names present, for checking a config before it is applied."""
     sql = "SELECT DISTINCT name FROM runs"
     params: list[str] = []
@@ -114,8 +114,10 @@ def resolve_run_ids(
     return tuple(resolved)
 
 
-def select(database: str | Path, query: DesignQuery) -> tuple[tuple[DesignRow, ...], DesignQuery]:
-    """Run one query, refusing an empty result. Returns rows and the resolved query.
+def select(
+    database: str | Path, query: DesignQuery, *, allow_empty: bool = False
+) -> tuple[tuple[DesignRow, ...], DesignQuery]:
+    """Run one query, refusing empty results unless explicitly previewing.
 
     The resolved query is returned rather than discarded because it is what
     belongs in the design set: a manifest naming a filter run by a name two
@@ -143,10 +145,8 @@ def select(database: str | Path, query: DesignQuery) -> tuple[tuple[DesignRow, .
             query = query.model_copy(update={"filter_runs": run_ids})
         designs = select_designs(connection, query)
 
-    if not designs:
-        raise SelectionError(
-            f"query selected no designs from {database}\n  {_describe(query)}"
-        )
+    if not designs and not allow_empty:
+        raise SelectionError(f"query selected no designs from {database}\n  {_describe(query)}")
     return designs, query
 
 

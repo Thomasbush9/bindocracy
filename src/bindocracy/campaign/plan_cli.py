@@ -7,6 +7,7 @@ import typer
 import yaml
 
 from bindocracy.campaign.plan import build_plan, load_plan
+from bindocracy.cli_output import emit, fail
 
 app = typer.Typer(help="Freeze and inspect execution plans without submitting jobs.")
 
@@ -68,9 +69,8 @@ def plan_command(
     try:
         plan = build_plan(index, site, output_dir)
     except (ValueError, RuntimeError, OSError, yaml.YAMLError) as error:
-        typer.echo(f"Campaign planning error:\n{error}", err=True)
-        raise typer.Exit(code=2) from error
-    typer.echo(_summary(plan))
+        fail(error)
+    emit(plan, text=_summary(plan))
 
 
 @app.command("show")
@@ -81,6 +81,5 @@ def show_command(
     try:
         frozen = load_plan(plan)
     except (ValueError, RuntimeError, OSError) as error:
-        typer.echo(f"Campaign plan error:\n{error}", err=True)
-        raise typer.Exit(code=2) from error
-    typer.echo(_summary(frozen))
+        fail(error)
+    emit(frozen, text=_summary(frozen))

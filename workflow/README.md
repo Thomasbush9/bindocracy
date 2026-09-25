@@ -96,6 +96,111 @@ Lifecycle management currently targets one Slurm cluster with accessible
 accepted. The campaign CLI enforces the approval/lifecycle interface; direct
 Snakemake invocation below remains a lower-level interface.
 
+## Verification and opt-in deployment qualification
+
+GitHub Actions runs the committed `uv.lock` environment on Python 3.12 with
+`uv sync --locked --group dev`, `uv run --locked ruff check src tests scripts`,
+and the full CPU pytest suite. It needs no Slurm credentials, containers,
+checkpoints, or GPUs. Tests use injected transports where appropriate;
+passing CI is **not** evidence that a real cluster deployment has been qualified.
+
+`campaign qualify` observes the existing submit/status/cancel/resume lifecycle and
+Slurm transport. It accepts an already-frozen plan, never builds one implicitly,
+and requires a fresh execution: no earlier journal attempts, task contents, task
+logs, collected/ingested markers, completion markers, or recovery archives.
+Use a dedicated canary run root and database, new run names, and a new plan
+directory. Never select a production execution with outcomes you intend to keep
+running, and do not operate the same plan from another terminal during qualification.
+
+### Preparing a canary
+
+1. Select a **real** installed connector and its normal validated configuration.
+   Set exactly one run, one task, at most two requested/generated records, and,
+   where declared, at most two input designs/predictions. Use ordinary
+   `campaign plan` and `campaign show` as above; inspect the complete frozen
+   execution closure and digest. Do not edit `plan.json` or manifests afterward.
+2. The default policy is CPU-only: zero controller and worker GPUs, controller
+   at most 2 CPUs/4 GiB/10 minutes, worker at most 2 CPUs/4096 MiB/5 minutes, and
+   site `max_workers: 1`. The current bundled scientific connectors require GPUs;
+   a CPU canary therefore needs a genuine CPU-capable external connector using the
+   existing `BINDOCRACY_PLUGINS` interface and a resource model accepting zero GPUs.
+   Its resolved resources must satisfy normal campaign planning, including
+   `gres: gpu:0`. Confirm that representation is supported by the local executor
+   and Slurm. The test-only toy connector is not a production canary.
+3. For an existing supported GPU connector instead, **separately opt in** with
+   `--allow-gpu`. The policy still permits only one run/task and one concurrent
+   worker. Each allocation may request at most one GPU and the site's total GPU
+   ceiling must be at most two. Controller limits are 2 CPUs/8 GiB/15 minutes;
+   worker limits are 8 CPUs/64 GiB/10 minutes. This option never removes the exact
+   digest approval requirement and does not authorize any unreviewed launch.
+   A small requested workload is not a guarantee that a model will finish within
+   these limits; a timeout must remain an inconclusive result.
+
+No path above installs a fake scientific tool or silently reduces an existing
+plan's resources. A configuration that cannot meet the canary limits is refused.
+The current site schema requires a positive `max_total_gpus` even for a CPU-only
+plan; it is a ceiling, not a GPU allocation.
+
+### Inspecting, approving, and interpreting results
+
+```bash
+# No scheduler commands or submissions; returns approval_required/inconclusive.
+uv run bindocracy --json campaign qualify /path/to/canary/plan.json
+
+# Only after separately approving this exact plan and its CPU resource scope.
+uv run bindocracy --json campaign qualify /path/to/canary/plan.json \
+  --approve sha256:PASTE_THE_REVIEWED_DIGEST --timeout 900 --poll-interval 5
+
+# Alternative for a separately reviewed GPU canary; never implicit.
+uv run bindocracy --json campaign qualify /path/to/gpu-canary/plan.json \
+  --allow-gpu --approve sha256:PASTE_THE_REVIEWED_DIGEST
+
+# Use ANOTHER fresh plan to exercise cancellation and resume explicitly.
+uv run bindocracy --json campaign qualify /path/to/resume-canary/plan.json \
+  --mode cancel-resume --approve sha256:PASTE_THE_REVIEWED_DIGEST
+```
+
+The command needs `sbatch`, `squeue`, `sacct`, and `scancel`, a valid account and
+partition, and ordinary shared-filesystem/controller/worker prerequisites.
+Both `squeue` comments (`%k`) and `sacct` allocation comments (`Comment%256`) must
+preserve the full campaign tag. Slurm accounting must expose terminal allocation
+states in a timely manner; an accepted submission or an empty accounting response
+is never completion evidence. This is a single-cluster, non-array qualification.
+
+Reports are retained under `PLAN_DIR/control/qualification-*.json`, alongside the
+normal journal and logs. They include lifecycle observations, exact owned
+controller/worker tags as observed separately in queue/accounting responses,
+terminal accounting states, and cleanup results. `passed` requires completed
+campaign artifacts, successful status and an existing output for every task,
+and accounted `COMPLETED` controller **and** worker jobs. Failed task outcomes
+cannot qualify merely because their Slurm allocations completed.
+`failed` means an observed terminal campaign or task failure; `inconclusive`
+covers interruption, scheduler/transport errors, missing accounting and timeouts.
+Injected evidence is explicitly labelled and always has `live_qualified: false`.
+A passed infrastructure check does not establish scientific validity of outputs.
+An inconclusive/failed report exits nonzero, including the unapproved inspection.
+
+`cancel-resume` waits for an active tagged worker, cancels through the ordinary
+campaign gate, requires accounted worker cancellation and terminal prior jobs,
+then resumes the same frozen DAG and verifies completion. A canary that finishes
+before cancellation can be observed is inconclusive, not a cancellation pass.
+Polling is bounded (default 900 seconds, maximum 1800; intervals 1–30 seconds);
+each scheduler subprocess is bounded to 15 seconds and the remaining deadline.
+Interruption, errors, and timeouts trigger at most 60 seconds of best-effort,
+tag-scoped cancellation for jobs submitted by this invocation. There is no
+generic `scancel`. Unknown cleanup remains explicit: inspect the journal and
+repeat ordinary `campaign status`/`campaign cancel` when accounting recovers.
+SIGINT/SIGTERM are handled; SIGKILL, node loss, and inaccessible filesystems cannot
+guarantee cleanup or report persistence.
+
+Scientific outputs and logs are never deleted by qualification. Ordinary resume
+retains completed outcomes and archives interrupted task evidence. Until run on
+a real approved cluster plan, worker submission from the Slurm executor,
+queue/comment visibility, accounting latency, completion/ingestion, cancellation,
+resume, and environment propagation remain **unverified integration paths**.
+Even a successful CPU canary does not qualify GPU visibility, GPU libraries,
+containers, checkpoints, federated Slurm, or real scientific model correctness.
+
 ## Direct Snakemake invocation
 
 ```bash

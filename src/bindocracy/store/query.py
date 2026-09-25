@@ -16,8 +16,8 @@ read half, and it is deliberately separate:
 - It does no aggregation. Metrics come back per replicate; collapsing them is a
   decision the caller states explicitly (see `bindocracy.filters`).
 
-The queries here are the only place SQL is written against `designs` and
-`metrics`. Everything downstream works on the dataclasses.
+Selection SQL lives here; campaign reporting SQL lives in `store.reporting`.
+Both take read-only connections. Callers consume records rather than writing SQL.
 """
 
 from __future__ import annotations
@@ -268,9 +268,33 @@ def metric_names(connection: duckdb.DuckDBPyConnection) -> tuple[str, ...]:
     )
 
 
-def count_designs(
-    connection: duckdb.DuckDBPyConnection, query: DesignQuery | None = None
-) -> int:
+def metric_catalog(
+    connection: duckdb.DuckDBPyConnection, *, run_ids: Sequence[str] | None = None
+) -> tuple[dict[str, Any], ...]:
+    """Discover metric semantics and coverage without pooling measuring runs."""
+    if run_ids is not None and not run_ids:
+        return ()
+    where = "" if run_ids is None else f"WHERE m.run_id IN ({_placeholders(run_ids)})"
+    cursor = connection.execute(
+        f"""
+        SELECT m.run_id, r.name AS run_name, r.tool, m.name, m.direction,
+               count(*) AS n_rows, count(DISTINCT m.design_id) AS n_designs,
+               count(*) FILTER (
+                   WHERE m.status = 'ok' AND m.value IS NOT NULL AND isfinite(m.value)
+               ) AS n_valid,
+               list(DISTINCT m.replicate ORDER BY m.replicate) AS replicates
+        FROM metrics m JOIN runs r ON r.run_id = m.run_id
+        {where}
+        GROUP BY m.run_id, r.name, r.tool, m.name, m.direction
+        ORDER BY m.run_id, m.name, m.direction
+        """,
+        list(run_ids or ()),
+    )
+    names = [column[0] for column in cursor.description]
+    return tuple(dict(zip(names, row, strict=True)) for row in cursor.fetchall())
+
+
+def count_designs(connection: duckdb.DuckDBPyConnection, query: DesignQuery | None = None) -> int:
     """How many designs a query would return, without materialising them."""
     query = query or DesignQuery()
     where, params = _predicates(query)

@@ -16,6 +16,11 @@ dependencies = [
 
     # --- data ------------------------------------------------------------
     "duckdb>=1.5",
+    # DuckDB's Python TIMESTAMPTZ conversion imports pytz.
+    "pytz>=2025.2",
+    # Parquet exports/materialization and validated structure conversion.
+    "pyarrow>=17",
+    "biotite>=1.7",
 
     # --- configuration ---------------------------------------------------
     # pyyaml parses the configs; pydantic validates them at submit time, so a
@@ -24,7 +29,8 @@ dependencies = [
     "pydantic>=2.9",
 
     # --- CLI -------------------------------------------------------------
-    "typer>=0.15",
+    # Structured parser errors use Typer's own parser exception contract.
+    "typer>=0.27.1,<0.28",
 ]
 
 # Nothing below is imported by the library, so it stays out of the wheel's
@@ -44,14 +50,8 @@ dev = [
     # See docs/env-setup.md.
     "harlequin>=2.10",
 
-    # Not imported by the library yet, and kept installed anyway because the
-    # analysis they are for is done by hand in this environment: pandas and
-    # pyarrow for reading designs out of the database, biotite for mmCIF
-    # (BoltzGen writes CIF only, so the stdlib cannot read its structures),
-    # matplotlib for figures.
+    # Optional interactive analysis, not required by library interfaces.
     "pandas>=2.2",
-    "pyarrow>=17",
-    "biotite>=1.7",
     "matplotlib>=3.9",
 ]
 

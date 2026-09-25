@@ -51,8 +51,11 @@ name = "bindocracy"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "biotite" },
     { name = "duckdb" },
+    { name = "pyarrow" },
     { name = "pydantic" },
+    { name = "pytz" },
     { name = "pyyaml" },
     { name = "snakemake" },
     { name = "snakemake-executor-plugin-slurm" },
@@ -61,32 +64,31 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "biotite" },
     { name = "harlequin" },
     { name = "matplotlib" },
     { name = "pandas" },
-    { name = "pyarrow" },
     { name = "pytest" },
     { name = "ruff" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "biotite", specifier = ">=1.7" },
     { name = "duckdb", specifier = ">=1.5" },
+    { name = "pyarrow", specifier = ">=17" },
     { name = "pydantic", specifier = ">=2.9" },
+    { name = "pytz", specifier = ">=2025.2" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "snakemake", specifier = ">=9.26" },
     { name = "snakemake-executor-plugin-slurm", specifier = ">=2.8" },
-    { name = "typer", specifier = ">=0.15" },
+    { name = "typer", specifier = ">=0.27.1,<0.28" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "biotite", specifier = ">=1.7" },
     { name = "harlequin", specifier = ">=2.10" },
     { name = "matplotlib", specifier = ">=3.9" },
     { name = "pandas", specifier = ">=2.2" },
-    { name = "pyarrow", specifier = ">=17" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.8" },
 ]
@@ -1555,6 +1557,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/66/c0/0c8b6ad9f17a802ee498c46e004a0eb49bc148f2fd230864601a86dcf6db/python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3", size = 342432, upload-time = "2024-03-01T18:36:20.211Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427", size = 229892, upload-time = "2024-03-01T18:36:18.57Z" },
+]
+
+[[package]]
+name = "pytz"
+version = "2026.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b0/ed/fa23d28713004418bbf2407127f80f385bfb0bf4e677bef02c25c27b00ee/pytz-2026.4.tar.gz", hash = "sha256:464303645bafafd72418898368b2429458f709cf1eb6a15372fbcc396b64da63", size = 318444, upload-time = "2026-09-24T03:58:40.443Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d5/11/e3df59614bebe0ca50c905442603eda64ae7ac19811d4e4f74aa2d51ca85/pytz-2026.4-py2.py3-none-any.whl", hash = "sha256:9d514388fbc89ca0833203464272ac485b8828568ab73532f5020f17e892a0ff", size = 506747, upload-time = "2026-09-24T03:58:38.629Z" },
 ]
 
 [[package]]

@@ -38,6 +38,53 @@ use the login node only to edit inputs, inspect help, and submit jobs.
 - [Weights and offline-readiness report](docs/weights.md)
 - [Container catalog](docs/containers/README.md)
 
+## Machine-readable CLI and readiness
+
+Place `--json` **before** the command. Successful command execution writes one
+`{"schema_version":1,"ok":true,"result":...}` envelope to stdout; argument,
+validation and execution errors write
+`{"schema_version":1,"ok":false,"error":{"code":...,"message":...,"details":[...]}}`
+to stderr and exit nonzero. Validation details include field locations.
+Inspect both the process exit code and the result's domain status: a completed
+readiness inspection or qualification can report `unknown`, `blocked` or
+`inconclusive` and still exit nonzero. `--help` is human-only; combining it with
+`--json` is rejected with a structured argument error.
+
+```bash
+uv run bindocracy --json tools list
+uv run bindocracy --json tools describe mosaic
+uv run bindocracy --json config schema --tool mosaic
+uv run bindocracy --json config schema --kind site
+uv run bindocracy --json config check \
+  --general /path/to/general.yaml --model /path/to/mosaic.yaml
+uv run bindocracy --json designset preview /path/to/campaign.duckdb \
+  --tool mosaic --distinct-sequences --limit 50
+uv run bindocracy --json filter metrics /path/to/campaign.duckdb \
+  --run EXACT_MEASURING_RUN_ID
+```
+
+Discovery reflects registered plugins and their actual Pydantic schemas, not a
+claim that their containers or weights are installed. Shared schema kinds are
+`general`, `site`, `index`, `filter`, `rank`, `query` and `function`.
+`config check --no-preflight` checks schemas only and does not claim resolved
+configuration identities. `designset preview` uses the same selection, exact
+filter-run resolution and limit-before-deduplication semantics as `build`,
+without writing a design set; an empty preview is valid.
+
+- **Readiness:** [`campaign check INDEX --site SITE`](docs/env-setup.md) checks
+  declared inputs, resources, dependencies and frozen-plan consistency without
+  creating executions. Scheduler readiness stays unknown unless bounded,
+  read-only probes are explicitly requested with `--probe-site`.
+- **Results:** [`campaign report`, `campaign export`, and `campaign audit`](docs/navigating-the-database.md)
+  provide run-scoped summaries, long-form CSV/Parquet and read-only integrity
+  checks. Metrics and replicate evidence are never silently pooled across runs.
+- **Inputs:** [`target materialize`](docs/chai1.md) creates validated Chai,
+  PXDesign, PDB and mmCIF representations from existing inputs, with hashes and
+  provenance. It performs no search, folding or GPU work.
+- **Deployment:** [CI and `campaign qualify`](workflow/README.md#verification-and-opt-in-deployment-qualification)
+  separate offline verification from explicit, digest-approved, tightly bounded
+  live-cluster qualification. Passing tests does not qualify a deployment.
+
 ## Container guides
 
 Seven of these run through the harness today — Mosaic, BoltzGen, Genie 3,

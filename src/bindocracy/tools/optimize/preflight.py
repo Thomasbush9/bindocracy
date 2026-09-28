@@ -17,6 +17,8 @@ from pathlib import Path
 from bindocracy.config.load import sha256_file
 from bindocracy.config.models import GeneralConfig
 from bindocracy.config.preflight import ConfigPreflightError, target_hotspot_positions
+from bindocracy.kits.models import KitError
+from bindocracy.kits.optimizer import validate_optimizer_lock
 from bindocracy.runs.designset import DesignSet, DesignSetError
 from bindocracy.runs.selection import SelectionError, read_only
 from bindocracy.store.records import sha256_text
@@ -69,6 +71,10 @@ class OptimizePreflight:
 
 
 def preflight_optimize(general: GeneralConfig, model: OptimizeConfig) -> OptimizePreflight:
+    try:
+        validate_optimizer_lock(model)
+    except KitError as error:
+        raise OptimizePreflightError(str(error)) from error
     manifest = Path(model.design_set)
     if not manifest.is_file():
         raise OptimizePreflightError(

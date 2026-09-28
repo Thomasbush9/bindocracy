@@ -163,6 +163,19 @@ class RunManifest(ManifestModel):
                 + "\n".join(f"  changed  {item}" for item in changed)
                 + "\n".join(f"  archived {item}" for item in archived)
             )
+        # A lock describes a closed file/dependency inventory. Checking only the
+        # files above cannot detect additions to a bundle or dependency tree.
+        # This input-label hook keeps the closure check generic across tools.
+        if "kit_lock" in self.inputs:
+            from bindocracy.kits.models import KitError
+            from bindocracy.kits.resolve import load_lock
+
+            try:
+                load_lock(Path(self.inputs["kit_lock"].uri))
+            except (KitError, OSError) as error:
+                raise ManifestError(
+                    f"run {self.run_id} kit lock no longer verifies: {error}"
+                ) from error
 
     def to_run_record(self) -> RunRecord:
         """The run row this manifest describes, before any output is parsed."""

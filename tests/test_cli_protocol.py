@@ -176,6 +176,45 @@ def test_preview_matches_frozen_membership_with_limit_and_deduplication(database
     assert refused.exit_code != 0 and not (tmp_path / "empty").exists()
 
 
+def test_repeated_build_returns_the_persisted_selection(database, tmp_path):
+    args = ("designset", "build", database, "--out-dir", tmp_path / "sets")
+    first = result_of(invoke(*args))
+    manifest_path = Path(first["manifest"])
+    original = manifest_path.read_bytes()
+
+    repeated = result_of(invoke(*args))
+
+    assert manifest_path.read_bytes() == original
+    assert repeated["design_set"] == json.loads(original)
+    assert repeated["design_set"] == first["design_set"]
+
+
+def test_same_members_cannot_overwrite_selection_provenance(database, tmp_path):
+    directory = tmp_path / "sets"
+    first = result_of(invoke("designset", "build", database, "--out-dir", directory))
+    manifest_path = Path(first["manifest"])
+    original = manifest_path.read_bytes()
+
+    refused = invoke(
+        "designset", "build", database, "--out-dir", directory, "--min-length", "2"
+    )
+
+    assert refused.exit_code == 2 and refused.stdout == ""
+    assert json.loads(refused.stderr)["error"]["code"] == "selection_error"
+    assert manifest_path.read_bytes() == original
+    distinct = result_of(
+        invoke(
+            "designset", "build", database,
+            "--out-dir", tmp_path / "different-selection", "--min-length", "2",
+        )
+    )
+    persisted = json.loads(Path(distinct["manifest"]).read_text())
+    assert persisted["digest"] == first["design_set"]["digest"]
+    assert persisted["query"]["min_length"] == 2
+    assert first["design_set"]["query"]["min_length"] is None
+    assert distinct["design_set"] == persisted
+
+
 def test_metric_discovery_preserves_run_and_replica_scope(database):
     all_metrics = result_of(invoke("filter", "metrics", database))["metrics"]
     assert {row["run_id"] for row in all_metrics} == {"first", "second"}

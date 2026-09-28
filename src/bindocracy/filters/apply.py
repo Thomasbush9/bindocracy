@@ -16,6 +16,7 @@ second filter run beside the first, not a correction of it.
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -33,6 +34,10 @@ _AGGREGATORS = {
     "max": max,
     "first": lambda values: values[0],
 }
+
+
+class FilterEvidenceError(ValueError):
+    """Measurements cannot be assigned unambiguously to filter replicates."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,23 +80,36 @@ class RuleResult:
 def aggregate_metric(
     values: Sequence[float], aggregate: Aggregation
 ) -> float:
-    """Collapse replicates to the one number a threshold tests."""
+    """Collapse finite replicates to a finite number, refusing unusable evidence."""
     if not values:
         raise ValueError("cannot aggregate an empty set of replicates")
-    return float(_AGGREGATORS[aggregate](list(values)))
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("cannot aggregate nonfinite replicates")
+    result = float(_AGGREGATORS[aggregate](values))
+    if not math.isfinite(result):
+        raise ValueError("nonfinite aggregate")
+    return result
 
 
 def metric_values(rows: Iterable[MetricRow]) -> dict[str, list[float]]:
     """Group usable measurements by metric name, in replicate order.
 
-    Rows whose status is not `ok` are dropped rather than treated as zero. A
-    failed fold is an absence of evidence, and averaging a zero into six
-    samples would quietly move a design down the ranking as though it had been
-    measured and found bad.
+    Failed or nonfinite measurements do not count as evidence. Ownership is
+    checked before dropping them: two evaluators claiming the same replicate
+    cannot be silently pooled, even when only one measurement is usable.
     """
     grouped: dict[str, list[tuple[int, float]]] = {}
+    owners: dict[tuple[str, str, int], str] = {}
     for row in rows:
-        if row.status != "ok" or row.value is None:
+        key = (row.design_id, row.name, row.replicate)
+        if key in owners:
+            raise FilterEvidenceError(
+                f"ambiguous evaluator ownership for design {row.design_id!r}, "
+                f"metric {row.name!r}, replicate {row.replicate}: "
+                f"runs {sorted((owners[key], row.run_id))}"
+            )
+        owners[key] = row.run_id
+        if row.status != "ok" or row.value is None or not math.isfinite(row.value):
             continue
         grouped.setdefault(row.name, []).append((row.replicate, float(row.value)))
     return {
@@ -102,21 +120,16 @@ def metric_values(rows: Iterable[MetricRow]) -> dict[str, list[float]]:
 def evaluate_threshold(
     threshold: Threshold, values: dict[str, list[float]]
 ) -> ThresholdResult:
-    """Test one threshold, treating absent or insufficient evidence as failure."""
-    replicates = values.get(threshold.metric, [])
-    if len(replicates) < threshold.min_replicates:
-        return ThresholdResult(
-            metric=threshold.metric,
-            aggregate=threshold.aggregate,
-            op=threshold.op,
-            threshold=threshold.value,
-            observed=None,
-            n_replicates=len(replicates),
-            passed=False,
-            missing=True,
-        )
-
-    observed = aggregate_metric(replicates, threshold.aggregate)
+    """Test one threshold, treating absent or unusable evidence as failure."""
+    replicates = [
+        value for value in values.get(threshold.metric, []) if math.isfinite(value)
+    ]
+    observed = None
+    if len(replicates) >= threshold.min_replicates:
+        try:
+            observed = aggregate_metric(replicates, threshold.aggregate)
+        except (OverflowError, ValueError):
+            pass
     return ThresholdResult(
         metric=threshold.metric,
         aggregate=threshold.aggregate,
@@ -124,8 +137,8 @@ def evaluate_threshold(
         threshold=threshold.value,
         observed=observed,
         n_replicates=len(replicates),
-        passed=OPERATORS[threshold.op](observed, threshold.value),
-        missing=False,
+        passed=observed is not None and OPERATORS[threshold.op](observed, threshold.value),
+        missing=observed is None,
     )
 
 

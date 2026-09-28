@@ -181,16 +181,18 @@ def _jobs(view):
     return [job for attempt in view["attempts"] for job in attempt["jobs"]]
 
 
-def _accounted(jobs, evidence, states):
+def _observed(jobs, evidence, source, states=None):
     rows = [
         row
         for event in evidence
-        if event["source"] == "sacct" and not event["returncode"]
+        if event["source"] == source and not event["returncode"]
         for row in event["rows"]
     ]
     return bool(jobs) and all(
         any(
-            row["id"] == job["id"] and row["tag"] == job["tag"] and row["state"] in states
+            row["id"] == job["id"]
+            and row["tag"] == job["tag"]
+            and (states is None or row["state"] in states)
             for row in rows
         )
         for job in jobs
@@ -213,9 +215,10 @@ def qualify(
 ):
     """Return and persist an honest report; no exact approval means no scheduler access.
 
-    A plan must be exclusively operated during qualification. ``cancel-resume``
-    additionally requires an observed active worker and accounted cancellation
-    before using the ordinary resume path. A fast canary may be inconclusive.
+    A plan must be exclusively operated during qualification. Both controller and
+    worker need exact queue and terminal accounting evidence. ``cancel-resume``
+    also requires an active queued worker and accounted cancellation before resume.
+    A fast canary or scheduler timeout may be inconclusive.
     """
     if mode not in {"completion", "cancel-resume"}:
         raise QualificationError("mode must be completion or cancel-resume")
@@ -274,6 +277,24 @@ def qualify(
                 view = lifecycle.status(plan_path, scheduler=scheduler)
                 observe(view)
                 jobs = _jobs(view)
+                latest = view["attempts"][-1]["jobs"] if view["attempts"] else []
+                roles = {job["role"] for job in latest}
+                queued = roles == {"controller", "worker"} and _observed(
+                    latest, scheduler.evidence, "squeue"
+                )
+                if view["state"] in {"stopped", "cancelled"}:
+                    states = {job["state"] for job in latest}
+                    failures = states & (
+                        control._TERMINAL
+                        - {"COMPLETED", "CANCELLED", "TIMEOUT", "DEADLINE", "NOT_SUBMITTED"}
+                    )
+                    if states & {"TIMEOUT", "DEADLINE"} and not failures:
+                        report["reason"] = "scheduler_timeout"
+                        break
+                    if failures or resumed:
+                        report["outcome"] = "failed"
+                        report["reason"] = "campaign_did_not_complete"
+                        break
                 if mode == "cancel-resume" and not resumed:
                     if not cancel_requested:
                         active_workers = [
@@ -282,24 +303,32 @@ def qualify(
                             if job["role"] == "worker"
                             and job.get("scheduler_confirmed")
                             and job["state"] in {"PENDING", "RUNNING"}
+                            and _observed(
+                                [job], scheduler.evidence, "squeue", {"PENDING", "RUNNING"}
+                            )
                         ]
-                        if active_workers:
+                        if queued and active_workers:
                             observe(lifecycle.cancel(plan_path, scheduler=scheduler))
                             cancel_requested = True
-                        elif view["state"] in {"completed", "stopped"}:
+                        elif view["state"] in {"completed", "stopped", "cancelled"}:
                             report["reason"] = "worker_finished_before_cancellation"
                             break
                     elif view["state"] == "cancelled":
                         workers = [job for job in jobs if job["role"] == "worker"]
-                        if _accounted(workers, scheduler.evidence, {"CANCELLED"}) and _accounted(
-                            jobs, scheduler.evidence, control._TERMINAL - {"NOT_SUBMITTED"}
+                        if (
+                            queued
+                            and _observed(workers, scheduler.evidence, "sacct", {"CANCELLED"})
+                            and _observed(
+                                jobs,
+                                scheduler.evidence,
+                                "sacct",
+                                control._TERMINAL - {"NOT_SUBMITTED"},
+                            )
                         ):
                             report["cancellation_verified"] = True
                             observe(lifecycle.resume(plan_path, approve, scheduler=scheduler))
                             resumed = True
                 else:
-                    latest = view["attempts"][-1]["jobs"] if view["attempts"] else []
-                    roles = {job["role"] for job in latest}
                     if view["state"] == "completed":
                         tasks = [task for run in view["artifacts"] for task in run["tasks"]]
                         if not tasks or any(
@@ -309,18 +338,14 @@ def qualify(
                             report["outcome"] = "failed"
                             report["reason"] = "canary_tasks_did_not_succeed"
                             break
-                        if roles == {"controller", "worker"} and _accounted(
-                            latest, scheduler.evidence, {"COMPLETED"}
+                        if queued and _observed(
+                            latest, scheduler.evidence, "sacct", {"COMPLETED"}
                         ):
                             report["outcome"] = "passed"
                             report["reason"] = "completion_and_accounting_verified"
                             report["live_qualified"] = not injected
                             cleanup_needed = False
                             break
-                    elif view["state"] in {"stopped", "cancelled"}:
-                        report["outcome"] = "failed"
-                        report["reason"] = "campaign_did_not_complete"
-                        break
                 sleep(min(poll_interval, max(0, scheduler.deadline - clock())))
             else:
                 report["reason"] = "timeout_or_incomplete_accounting"

@@ -28,6 +28,7 @@ from bindocracy.filters.config import FilterConfig
 from bindocracy.filters.config import summarise as summarise_filter
 from bindocracy.filters.run import FilterRunError, run_filter
 from bindocracy.functions.run import FunctionRunConfig, FunctionRunError, run_function
+from bindocracy.kits.cli import app as kit_app
 from bindocracy.ranking.cli import app as rank_app
 from bindocracy.runs import ingest_bundle, ingest_collected, write_collected
 from bindocracy.runs.designset import DesignSet, DesignSetError
@@ -65,6 +66,7 @@ function_app = typer.Typer(help="Score a frozen database selection with a custom
 app.add_typer(function_app, name="function")
 app.add_typer(campaign_app, name="campaign")
 app.add_typer(rank_app, name="rank")
+app.add_typer(kit_app, name="kit")
 register_discovery(app, config_app)
 
 

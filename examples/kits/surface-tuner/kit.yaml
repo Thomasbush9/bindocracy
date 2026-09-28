@@ -9,8 +9,8 @@
 #
 # The one thing the packager has to get right is the metric block below.
 # Nobody but the script's author knows which way its numbers point, so that
-# part is read off `optimizer.py` by hand and checked against the campaign
-# config by `kitcheck.py`.
+# part is reviewed against `optimizer.py` by hand and inherited from the
+# approved manifest by the generated locked configuration.
 
 kit_schema: 1
 

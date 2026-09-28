@@ -75,6 +75,8 @@ class OptimizeConfig(ToolConfig):
     # The user's script. Invoked as:
     #   <python> script.py --inputs IN.jsonl --outputs OUT.jsonl --context CTX.json
     script: Path
+    # Optional: independent raw scripts do not need a kit or dependency lock.
+    kit_lock: Path | None = None
     args: tuple[str, ...] = ()
     inputs: tuple[OptimizerInputKind, ...] = ("sequence",)
     # Which stored metrics to hand the script per parent, by full stored name
@@ -192,7 +194,7 @@ class OptimizeConfig(ToolConfig):
         moved every time a script was edited would make the protocol
         unstateable.
         """
-        return {
+        fields = {
             "optimizer": self.name,
             "script": str(self.script),
             "args": list(self.args),
@@ -207,6 +209,13 @@ class OptimizeConfig(ToolConfig):
             "length_delta": self.length_delta,
             "seed": self.seed,
         }
+        if self.kit_lock is not None:
+            from bindocracy.kits.resolve import load_lock
+
+            # Identity only here; preflight and launch verify the full closure.
+            lock = load_lock(self.kit_lock, verify=False)
+            fields["kit"] = {"digest": lock.digest, "bundle_digest": lock.bundle_digest}
+        return fields
 
     @property
     def protocol_hash(self) -> str:

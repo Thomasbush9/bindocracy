@@ -139,6 +139,19 @@ def _apply(database, general, general_path, filter_path, out: Path):
     return collected
 
 
+def _ingest_filter_evidence(database, general, metrics):
+    config = _config_record(general)
+    with CampaignStore(database) as store:
+        store.ingest(CollectedRun(
+            run=RunRecord(
+                run_id="score-extra", name="score-extra", tool="scorer",
+                kind=RunKind.EVALUATE, model_config_id=config.model_config_id,
+                status=RunStatus.SUCCEEDED,
+            ),
+            metrics=tuple(metrics),
+        ))
+
+
 # --- freezing a query -------------------------------------------------------
 
 
@@ -248,6 +261,81 @@ def test_an_evaluator_run_that_does_not_exist_is_refused(campaign, tmp_path) -> 
     path.write_text(path.read_text().replace("score-boltz2", "score-typo"))
     with pytest.raises(FilterRunError, match="no evaluate run named"):
         _apply(database, general, general_path, path, tmp_path / "run")
+
+
+@pytest.mark.parametrize(
+    ("replicate", "value", "status"),
+    [
+        (0, 0.9, MetricStatus.OK),
+        (0, None, MetricStatus.FAILED),
+        (0, float("inf"), MetricStatus.OK),
+        (1, 0.9, MetricStatus.OK),
+    ],
+)
+def test_evaluator_reruns_cannot_manufacture_replica_coverage(
+    campaign, tmp_path, replicate, value, status
+) -> None:
+    database, general, general_path = campaign
+    _ingest_filter_evidence(database, general, [
+        MetricRecord(
+            run_id="score-extra", design_id="d0", name="boltz2_iptm",
+            value=value, replicate=replicate, status=status,
+            direction=MetricDirection.MAX,
+        ),
+    ])
+    _, _, manifest = build(database, DesignQuery(), tmp_path / "sets")
+    path = _filter_yaml(tmp_path / "f.yaml", manifest, threshold=0.8)
+    policy = yaml.safe_load(path.read_text())
+    policy["evaluator_runs"].append("score-extra")
+    policy["filter_set"]["rules"][0]["thresholds"][0]["min_replicates"] = 2
+    path.write_text(yaml.safe_dump(policy))
+
+    if replicate == 0:
+        with pytest.raises(FilterRunError, match="ambiguous evaluator"):
+            _apply(database, general, general_path, path, tmp_path / "run")
+        with read_only(database) as connection:
+            assert connection.execute(
+                "SELECT count(*) FROM runs WHERE kind = 'filter'"
+            ).fetchone()[0] == 0
+    else:
+        collected = _apply(database, general, general_path, path, tmp_path / "run")
+        assert {
+            decision.design_id: decision.passed
+            for decision in collected.decisions
+            if decision.name == "worth_it"
+        } == {"d0": True, "d1": False, "d2": False, "d3": False}
+
+
+def test_persisted_nonfinite_metrics_do_not_satisfy_coverage(campaign, tmp_path) -> None:
+    database, general, general_path = campaign
+    _ingest_filter_evidence(database, general, [
+        MetricRecord(
+            run_id="score-extra", design_id=f"d{index}", name="synthetic_metric",
+            value=value, replicate=replicate, status=MetricStatus.OK,
+            direction=MetricDirection.MAX,
+        )
+        for index, invalid in enumerate([float("nan"), float("inf"), -float("inf"), 1.0])
+        for replicate, value in enumerate([invalid, 1.0])
+    ])
+    _, _, manifest = build(database, DesignQuery(), tmp_path / "sets")
+    path = _filter_yaml(tmp_path / "f.yaml", manifest, threshold=0.0)
+    policy = yaml.safe_load(path.read_text())
+    policy["evaluator_runs"] = ["score-extra"]
+    policy["filter_set"]["rules"][0]["thresholds"][0].update(
+        metric="synthetic_metric", op="!=", aggregate="first", min_replicates=2
+    )
+    path.write_text(yaml.safe_dump(policy))
+    collected = _apply(database, general, general_path, path, tmp_path / "run")
+    assert {
+        decision.design_id: decision.passed
+        for decision in collected.decisions
+        if decision.name == "worth_it"
+    } == {"d0": False, "d1": False, "d2": False, "d3": True}
+    for decision in collected.decisions:
+        if decision.name == "confident" and decision.design_id != "d3":
+            threshold = decision.reason["thresholds"][0]
+            assert threshold["n_replicates"] == 1
+            assert threshold["observed"] is None
 
 
 def test_re_applying_the_same_policy_is_a_no_op(campaign, tmp_path) -> None:

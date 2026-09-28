@@ -113,17 +113,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def dependency(context: dict, name: str, fallback: str) -> str:
-    """The path the harness resolved for a requirement this kit declares.
+    """Prefer an explicit caller context, otherwise use the resolved CLI path.
 
-    `kit.yaml` names what this optimizer needs; the campaign says where those
-    things are; the harness resolves one against the other and puts the answer
-    in the context. A script that read a path out of its own arguments instead
-    would be claiming to know a filesystem it has never seen, and a missing
-    dependency would surface as a model constructor failing after the GPU was
-    allocated rather than as a refusal at preflight.
-
-    The fallback exists because the harness does not read `kit.yaml` yet. It is
-    the same value, passed the long way round through `args`.
+    Kit resolution binds site dependencies through the manifest's
+    ``dependency_args`` mapping and pins the paths in the lock. Manual callers
+    may instead provide a ``dependencies`` context mapping.
     """
     resolved = (context.get("dependencies") or {}).get(name)
     return resolved or fallback

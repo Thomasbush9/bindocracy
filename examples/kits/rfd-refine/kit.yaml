@@ -5,9 +5,8 @@
 #
 # Check it before a campaign points at it -- seconds, no GPU:
 #
-#   python scripts/check_kit.py --kit examples/kits/rfd-refine \
-#       --bindings /path/to/bindings.yaml \
-#       --config   /path/to/configs/optimize/rfd_interface.yaml
+#   uv run bindocracy --json kit check examples/kits/rfd-refine \
+#       --bindings /path/to/bindings.yaml
 
 kit_schema: 1
 
@@ -165,8 +164,8 @@ cost:
   # denoising steps on an A100, and partial diffusion at --partial-t 20 is
   # cheaper than a full trajectory -- but neither number was taken here, and
   # the inverse-folding step is unbenchmarked because the image is unresolved.
-  # Replace both from a one-parent pilot; check_kit.py prints what they imply
-  # against what the config reserved.
+  # These are author estimates, not runtime qualification. The resolver does
+  # not derive or validate scheduler reservations from this cost metadata.
   compile_seconds: 60
   per_parent_seconds: 600
   measured_on:
@@ -195,9 +194,8 @@ args:
   mpnn-samples: 8
   mpnn-temperature: 0.1
 
-# A resolved requirement reaches the script as context["dependencies"][name].
-# Until the harness reads this file, the campaign passes the same paths through
-# `args`, and the script prefers the context and falls back to the flag.
+# The resolver freezes site paths into these declared command-line arguments.
+# They are also recorded as dependency evidence in the kit lock.
 dependency_args:
   rfdiffusion: --rfd-sif
   proteinmpnn: --mpnn-sif

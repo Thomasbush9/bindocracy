@@ -5,9 +5,8 @@
 # in six places; the entrypoint's docstring names them. What is here is only the
 # manifest -- nothing about the protocol itself, because this kit does not own it.
 #
-#   python scripts/check_kit.py --kit examples/kits/tomasz-optimization \
-#       --bindings /path/to/bindings.yaml \
-#       --config   /path/to/configs/optimize/refine-boltz2.yaml
+#   uv run bindocracy --json kit check examples/kits/tomasz-optimization \
+#       --bindings /path/to/bindings.yaml
 
 kit_schema: 1
 
@@ -93,11 +92,9 @@ requires:
 
 inputs: [sequence]
 
-# Proposed here, restated by the campaign, never inherited. Both names because
-# `--models` selects one per run and the harness compares this list for
-# equality, so one kit cannot serve two lineages with narrow claims. Every
-# child carries `lm_af2` and `lm_boltz2` flags, so which model actually shaped
-# a design is a query rather than an inference from the run name.
+# This conservative declaration is reviewed with the bundle and inherited by
+# the locked config. Parameter overrides do not narrow its provenance claim.
+# The per-child lm_af2 and lm_boltz2 flags retain the more specific evidence.
 #
 # ESMFold2 is in neither and stays the held-out judge.
 loss_models: [af2, boltz2]

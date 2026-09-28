@@ -1,7 +1,5 @@
 """Freezing a set of designs into a file a run can be planned against.
 
-DRAFT -- not wired into anything yet. See docs/scoring-stage.md.
-
 This is the one genuinely new contract the scoring stage needs. Every
 generation tool's inputs are files named in its config, digested by `plan_run`
 and verified before launch. A scorer's input is a *query result*, which has
@@ -14,12 +12,11 @@ that point it behaves like every other input:
     design_sets/<digest>.fasta    what the scorer reads
     design_sets/<digest>.json     what it means -- query, counts, provenance
 
-The file is content-addressed, which buys three things at once. Two scoring
-runs over the same candidates share one file and one identity. A rank decision
-gets a `scope_id` that genuinely names the candidate set it ranked, which the
-schema requires and which is otherwise easy to fake. And re-running the same
-query after new designs land produces a *different* digest, so the change is
-visible instead of silent.
+Membership is content-addressed: scoring runs over the same candidates share
+one identity, and a rank decision gets a `scope_id` naming that candidate set.
+The manifest also records selection provenance. A different query yielding
+the same members must use a separate directory rather than replace or silently
+reuse the first query's manifest.
 
 Nothing here touches Snakemake. Building a design set is a CLI step the user
 runs once; the scoring run that follows is an ordinary run whose config names
@@ -177,9 +174,9 @@ def build_design_set(
 def write_design_set(design_set: DesignSet, directory: str | Path) -> tuple[Path, Path]:
     """Write `<digest>.fasta` and `<digest>.json`, returning both paths.
 
-    Refuses to overwrite a manifest whose digest matches but whose content
-    differs, which can only mean a hash collision or a corrupted file -- either
-    way not something to paper over.
+    An existing manifest is reused only when everything except its creation time
+    agrees. Membership identity does not identify the selection policy: different
+    provenance for the same members must be written to a separate directory.
     """
     out = Path(directory)
     out.mkdir(parents=True, exist_ok=True)
@@ -192,6 +189,16 @@ def write_design_set(design_set: DesignSet, directory: str | Path) -> tuple[Path
         if existing.digest != design_set.digest:
             raise DesignSetError(
                 f"{manifest_path} holds digest {existing.digest}, not {design_set.digest}"
+            )
+        changed = [
+            field
+            for field in DesignSet.model_fields
+            if field != "created_at" and getattr(existing, field) != getattr(design_set, field)
+        ]
+        if changed:
+            raise DesignSetError(
+                f"{manifest_path} already records different selection provenance or content "
+                f"({', '.join(changed)}); use a separate output directory for this selection"
             )
         return fasta_path, manifest_path
 

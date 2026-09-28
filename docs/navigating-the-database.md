@@ -90,19 +90,24 @@ Three things to know before you aggregate:
 design are six rows with `replicate` 0–5. Averaging is your decision, made at
 read time, and `AVG(value)` silently mixes replicates unless you say otherwise.
 
-**A failed measurement is stored, not dropped.** `status = 'failed'` with
-`value` NULL means something ran and produced nonsense; an absent row means
-nothing ran. Only the first is a reason to distrust the model rather than the
-harness. Filter with `WHERE status = 'ok'` when you want numbers.
+**An explicit failed measurement is stored, not dropped.** `status = 'failed'`
+with `value` NULL records an attempted measurement that reported failure.
+Custom-function failures retain the original reason in `details.failure_reason`
+for each declared output. An absent row means no measurement was recorded: the
+candidate may not have been attempted, or the script may have omitted its output.
+Consult run counts and failure summaries rather than interpreting absence as
+proof nothing ran. Use only finite `status = 'ok'` values for numeric summaries.
 
 **Direction is recorded per metric.** `direction` is `max`, `min` or `none`.
 PAE metrics are stored raw — lower is better — rather than pre-negated, so
 sorting requires reading `direction` rather than assuming.
 
 ```sql
--- Best designs by one model, correctly: only ok rows, averaged across replicates
+-- One exact evaluator run; replicas remain available as individual rows.
 SELECT design_id, AVG(value) AS iptm, COUNT(*) AS n_replicates
-FROM metrics WHERE name = 'boltz2_iptm' AND status = 'ok'
+FROM metrics
+WHERE run_id = 'EXACT_EVALUATOR_RUN_ID' AND name = 'boltz2_iptm'
+  AND status = 'ok' AND isfinite(value)
 GROUP BY 1 ORDER BY iptm DESC LIMIT 20;
 ```
 

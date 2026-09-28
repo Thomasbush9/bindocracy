@@ -149,15 +149,21 @@ Visible partitions and associations establish neither QOS eligibility nor
 quota, scheduler admission, free nodes, GPU functionality or successful model
 execution. A `ready` report covers only the stated checks, not those guarantees.
 
-Optimizer scripts can have dependencies beyond their declared runtime assets.
-The index does not declare kit bindings, so these remain unknown rather than
-inferring a neighboring `kit.yaml`. For a kit, additionally run the existing
-checker with its **explicit** inputs:
+Raw optimizer scripts can have undeclared dependencies; readiness leaves those
+unknown rather than inferring a neighboring `kit.yaml`. For a locked kit,
+`campaign check` verifies the explicit `kit_lock`, complete bundle and bound
+dependency identities, then includes the resolver's evidence and unknown checks.
+
+Before resolving a kit, inspect its declarations and local bindings without
+executing its code:
 
 ```bash
-.venv/bin/python scripts/check_kit.py --kit PATH_TO_KIT \
-  --bindings PATH_TO_BINDINGS --config PATH_TO_OPTIMIZER_CONFIG --no-probe
+uv run bindocracy --json kit inspect PATH_TO_KIT
+uv run bindocracy --json kit check PATH_TO_KIT --bindings PATH_TO_BINDINGS
 ```
 
-That disk-only kit report does not certify imports inside a container; readiness
-never starts a container just to test an import.
+Unapproved execution and unprobed imports remain unknown; the completed check
+report can therefore exit 1. Neither command starts a container. See the
+[kit guide](adding-an-optimizer.md) for digest approval, immutable locks and
+the filesystem/static-HTTPS store contract. A lock is not runtime qualification,
+and containers do not sandbox unreviewed code.

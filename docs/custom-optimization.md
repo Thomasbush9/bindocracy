@@ -3,6 +3,10 @@
 Improve designs the campaign already has, with a script the campaign does not
 have to know about.
 
+For portable sharing and digest-pinned execution, use the
+[kit authoring and store guide](adding-an-optimizer.md). The independent
+raw-script workflow below remains supported.
+
 An optimization run is the first thing in this harness that is **both** shapes
 at once: it reads a frozen design set like a scorer, and it writes designs like
 a generator. That is the whole reason it is a separate contract from

@@ -27,9 +27,12 @@ class Canary:
         self.calls = []
         self.complete = True
         self.accounting = True
+        self.queue = True
+        self.queue_tagged = True
+        self.queue_hidden_roles = set()
         self.interrupt = False
         self.lose_reply = False
-        self.failure = False
+        self.terminal_state = "COMPLETED"
         self.task_status = "succeeded"
 
     def load(self, path, verify=True):
@@ -50,6 +53,7 @@ class Canary:
             self.jobs[job_id] = {
                 "tag": control._option(argv, "--comment"),
                 "state": "RUNNING",
+                "role": "worker" if any(arg.startswith("--wrap=") for arg in argv) else "controller",
             }
             if self.lose_reply:
                 self.lose_reply = False
@@ -67,9 +71,14 @@ class Canary:
             for job_id, job in self.jobs.items():
                 if name == "sacct" and not self.accounting:
                     continue
+                if name == "squeue" and (
+                    not self.queue or job.get("role") in self.queue_hidden_roles
+                ):
+                    continue
                 # Retain terminal states in this artificial queue to prove that
                 # even a completed lifecycle view cannot substitute for sacct.
-                rows.append(f"{job_id}|{job['state']}|{job['tag']}")
+                tag = job["tag"] if name != "squeue" or self.queue_tagged else ""
+                rows.append(f"{job_id}|{job['state']}|{tag}")
             return subprocess.CompletedProcess(argv, 0, "\n".join(rows), "")
         raise AssertionError(argv)
 
@@ -91,8 +100,8 @@ class Canary:
             if self.complete or len(journal["attempts"]) > 1:
                 for job in self.jobs.values():
                     if job["tag"].startswith("bd:") and job["state"] != "CANCELLED":
-                        job["state"] = "FAILED" if self.failure else "COMPLETED"
-                if not self.failure:
+                        job["state"] = self.terminal_state
+                if self.terminal_state == "COMPLETED":
                     (self.manifest.directory / "generation.done").touch()
                     (self.manifest.directory / "ingested.json").write_text("{}")
                     task = self.manifest.tasks[0]
@@ -263,6 +272,43 @@ def test_missing_accounting_is_not_success_even_with_completed_artifacts(canary)
     assert (canary.manifest.directory / "ingested.json").exists()
 
 
+@pytest.mark.parametrize("missing", ["all", "controller", "worker", "tags"])
+def test_completion_requires_queue_evidence_for_both_roles(canary, missing):
+    if missing == "all":
+        canary.queue = False
+    elif missing == "tags":
+        canary.queue_tagged = False
+    else:
+        canary.queue_hidden_roles.add(missing)
+    report = canary.invoke()
+    assert report["outcome"] == "inconclusive"
+    assert report["live_qualified"] is False
+    assert (canary.manifest.directory / "ingested.json").exists()
+
+
+@pytest.mark.parametrize("source", ["squeue", "sacct"])
+@pytest.mark.parametrize("identity", ["id", "tag"])
+def test_completion_requires_exact_scheduler_identity(canary, source, identity):
+    def run(argv, **kwargs):
+        result = canary.run(argv, **kwargs)
+        if Path(argv[0]).name == source:
+            rows = []
+            for line in result.stdout.splitlines():
+                job_id, state, tag = line.split("|")
+                if canary.jobs[job_id].get("role") == "worker":
+                    if identity == "id":
+                        job_id += "0"
+                    else:
+                        tag += "-other"
+                rows.append(f"{job_id}|{state}|{tag}")
+            result.stdout = "\n".join(rows)
+        return result
+
+    report = canary.invoke(runner=run)
+    assert report["outcome"] == "inconclusive"
+    assert report["live_qualified"] is False
+
+
 def test_confirmed_completion_is_honestly_labelled_injected(canary):
     report = canary.invoke()
     assert report["outcome"] == "passed"
@@ -283,12 +329,48 @@ def test_completed_scheduler_does_not_qualify_failed_tool_outcomes(canary):
     assert report["live_qualified"] is False
 
 
-def test_terminal_scheduler_failure_is_failed_not_inconclusive(canary):
-    canary.failure = True
-    report = canary.invoke()
+@pytest.mark.parametrize("mode", ["completion", "cancel-resume"])
+@pytest.mark.parametrize("state", ["FAILED", "OUT_OF_MEMORY"])
+def test_terminal_scheduler_failure_is_failed_not_inconclusive(canary, mode, state):
+    canary.terminal_state = state
+    report = canary.invoke(mode=mode)
     assert report["outcome"] == "failed"
     assert report["reason"] == "campaign_did_not_complete"
     assert canary.jobs["999"]["state"] == "RUNNING"
+
+
+@pytest.mark.parametrize("mode", ["completion", "cancel-resume"])
+@pytest.mark.parametrize("state", ["TIMEOUT", "DEADLINE"])
+def test_terminal_scheduler_timeout_remains_inconclusive(canary, mode, state):
+    canary.terminal_state = state
+    report = canary.invoke(mode=mode)
+    assert report["outcome"] == "inconclusive"
+    assert report["reason"] == "scheduler_timeout"
+    assert report["live_qualified"] is False
+    assert report["cleanup"] is not None
+    assert canary.jobs["999"]["state"] == "RUNNING"
+
+
+def test_scheduler_timeout_does_not_hide_an_observed_failure(canary):
+    canary.terminal_state = "TIMEOUT"
+
+    def status(path, *, scheduler):
+        canary.status(path, scheduler=scheduler)
+        for job in canary.jobs.values():
+            if job.get("role") == "worker":
+                job["state"] = "FAILED"
+        return control.status(path, scheduler=scheduler)
+
+    report = canary.invoke(
+        lifecycle=SimpleNamespace(
+            submit=control.submit,
+            status=status,
+            cancel=control.cancel,
+            resume=control.resume,
+        )
+    )
+    assert report["outcome"] == "failed"
+    assert report["reason"] == "campaign_did_not_complete"
 
 
 def test_cancel_resume_requires_accounted_worker_cancellation(canary):
@@ -339,6 +421,59 @@ def test_cancel_resume_does_not_resume_with_missing_accounting(canary):
     canary.accounting = False
     report = canary.invoke(mode="cancel-resume")
     assert report["outcome"] == "inconclusive"
+    assert "cancellation_verified" not in report
+    journal = json.loads((Path(canary.frozen["plan_dir"]) / "control/journal.json").read_text())
+    assert len(journal["attempts"]) == 1
+
+
+@pytest.mark.parametrize("missing", ["all", "controller", "worker", "tags"])
+def test_cancel_resume_requires_queue_evidence_for_both_roles(canary, missing):
+    canary.complete = False
+    if missing == "all":
+        canary.queue = False
+    elif missing == "tags":
+        canary.queue_tagged = False
+    else:
+        canary.queue_hidden_roles.add(missing)
+    report = canary.invoke(mode="cancel-resume")
+    assert report["outcome"] == "inconclusive"
+    assert report["live_qualified"] is False
+    assert "cancellation_verified" not in report
+    journal = json.loads((Path(canary.frozen["plan_dir"]) / "control/journal.json").read_text())
+    assert len(journal["attempts"]) == 1
+
+
+def test_resumed_attempt_needs_its_own_queue_evidence(canary):
+    canary.complete = False
+
+    def run(argv, **kwargs):
+        result = canary.run(argv, **kwargs)
+        if canary.cancelled and Path(argv[0]).name == "squeue":
+            result.stdout = ""
+        return result
+
+    report = canary.invoke(mode="cancel-resume", runner=run)
+    assert report["outcome"] == "inconclusive"
+    assert report["live_qualified"] is False
+    assert report["cancellation_verified"] is True
+    final = report["observations"][-1]
+    assert len(final["attempts"]) == 2
+    assert final["state"] == "completed"
+
+
+def test_timeout_during_cancellation_does_not_verify_or_resume(canary):
+    canary.complete = False
+
+    def run(argv, **kwargs):
+        result = canary.run(argv, **kwargs)
+        if Path(argv[0]).name == "scancel":
+            canary.jobs[argv[1]]["state"] = "TIMEOUT"
+        return result
+
+    report = canary.invoke(mode="cancel-resume", runner=run)
+    assert report["outcome"] == "inconclusive"
+    assert report["reason"] == "scheduler_timeout"
+    assert report["live_qualified"] is False
     assert "cancellation_verified" not in report
     journal = json.loads((Path(canary.frozen["plan_dir"]) / "control/journal.json").read_text())
     assert len(journal["attempts"]) == 1

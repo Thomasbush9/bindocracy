@@ -214,38 +214,42 @@ def run_custom(
             if output.index in seen:
                 raise FunctionError(f"duplicate design index {output.index} in scoring output")
             seen.add(output.index)
+            details = {
+                "function": function.name, "script_sha256": digest,
+                "helper_sha256": helper_digest,
+            }
             if output.failed is not None:
                 reason = output.failed.split(":")[0][:60]
                 failures[reason] = failures.get(reason, 0) + 1
-                continue
-            missing = declared_but_absent(specs, output.metrics)
-            if missing:
-                incomplete[output.index] = missing
-            unknown = sorted(set(output.metrics) - set(specs))
-            if unknown:
-                raise FunctionError(
-                    f"custom function {function.name!r} returned undeclared metric(s) "
-                    f"{unknown} for design index {output.index}. Declare them in the "
-                    "config with a direction, or stop emitting them."
-                )
-            if not output.metrics:
-                continue
+                details["failure_reason"] = output.failed
+                values = dict.fromkeys(specs)
+            else:
+                missing = declared_but_absent(specs, output.metrics)
+                if missing:
+                    incomplete[output.index] = missing
+                unknown = sorted(set(output.metrics) - set(specs))
+                if unknown:
+                    raise FunctionError(
+                        f"custom function {function.name!r} returned undeclared metric(s) "
+                        f"{unknown} for design index {output.index}. Declare them in the "
+                        "config with a direction, or stop emitting them."
+                    )
+                if not output.metrics:
+                    continue
+                values = output.metrics
+                scored.add(output.index)
             records.extend(
                 metric_records(
                     run_id=run_id,
                     design_id=source.design_id,
                     model=_prefix_for(function, source),
-                    values=output.metrics,
+                    values=values,
                     replicate=replicate,
                     measured_at=measured_at,
-                    details={
-                        "function": function.name, "script_sha256": digest,
-                        "helper_sha256": helper_digest,
-                    },
+                    details=details,
                     specs=specs,
                 )
             )
-            scored.add(output.index)
     except (TypeError, ValueError) as error:
         raise FunctionError(f"custom function {function.name!r}: {error}") from error
     if missing_outputs := len(wanted) - len(seen):

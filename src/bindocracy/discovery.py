@@ -12,6 +12,8 @@ from bindocracy.config.load import load_yaml, read_tool_name
 from bindocracy.config.models import GeneralConfig
 from bindocracy.filters.config import FilterConfig
 from bindocracy.functions.run import FunctionRunConfig
+from bindocracy.kits.models import KitManifest
+from bindocracy.kits.resolve import KitLock
 from bindocracy.ranking.models import RankingPolicy
 from bindocracy.runs.index import WorkflowIndex
 from bindocracy.store.query import DesignQuery
@@ -26,6 +28,8 @@ class SchemaKind(str, Enum):
     RANK = "rank"
     QUERY = "query"
     FUNCTION = "function"
+    KIT = "kit"
+    KIT_LOCK = "kit-lock"
 
 
 _SCHEMAS = {
@@ -36,6 +40,8 @@ _SCHEMAS = {
     SchemaKind.RANK: RankingPolicy,
     SchemaKind.QUERY: DesignQuery,
     SchemaKind.FUNCTION: FunctionRunConfig,
+    SchemaKind.KIT: KitManifest,
+    SchemaKind.KIT_LOCK: KitLock,
 }
 
 

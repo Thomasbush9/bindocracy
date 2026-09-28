@@ -73,7 +73,16 @@ the inputs and script, executes the function, writes `collected.json`, then
 ingests atomically. It requires a **new output directory** and does not overwrite
 an earlier attempt. Structure inputs resolve from the specified evaluator run's
 complex prediction at replicate 0; absent or ambiguous poses are refused before
-execution. The script never opens the database.
+execution. Recorded hashes and sizes are checked before launch. The function
+reads a run-local snapshot whose copied bytes are checked again, not the mutable
+source path. The script never opens the database.
+
+`runs.workflow_metadata.source_artifacts`, keyed by design ID, records the
+source artifact/run identity, original URI/path, recorded hash/size, consumed
+hash/size and snapshot path. Each derived metric carries the same provenance in
+`details.source_artifact`. `verification: verified` means the bytes matched a
+previously recorded hash; `unhashed` means no prior hash existed. Unhashed inputs
+still receive a consumed digest, without claiming historical verification.
 
 This command is synchronous: it does not submit Slurm jobs or configure GPU
 access and model-weight mounts. GPU-backed custom scripts still need an
@@ -131,6 +140,11 @@ indices and malformed rows. An unterminated, invalid final JSON line can be
 salvaged as a missing output, but never makes a run fully successful.
 Explicit failures, omitted candidates or missing declared metrics yield
 `partial`/`failed`, not `succeeded`.
+An explicit failure produces a `status: failed`, `value: null` measurement for
+each declared metric, retaining the design, prefix, replica and full reason in
+`details.failure_reason`. These rows survive ingestion and export but do not
+count as successful outputs. Omitted candidates or individual metrics remain
+absent rows, distinguishable from explicit failures.
 
 `tests/fixtures/functions/net_charge.py` is a complete working example with
 custom arguments. Raw JSONL scripts in any language remain supported.

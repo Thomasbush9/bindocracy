@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 
 from bindocracy.config.models import GeneralConfig
+from bindocracy.kits.models import KitError
+from bindocracy.kits.optimizer import validate_optimizer_lock
 from bindocracy.runs.launch import LaunchSpec, slurm_resources, task_of
 from bindocracy.runs.manifest import RunManifest
 from bindocracy.tools.optimize.config import OptimizeConfig
@@ -26,11 +28,22 @@ RESOLVED_FILE = "resolved.json"
 def optimize_launch_spec(
     general: GeneralConfig, model: OptimizeConfig, manifest: RunManifest, task_id: int
 ) -> LaunchSpec:
+    lock = validate_optimizer_lock(model)
+    if ("kit_lock" in manifest.inputs) != (lock is not None):
+        raise KitError("optimizer kit configuration disagrees with the planned run")
+    if lock is not None:
+        manifest.verify_inputs()
+        if manifest.workflow.get("kit", {}).get("digest") != lock.digest:
+            raise KitError("optimizer kit lock differs from the planned run")
     task = task_of(manifest, task_id)
     run_dir = manifest.directory
     driver = run_dir / manifest.provenance["driver"].path
     archived_script = manifest.provenance.get("optimizer_script")
-    script = run_dir / archived_script.path if archived_script else model.script
+    script = (
+        lock.kit_root / lock.manifest.entrypoint
+        if lock is not None
+        else run_dir / archived_script.path if archived_script else model.script
+    )
     task_dir = run_dir / task.directory
 
     # From the manifest, never the live config: a resumed task must not be
@@ -45,7 +58,30 @@ def optimize_launch_spec(
     argv: list[str] = []
     if model.runtime.container is not None:
         argv.extend(("singularity", "exec", "--cleanenv", "--nv"))
-        if model.runtime.dev_source is not None:
+        if lock is not None:
+            # Protect declared assets from accidental writes in a container;
+            # this does not isolate arbitrary publisher code from the host.
+            bindings = {(str(lock.kit_root), str(lock.kit_root))}
+            for dependency in lock.dependencies.values():
+                source = dependency["path"]
+                if dependency["kind"] == "harness_module":
+                    # Its identity covers declared files, not the whole checkout
+                    # (which can also contain writable run directories).
+                    for relative in dependency["identity"]["files"]:
+                        path = str(Path(source) / relative)
+                        bindings.add((path, path))
+                else:
+                    bindings.add((source, source))
+                    if dependency.get("target"):
+                        bindings.add((source, dependency["target"]))
+            for label in ("driver", "bindocracy_io"):
+                path = str(run_dir / manifest.provenance[label].path)
+                bindings.add((path, path))
+            for source, target in sorted(bindings):
+                if any(character in source + target for character in (":", ",", "\n")):
+                    raise KitError(f"dependency path cannot be bound read-only: {source!r}")
+                argv.extend(("--bind", f"{source}:{target}:ro"))
+        elif model.runtime.dev_source is not None:
             # Same bind the scorer uses, and the reason `dev_source_sha256` is
             # recorded: with the image's own copy replaced, the container
             # digest no longer determines the result.
@@ -124,6 +160,10 @@ def _write_resolved(manifest: RunManifest, task_dir: Path) -> Path:
 def _environment(model: OptimizeConfig, task_dir: Path) -> dict[str, str]:
     """`SINGULARITYENV_*` survives `--cleanenv`, which is what makes this work."""
     environment: dict[str, str] = {}
+    if model.kit_lock is not None:
+        # Sibling imports must not add __pycache__ to the locked inventory.
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        environment["SINGULARITYENV_PYTHONDONTWRITEBYTECODE"] = "1"
     if model.runtime.scratch is not None:
         scratch = Path(model.runtime.scratch) / task_dir.name
         # Node-local and job-private. Every cache a folding library reaches for

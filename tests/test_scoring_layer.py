@@ -220,6 +220,27 @@ def test_insufficient_replicates_fail():
     assert evaluate_threshold(threshold, {"boltz2_iptm": [0.9, 0.9, 0.9]}).passed is True
 
 
+@pytest.mark.parametrize("op", [">=", ">", "<=", "<", "==", "!="])
+def test_nonfinite_evidence_cannot_pass_any_comparison(op):
+    threshold = Threshold(metric="synthetic", op=op, value=0.0, aggregate="first")
+    result = evaluate_threshold(
+        threshold, {"synthetic": [float("nan"), float("inf"), -float("inf")]}
+    )
+    assert result.passed is False
+    assert result.missing is True
+    assert result.n_replicates == 0
+    assert result.observed is None
+
+
+@pytest.mark.parametrize("aggregate", ["mean", "median"])
+def test_overflowed_aggregate_is_a_failing_verdict(aggregate):
+    threshold = Threshold(metric="synthetic", op="!=", value=0.0, aggregate=aggregate)
+    result = evaluate_threshold(threshold, {"synthetic": [1.7e308, 1.7e308]})
+    assert result.passed is False
+    assert result.missing is True
+    assert result.observed is None
+
+
 def test_rule_and_set_verdicts_are_both_recorded():
     filter_set = FilterSet(
         name="triage",

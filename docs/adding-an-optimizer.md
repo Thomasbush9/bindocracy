@@ -19,7 +19,7 @@ mosaic-af2-refine/
 `-- optimizer.py    the entrypoint
 ```
 
-Two worked kits ship under `examples/kits/`. Copy the nearer one.
+Four worked kits ship under `examples/kits/`; inspect their declarations before reuse.
 
 ---
 
@@ -79,38 +79,42 @@ the raw contract keeps a user. Use the helper unless you cannot.
 
 ```yaml
 kit_schema: 1
-name: mosaic-af2-refine
-version: 0.3.0
+name: example-optimizer
+version: 1.0.0
 kind: optimizer
+summary: A reviewed optimizer with a portable execution contract.
 entrypoint: optimizer.py
-
-requires: [...]        # see below
+python: ">=3.12"
+requires: []
 inputs: [sequence]
-loss_models: [af2]     # proposed; the campaign restates it
+loss_models: []
 capabilities: {changes_length: false, max_children: 1}
 metrics:
-  loss: {direction: min, description: ...}
-cost: {compile_seconds: 172, per_parent_seconds: 19.4}
-args: {soft-steps: 12}
+  diagnostic: {direction: none, description: A reported diagnostic.}
+cost: {gpu: none, compile_seconds: 0, per_parent_seconds: 0}
+args: {}
+dependency_args: {}
 ```
 
-**Metric directions belong here, not in the campaign config.** You are the only
-person who knows which way your numbers point, and a direction stored backwards
-sorts backwards with nothing in the row to say so. Until the harness reads
-`kit.yaml`, the campaign config restates them and `check_kit.py` fails if the
-two disagree.
+This illustrates the schema, not a measured workload. Export the authoritative
+JSON Schema with `bindocracy --json config schema --kind kit`. Unknown fields,
+duplicate YAML keys, aliases, unsafe paths and non-finite numeric values are
+refused. Optional `parameters` declare types, required values, enums and numeric
+bounds; `args` holds defaults. Without an explicit declaration, a default's
+scalar type constrains overrides. Boolean true emits a flag; false omits it.
+`inputs`, `outputs` and `context` are reserved harness arguments.
 
-**`loss_models` is proposed here and restated there.** The field exists so a
-later selection can exclude the models that already had a say in a design. A
-value inherited from a file somebody else wrote is a weaker claim than one the
-operator affirmed, so the campaign has to say it again. `[]` is a real claim
-that the loss saw no structure predictor at all, not an unfilled default.
+**The approved manifest owns inputs, metric declarations and `loss_models`.**
+The resolver copies them into the generated optimizer configuration. Campaign
+requests must not restate these fields, the entrypoint, arguments or driver.
+Reviewing and approving the complete bundle digest is the explicit affirmation;
+a matching name or version alone is not approval. An empty `loss_models` list
+remains a substantive author claim, not independent evidence.
 
-**Declare a cost model, never a walltime.** Two measured constants: what a
-process pays once, and what it pays per parent. The campaign multiplies them by
-the parent count and the shard count, neither of which you can see. A four-hour
-reservation is right for four parents and wrong for four hundred; only the
-campaign knows which it has.
+**Cost metadata is an author claim, not qualification.** Put benchmark context
+in `cost.measured_on`; an empty mapping is unmeasured. The current resolver
+neither benchmarks a kit nor derives a scheduler reservation from these fields.
+Campaign-owned resources remain explicit.
 
 ### Dependencies
 
@@ -125,23 +129,31 @@ requires:
     why: AF2 multimer with a per-chain MSA.
 ```
 
-`verify` decides; `version` is only a hint for finding a candidate. That order
-is deliberate. `mosaic.sif` carries no usable version, and the thing that
-actually mattered here, whether AF2 could take a per-chain alignment, was a
-capability no tag expressed. An import that either works or does not is a
-stronger check than a number somebody remembered to bump.
+Resolution checks declared files and captures local dependency identity without
+importing modules, starting containers, installing packages or contacting a
+store. `verify.import`, dependency versions and container Python compatibility
+remain **unknown** until independently exercised; a successful parse is not
+runtime qualification.
 
-| `kind` | verified by | supplied by |
+| `kind` | identity recorded by the resolver | supplied by |
 |---|---|---|
-| `container` | an import that runs inside it | the campaign, or a store |
-| `weights` | files that must exist under it | the campaign, or a store |
-| `source_overlay` | files under the tree, bound over the image | the campaign |
-| `harness_module` | a file in the bindocracy checkout | the harness itself |
+| `container` | filesystem-stat identity, not a content digest | the site |
+| `weights` | filesystem-stat inventory and required-file presence | the site |
+| `source_overlay` | complete file-content inventory | the site |
+| `harness_module` | declared files plus actual helper and driver hashes | the harness |
 
-Mark a requirement `optional: true` when it only patches around a stale
-dependency, and `provided_by: harness` when a store should never be asked for
-it. `bindocracy-io` is the latter: if it is missing, the harness is out of
-date, and fetching a copy would paper over that.
+Mark optional requirements explicitly. `bindocracy-io` is harness-owned;
+bindings cannot replace it with a publisher's or site's copy. At most one
+container may declare `provides: interpreter`; it requires an explicit
+interpreter binding. Other container dependencies can be passed through
+`dependency_args`. The supported runtime overlay target is
+`/opt/mosaic/src/mosaic`; other targets are refused, not silently dropped.
+
+Dependency symlinks are currently refused, including links inside weight caches.
+Materialize a regular-file tree before binding it. Content-hashed dependency
+trees are limited to 512 MiB and 100,000 entries; stat inventories to 100,000
+entries. Stat identities detect ordinary filesystem drift but do not
+authenticate container or weight bytes.
 
 ---
 
@@ -151,6 +163,7 @@ One file per site, campaign-owned. `examples/kits/bindings.example.yaml` is a
 template.
 
 ```yaml
+bindings_schema: 1
 mosaic:
   kind: container
   path: /absolute/path/to/images/mosaic.sif
@@ -164,58 +177,122 @@ Nothing here is portable, and nothing here belongs in a kit.
 
 ---
 
-## 4. Check it before you queue anything
+## 4. Inspect, review and resolve
 
 ```bash
-python scripts/check_kit.py --kit examples/kits/mosaic-af2-refine \
-    --bindings /path/to/bindings.yaml \
-    --config /path/to/configs/optimize/af2_refine.yaml
+uv run bindocracy --json kit inspect /path/to/kit
+uv run bindocracy --json kit check /path/to/kit --bindings /path/to/bindings.yaml
 ```
 
-Three questions, a second, no GPU. Is the manifest well formed? Is everything
-it needs installed here, verified rather than assumed? Has the campaign config
-drifted from the manifest? A requirement with no binding is reported as
-something a store could supply, not as a crash.
+Neither command executes publisher code. `check` reports unapproved execution
+as unknown and exits 1 while retaining its JSON report. Missing or invalid
+requirements are errors; unprobed runtime capabilities are never reported ready.
 
-It also prints the walltime its cost model implies for this design set and
-shard count, next to what the config reserved.
+Review the full kit tree before authorizing it. Every regular file contributes
+to its digest, including dotfiles and bytecode; there are no silent exclusions.
+Keep credentials, site bindings, generated outputs and caches outside the kit.
+Symlinks, special files and unsafe archive paths are rejected. A kit may contain
+at most 100 MiB of file content, 4,096 files and 4,096 directories; `kit.yaml`
+is limited to 1 MiB.
 
-Then check the script against the contract, which drives the real driver and
-applies the real validation:
+The campaign request contains campaign choices, not a second kit contract:
+
+```yaml
+schema_version: 1
+name: reviewed-optimizer
+tool: optimize
+design_set: /absolute/path/to/design-set.json
+sharding: {jobs: 1}
+resources: {gpus: 1, cpus: 4, memory_gb: 16, walltime: "00:30:00"}
+```
+
+Use resource values appropriate to your independently validated workload.
 
 ```bash
-python scripts/validate_optimizer.py --script examples/kits/<kit>/optimizer.py \
-    --design-set sets/<digest>.json --target-fasta target.fasta \
-    --declare loss:min --max-children 1
+uv run bindocracy --json kit resolve /path/to/reviewed/kit \
+  --cache /path/to/kit-cache --bindings /path/to/bindings.yaml \
+  --config /path/to/request.yaml --parameters /path/to/parameters.yaml \
+  --output-dir /path/to/new-resolution --approve sha256:REVIEWED_DIGEST
 ```
 
-Give the entrypoint a `--dry-run` that returns plausible children without
-loading a model. Importing AF2 and five sets of multimer parameters costs
-minutes and proves nothing about the row shapes, which is all the validator
-checks.
+`--bindings` and `--parameters` are optional when unnecessary. The output
+directory must be new and outside the kit. Resolution writes `kit-lock.json`
+and `optimize.yaml`, pinning the full cached bundle, effective parameters,
+dependency evidence, harness files and reviewed digest. Inspect the lock with
+the `kit-lock` JSON Schema. This approval authorizes reviewed code; it is not a
+security attestation, runtime test or scientific validation.
+
+Use the generated model YAML with ordinary `config check`, campaign readiness,
+planning and collection. Campaign-plan approval remains a separate step.
+Frozen-plan verification and launch recheck the lock, all bundle files and
+dependency identities. Supporting files and sibling imports remain available
+because execution uses the complete cached bundle, not a flattened entrypoint.
+Keep that cache and the bound site assets: a run directory alone is not a
+self-contained copy of every dependency. Independent raw-script configurations
+remain supported without a kit.
+
+Contract validation with `scripts/validate_optimizer.py` executes code. Run it
+only after review; a successful contract fixture proves row handling, not
+runtime compatibility or scientific quality. Containers and read-only mounts
+are not a sandbox.
 
 ---
 
-## 5. Deploy, configure, run
+## 5. Publish and fetch immutable releases
 
-Copy the kit beside your campaign data and point the config at its entrypoint.
-The repository holds templates; a campaign holds the copy it runs, the way
-`mosaic_refine.py` has always worked. A store will one day replace the copy
-step, and nothing above changes when it does.
-
-```yaml
-name: af2refine            # also the metric prefix: loss -> af2refine_loss
-tool: optimize
-design_set: /abs/sets/<digest>.json
-script: /abs/optimizers/mosaic-af2-refine/optimizer.py
-loss_models: [af2]         # restated, never inherited
-metrics: {...}             # restated until the harness reads kit.yaml
-resources: {gpus: 1, cpus: 16, memory_gb: 96, walltime: "04:00:00"}
+```bash
+uv run bindocracy --json kit publish /path/to/kit \
+  --store /path/to/store --publisher your-lab
+uv run bindocracy --json kit list --store https://kits.example.org
+uv run bindocracy --json kit fetch your-lab/example-optimizer@1.0.0 \
+  --store https://kits.example.org --cache /path/to/kit-cache \
+  --digest sha256:INDEPENDENTLY_VERIFIED_DIGEST
 ```
 
-Then the ordinary path: `config load`, snakemake, `collect`, `ingest`. The run
-records your script's sha256 and archives its bytes beside the driver, so a run
-is replayable from its own directory.
+Publishing writes a filesystem store; a web server can serve those same files
+over HTTPS. Fetching requires an exact reference and independently trusted
+digest, verifies the extracted inventory, and caches it at
+`CACHE/DIGEST_HEX/kit`. Re-publishing identical content is idempotent; changing an
+existing release requires a new version. Fetch does not authorize execution.
+Pass its returned local `root` to `kit resolve`; cached kits work without the
+source store. No lock contains a floating `latest` reference.
+
+### Store integration contract
+
+`catalog.json` has this shape:
+
+```json
+{
+  "schema_version": 1,
+  "releases": [{
+    "reference": "your-lab/example-optimizer@1.0.0",
+    "publisher": "your-lab",
+    "name": "example-optimizer",
+    "version": "1.0.0",
+    "digest": "sha256:DIGEST_HEX",
+    "archive": "blobs/DIGEST_HEX.zip"
+  }]
+}
+```
+
+The ZIP contains `kit.yaml` and the bundle's files directly at its root, without
+a wrapper directory. The bundle digest is **not** the ZIP digest: it is SHA-256
+of the UTF-8 canonical JSON mapping of relative POSIX file paths to
+`sha256:HEX` file-content hashes. JSON keys are sorted, separators are `,` and
+`:`, non-ASCII characters are retained as UTF-8, and no newline is appended.
+Archive timestamps and compression do not affect identity.
+
+Catalogs are capped at 4 MiB, archives at 110 MiB, and HTTPS operations use a
+30-second socket timeout. Redirects must remain credential-free HTTPS.
+Duplicate archive members, traversal, symlinks, encrypted entries and oversized
+expanded bundles are refused.
+
+**Publisher namespaces are claims, not authenticated identities.** This
+filesystem/static-HTTPS implementation does not provide accounts, namespace
+ownership, signatures, authenticated uploads, search UI or a trust registry.
+A hosted store must supply its own publication authorization and trusted
+digest distribution. Keep author claims, runtime qualification evidence and
+scientific evaluations distinct; listing a release establishes none of them.
 
 **Score the children with a model that is not in `loss_models`.** That is the
 one rule that survives everything else on this page.

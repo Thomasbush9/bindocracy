@@ -5,8 +5,8 @@
 # nothing here belongs in a kit -- a second site would have to change every
 # line, which is the test for which side of the boundary a field sits on.
 #
-# A name a kit requires and this file does not bind is a preflight failure.
-# Once there is a store, that failure becomes the offer to fetch it.
+# A missing required binding is a resolution failure. Kit distribution does
+# not install site containers or weights, and resolution never fetches them.
 
 bindings_schema: 1
 
@@ -26,13 +26,8 @@ alphafold-params:
 mosaic-src:
   kind: source_overlay
   path: /absolute/path/to/mosaic/src/mosaic
-  # Bound over the image's own copy. With this set, the container digest no
-  # longer determines the result, so preflight digests the tree and the run
-  # records the hash beside the container.
+  # Bound over the image's own copy. The lock content-hashes the complete tree.
+  # Symlinks inside dependency paths are currently refused.
 
-bindocracy-io:
-  kind: harness_module
-  # Not an installable thing: the checkout that ships drivers/bindocracy_io.py.
-  # The harness archives that file beside the script and puts it on PYTHONPATH,
-  # so nothing needs bindocracy installed inside the container.
-  path: /absolute/path/to/bindocracy
+# bindocracy-io is supplied and content-pinned by the harness automatically.
+# Do not bind a replacement checkout here.

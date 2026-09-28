@@ -69,6 +69,13 @@ stages. `scripts/check_index.py` also accepts the frozen index.
   Python source prevent execution. Small inputs/scripts use SHA-256; large
   container/checkpoint assets use recorded filesystem identities, not full binary
   hashes. Preserve those assets separately.
+- **Locked kits retain their cache.** Resolve reviewed kits with `kit resolve`
+  and use the generated optimizer configuration. The plan records the full kit
+  lock and references every bundled file; verification also detects added files
+  and dependency drift. Execution preserves the complete cached directory for
+  sibling imports and data. Keep the cache and site assets available: they are
+  not all copied into each run. Kit approval and campaign-plan approval are
+  separate; neither is a sandbox or runtime qualification.
 - **One plan owns each run directory.** Plans cannot be relocated or rebound.
   A different execution, source revision, or resource policy needs a new plan
   directory and new run names. An incomplete planning attempt retains its
@@ -172,18 +179,25 @@ normal journal and logs. They include lifecycle observations, exact owned
 controller/worker tags as observed separately in queue/accounting responses,
 terminal accounting states, and cleanup results. `passed` requires completed
 campaign artifacts, successful status and an existing output for every task,
-and accounted `COMPLETED` controller **and** worker jobs. Failed task outcomes
-cannot qualify merely because their Slurm allocations completed.
+successful `squeue` observations matching the exact job IDs and tags of both
+controller and worker, and accounted `COMPLETED` controller **and** worker jobs.
+Missing queue evidence is inconclusive even if accounting and outputs are
+complete. Failed task outcomes cannot qualify merely because their Slurm
+allocations completed.
 `failed` means an observed terminal campaign or task failure; `inconclusive`
-covers interruption, scheduler/transport errors, missing accounting and timeouts.
+covers interruption, scheduler/transport errors, missing queue/accounting
+evidence, polling timeouts, and scheduler `TIMEOUT`/`DEADLINE` states. An
+independently observed execution failure still takes precedence over a timeout.
 Injected evidence is explicitly labelled and always has `live_qualified: false`.
 A passed infrastructure check does not establish scientific validity of outputs.
 An inconclusive/failed report exits nonzero, including the unapproved inspection.
 
-`cancel-resume` waits for an active tagged worker, cancels through the ordinary
-campaign gate, requires accounted worker cancellation and terminal prior jobs,
-then resumes the same frozen DAG and verifies completion. A canary that finishes
-before cancellation can be observed is inconclusive, not a cancellation pass.
+`cancel-resume` requires exact queue observations for both owned roles and an
+active queued worker before cancelling through the ordinary campaign gate.
+It requires accounted worker cancellation and terminal prior jobs, then resumes
+the same frozen DAG and verifies completion using the resumed allocations' own
+queue and accounting evidence. A canary that finishes before cancellation can be
+observed is inconclusive, not a cancellation pass.
 Polling is bounded (default 900 seconds, maximum 1800; intervals 1–30 seconds);
 each scheduler subprocess is bounded to 15 seconds and the remaining deadline.
 Interruption, errors, and timeouts trigger at most 60 seconds of best-effort,
@@ -225,8 +239,8 @@ runs:
 ```text
 runs/<name>/
 |-- run.json          run identity, task plan, archived-input hash, and the
-|                     whole config pair as JSON — a run is replayable from
-|                     this alone, with no config file on the share
+|                     whole config pair as JSON — authored config files are
+|                     unnecessary, but pinned inputs, kit cache and assets remain required
 |-- campaign-binding.json  owning plan and execution identity, when campaign-planned
 |-- provenance/       the exact driver that ran, archived and executed
 |-- tasks/0000/       designs.jsonl and status.json, written by the driver

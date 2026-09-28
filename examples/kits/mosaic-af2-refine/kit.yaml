@@ -6,9 +6,8 @@
 #
 # Check it before a campaign points at it -- seconds, no GPU:
 #
-#   python optimizers/kitcheck.py --kit optimizers/mosaic-af2-refine \
-#       --bindings configs/kit_bindings.yaml \
-#       --config configs/optimize/af2_refine.yaml
+#   uv run bindocracy --json kit check examples/kits/mosaic-af2-refine \
+#       --bindings configs/kit_bindings.yaml
 
 kit_schema: 1
 
@@ -90,9 +89,7 @@ requires:
 # ---------------------------------------------------------------------------
 inputs: [sequence]
 
-# Proposed, and the campaign must restate it. AF2 drives every gradient step
-# and the re-score, so an af2_* column on a child of this kit measures the
-# optimizer rather than the binder. Six scorers stay held out.
+# Reviewed with the complete kit digest and inherited by the locked config.
 loss_models: [af2]
 
 capabilities:
@@ -156,8 +153,7 @@ args:
   extra-msa: 512
   epsilon: 0.1
 
-# A resolved requirement reaches the script as context["dependencies"][name].
-# Until the harness reads this file, the campaign passes the same path through
-# `args`, and the script prefers the context and falls back to the flag.
+# The resolver freezes site paths into these declared command-line arguments.
+# They are also recorded as dependency evidence in the kit lock.
 dependency_args:
   alphafold-params: --af2-data-dir

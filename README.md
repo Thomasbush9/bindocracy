@@ -65,12 +65,17 @@ uv run bindocracy --json filter metrics /path/to/campaign.duckdb \
 
 Discovery reflects registered plugins and their actual Pydantic schemas, not a
 claim that their containers or weights are installed. Shared schema kinds are
-`general`, `site`, `index`, `filter`, `rank`, `query` and `function`.
+`general`, `site`, `index`, `filter`, `rank`, `query`, `function`, `kit` and `kit-lock`.
 `config check --no-preflight` checks schemas only and does not claim resolved
 configuration identities. `designset preview` uses the same selection, exact
 filter-run resolution and limit-before-deduplication semantics as `build`,
 without writing a design set; an empty preview is valid.
 
+- **Shared kits:** [`kit inspect/check/publish/list/fetch/resolve`](docs/adding-an-optimizer.md)
+  validate portable manifests, distribute digest-pinned bundles and resolve
+  reviewed code into site-specific locks. Readiness and launch verify the lock;
+  fetching does not execute or authorize code. Static stores do not authenticate
+  publisher namespaces or provide a sandbox.
 - **Readiness:** [`campaign check INDEX --site SITE`](docs/env-setup.md) checks
   declared inputs, resources, dependencies and frozen-plan consistency without
   creating executions. Scheduler readiness stays unknown unless bounded,

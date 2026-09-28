@@ -27,6 +27,7 @@ dependencies = [
     # mistyped key fails in a second instead of 40 minutes into a GPU job.
     "pyyaml>=6.0",
     "pydantic>=2.9",
+    "packaging>=24",
 
     # --- CLI -------------------------------------------------------------
     # Structured parser errors use Typer's own parser exception contract.

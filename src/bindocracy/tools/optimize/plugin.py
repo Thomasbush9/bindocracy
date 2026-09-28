@@ -15,6 +15,7 @@ from typing import Any
 
 from bindocracy.config.load import LoadedConfigs
 from bindocracy.config.models import GeneralConfig
+from bindocracy.kits.optimizer import validate_optimizer_lock
 from bindocracy.runs.launch import LaunchSpec, slurm_resources
 from bindocracy.runs.manifest import RunManifest, ToolPlan
 from bindocracy.store.records import RunKind
@@ -46,17 +47,25 @@ class OptimizePlugin(ToolPlugin):
         }
         if loaded.general.target.msa is not None:
             inputs["target_msa"] = loaded.general.target.msa
+        lock = validate_optimizer_lock(model)
+        archives = {
+            "driver": model.driver_script,
+            "bindocracy_io": Path(__file__).resolve().parents[4] / "drivers" / "bindocracy_io.py",
+        }
+        if lock is None:
+            archives["optimizer_script"] = model.script
+        else:
+            inputs["kit_lock"] = model.kit_lock
+            inputs.update(
+                {f"kit:{relative}": lock.kit_root / relative for relative in lock.files}
+            )
 
         return ToolPlan(
             kind=RunKind.OPTIMIZE,
             jobs=jobs,
             designs_per_task=per_task,
             designs_file=CHILDREN_FILE,
-            archives={
-                "driver": model.driver_script,
-                "optimizer_script": model.script,
-                "bindocracy_io": Path(__file__).resolve().parents[4] / "drivers" / "bindocracy_io.py",
-            },
+            archives=archives,
             inputs=inputs,
             # A host-run optimizer has no container. `ToolPlan.container` is
             # typed as one, so the script stands in for it -- it is the thing
@@ -64,6 +73,7 @@ class OptimizePlugin(ToolPlugin):
             # recorded for.
             container=model.runtime.container or model.script,
             workflow={
+                **({"kit": lock.model_dump(mode="json")} if lock is not None else {}),
                 "optimizer": model.name,
                 "metric_prefix": model.metric_prefix,
                 # The comparability key. Excludes the design set, so optimizing

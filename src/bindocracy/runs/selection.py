@@ -157,15 +157,14 @@ def build(
 ) -> tuple[DesignSet, Path, Path]:
     """Select, freeze, and write `<digest>.fasta` + `<digest>.json`.
 
-    Returns the set and both paths. Writing is idempotent: the same query
-    against an unchanged database produces the same digest and therefore the
-    same two filenames, and `write_design_set` returns the existing pair rather
-    than rewriting it.
+    Returns the persisted set and both paths. Repeating a selection reuses its
+    original manifest, including its creation time. Different provenance for the
+    same membership requires a separate directory.
     """
     designs, resolved = select(database, query)
     design_set = build_design_set(designs, database=database, query=resolved)
     fasta, manifest = write_design_set(design_set, directory)
-    return design_set, fasta, manifest
+    return DesignSet.read(manifest), fasta, manifest
 
 
 def _describe(query: DesignQuery) -> str:

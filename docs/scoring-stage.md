@@ -78,11 +78,19 @@ design_sets/<digest>.json     what it means: query, counts, provenance
 
 Content-addressed, which buys three things at once:
 
-- Two scoring runs over the same candidates share one file and one identity.
+- Scoring runs over the same candidates share a membership identity; they may
+  share the manifest only when selection provenance also agrees.
 - A rank decision gets a `scope_id` that genuinely names the candidate set it
   ranked. The schema requires one and it is otherwise easy to fake.
 - Re-running the same query after new designs land produces a **different**
   digest, so the change is visible rather than silent.
+
+Membership identity does not identify the query that selected it. Reusing an
+output directory for the same members but a different query, source database,
+or provenance is refused. Use a separate output directory for the new selection.
+Repeating an identical selection returns the original persisted manifest,
+including its creation time, rather than reporting a new record beside an old
+file.
 
 Building one is a CLI step run once. The scoring run that follows is an
 ordinary run whose config names the path, so **no new Snakemake machinery is
@@ -162,10 +170,15 @@ make a filter debuggable — "which requirement did this miss" is the question
 actually asked — and the set-level row is what selection reads. Storing only
 the second would make every rejection look identical.
 
-A replicate whose status is not `ok` is **dropped**, not treated as zero.
-A failed fold is an absence of evidence; averaging a zero into six samples
-would quietly move a design down the ranking as though it had been measured
-and found bad.
+Only finite measurements whose status is `ok` count toward replica coverage.
+Failed, null, NaN and infinite values are dropped, not treated as zero. An
+overflowed or nonfinite aggregate also fails the threshold, with `observed: null`
+and `missing: true`.
+
+Evaluator runs must not overlap on `(design_id, metric, replicate)`. Overlap is
+refused before invalid measurements are dropped: a failed rerun and a successful
+rerun still claim the same replica. Disjoint incremental evidence remains valid.
+Two runs that each report replica 0 cannot satisfy a two-replica requirement.
 
 ## 5. What was drafted
 

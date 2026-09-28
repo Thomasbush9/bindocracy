@@ -386,16 +386,33 @@ def check_campaign(
                 except (ValueError, OSError, TypeError) as error:
                     findings.append(_failure("input", error))
             if loaded.tool == "optimize":
-                findings.append(
-                    _check(
-                        "kit_dependencies",
-                        "unknown",
-                        "Optimizer script dependencies are not declared "
-                        "by the workflow index. For a kit, run scripts/check_kit.py with its explicit "
-                        "--kit, --bindings, --config and --no-probe; no kit bindings or container imports "
-                        "are inferred by this check.",
+                kit = plan.workflow.get("kit")
+                if kit is None:
+                    findings.append(
+                        _check(
+                            "kit_dependencies",
+                            "unknown",
+                            "Raw optimizer script dependencies are undeclared. "
+                            "A resolved, explicitly approved kit lock can record and "
+                            "verify dependencies; no bindings or imports are inferred.",
+                        )
                     )
-                )
+                else:
+                    run["kit"] = {
+                        "digest": kit["digest"],
+                        "bundle_digest": kit["bundle_digest"],
+                        "approved_digest": kit["approved_digest"],
+                    }
+                    findings.append(
+                        _check(
+                            "kit_lock",
+                            "ready",
+                            "Approved kit bundle, dependencies and effective configuration verified. "
+                            "Approval is not publisher authentication or code isolation.",
+                            **run["kit"],
+                        )
+                    )
+                    findings.extend(kit["checks"])
             if request.name not in {".", ".."}:
                 try:
                     run_dir = index.run_dir(request.name).resolve()

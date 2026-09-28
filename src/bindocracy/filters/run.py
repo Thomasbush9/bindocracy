@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from bindocracy.config.models import GeneralConfig
+from bindocracy.filters.apply import FilterEvidenceError
 from bindocracy.filters.config import FilterConfig, build_filter_run, filter_config_record
 from bindocracy.runs.designset import DesignSet
 from bindocracy.runs.selection import SelectionError, read_only, resolve_run_ids
@@ -217,15 +218,18 @@ def run_filter(
     record = filter_config_record(
         general=general, config=config, general_source=general_source
     )
-    collected = build_filter_run(
-        config=config,
-        general=general,
-        design_set=design_set,
-        metrics=metrics,
-        model_config_id=record.model_config_id,
-        run_name=run_name or config.name,
-        output_uri=str(Path(output_dir).resolve()),
-        started_at=started_at or utc_now(),
-        independence=audit,
-    )
+    try:
+        collected = build_filter_run(
+            config=config,
+            general=general,
+            design_set=design_set,
+            metrics=metrics,
+            model_config_id=record.model_config_id,
+            run_name=run_name or config.name,
+            output_uri=str(Path(output_dir).resolve()),
+            started_at=started_at or utc_now(),
+            independence=audit,
+        )
+    except FilterEvidenceError as error:
+        raise FilterRunError(str(error)) from error
     return collected, record

@@ -67,7 +67,7 @@ class Threshold(FilterModel):
     value: float
     aggregate: Aggregation
 
-    # Replicates whose status is not 'ok' are dropped before aggregating. If
+    # Only finite replicates whose status is 'ok' count toward coverage. If
     # that leaves nothing, the threshold fails. Set this to allow a design
     # through on partial evidence, and say why in the config comment.
     min_replicates: int = Field(default=1, ge=1)

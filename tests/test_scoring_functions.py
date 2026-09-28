@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from bindocracy.config.models import GeneralConfig
 from bindocracy.config.preflight import ConfigPreflightError
 from bindocracy.functions.contract import (
     FunctionInput,
@@ -16,11 +17,26 @@ from bindocracy.functions.contract import (
     write_inputs,
 )
 from bindocracy.functions.models import CustomFunction, FunctionsConfig
+from bindocracy.functions.run import FunctionRunConfig, FunctionRunError, run_function
 from bindocracy.functions.runner import (
     FunctionError,
     command_for,
     preflight_custom,
     run_custom,
+)
+from bindocracy.runs.inputs import digest_of
+from bindocracy.runs.selection import build, read_only
+from bindocracy.store import CampaignStore, create_database, reporting
+from bindocracy.store.query import DesignQuery, select_metrics
+from bindocracy.store.records import (
+    ArtifactRecord,
+    CandidateType,
+    CollectedRun,
+    ConfigRecord,
+    DesignRecord,
+    RunKind,
+    RunRecord,
+    RunStatus,
 )
 from bindocracy.tools.scorer.config import MOVED_TO_FUNCTIONS
 from bindocracy.tools.scorer.preflight import preflight_scorer
@@ -502,3 +518,248 @@ def test_the_epitope_function_is_given_the_campaign_hotspots(tmp_path):
         update={"builtin": "sequence", "structures_from": None}
     )
     assert resolve_function(sequence_config, general, "A" * 201).args == ()
+
+
+@pytest.fixture
+def function_campaign(tmp_path):
+    """Synthetic source artifacts; the script only counts bytes, never folds."""
+    fasta = tmp_path / "target.fasta"
+    fasta.write_text(">synthetic\nAAAA\n")
+    general = GeneralConfig.model_validate({
+        "campaign": {"name": "synthetic"},
+        "schema_version": 1,
+        "target": {"name": "synthetic", "sequence_fasta": str(fasta), "chain_id": "A"},
+        "cluster": {"executor": "slurm", "account": "fixture", "default_partition": "cpu"},
+    })
+    database = create_database(tmp_path / "functions.duckdb")
+    record = ConfigRecord(
+        general_name=general.campaign.name, general_schema_version=general.schema_version,
+        general_config_json=general.model_dump(mode="json"),
+        model_name="source", tool="fixture", model_schema_version=1,
+        model_config_json={"name": "source"},
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    artifacts = []
+    for index in range(4):
+        path = source / f"{index}.pdb"
+        path.write_bytes(f"synthetic source {index}\n".encode())
+        digest = digest_of(path)
+        artifacts.append(ArtifactRecord(
+            artifact_id=f"a{index}", run_id="source", design_id=f"d{index}",
+            kind="predicted_structure", uri=path.name,
+            sha256=digest.sha256 if index % 2 == 0 else None,
+            size_bytes=digest.size_bytes,
+            metadata={"model": "synthetic", "condition": "complex", "replicate": 0},
+        ))
+    generated = RunRecord(
+        run_id="generate", name="generate", tool="fixture", kind=RunKind.GENERATE,
+        model_config_id=record.model_config_id, status=RunStatus.SUCCEEDED,
+        n_requested=4, n_attempted=4, n_produced=4,
+    )
+    evaluated = RunRecord(
+        run_id="source", name="source", tool="fixture", kind=RunKind.EVALUATE,
+        model_config_id=record.model_config_id, status=RunStatus.SUCCEEDED,
+        n_requested=4, n_attempted=4, n_produced=4, output_uri=str(source),
+    )
+    with CampaignStore(database) as store:
+        store.ingest(CollectedRun(
+            run=generated,
+            designs=tuple(
+                DesignRecord(
+                    design_id=f"d{index}", run_id="generate", native_id=str(index),
+                    candidate_type=CandidateType.SEQUENCE, sequence="AAAA",
+                )
+                for index in range(4)
+            ),
+        ), configs=[record])
+        store.ingest(CollectedRun(run=evaluated, artifacts=tuple(artifacts)))
+    _, _, manifest = build(database, DesignQuery(), tmp_path / "sets")
+    script = tmp_path / "inspect_bytes.py"
+    script.write_text(
+        "import argparse, json\n"
+        "from pathlib import Path\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--inputs')\n"
+        "parser.add_argument('--outputs')\n"
+        "parser.add_argument('--all-failed', action='store_true')\n"
+        "args = parser.parse_args()\n"
+        "Path(__file__).with_name('launched').write_text('yes')\n"
+        "rows = [json.loads(line) for line in Path(args.inputs).read_text().splitlines()]\n"
+        "with Path(args.outputs).open('w') as output:\n"
+        "    for row in rows:\n"
+        "        index = row['index']\n"
+        "        if args.all_failed or index == 1:\n"
+        "            result = {'index': index, 'failed': 'input_error: original detail'}\n"
+        "        elif index == 3:\n"
+        "            continue\n"
+        "        else:\n"
+        "            values = {'byte_count': len(Path(row['structure']).read_bytes())}\n"
+        "            if index == 0:\n"
+        "                values['other_value'] = 7\n"
+        "            result = {'index': index, 'metrics': values}\n"
+        "        output.write(json.dumps(result) + '\\n')\n"
+    )
+    config = FunctionRunConfig(
+        name="derived", design_set=manifest, structures_from="source",
+        function=CustomFunction(
+            name="inspect", script=script, inputs=("structure",), prefix="source_model",
+            metrics={"byte_count": {"direction": "none"}, "other_value": {"direction": "max"}},
+        ),
+    )
+    return database, general, config, artifacts
+
+
+def test_changed_hashed_structure_is_refused_before_script_launch(function_campaign, tmp_path):
+    database, general, config, artifacts = function_campaign
+    path = tmp_path / "source" / artifacts[0].uri
+    # Same length, different content: an existence or size check is insufficient.
+    path.write_bytes(b"x" * path.stat().st_size)
+    output = tmp_path / "derived"
+    with pytest.raises(FunctionRunError, match="content hash changed"):
+        run_function(database=database, general=general, config=config, output_dir=output)
+    assert not (output / "function" / "launched").exists()
+
+
+def test_changed_recorded_structure_size_is_refused(function_campaign, tmp_path):
+    database, general, config, artifacts = function_campaign
+    # Even an unhashed legacy artifact still has a recorded size.
+    (tmp_path / "source" / artifacts[1].uri).write_bytes(b"changed size")
+    output = tmp_path / "derived"
+    with pytest.raises(FunctionRunError, match="size changed"):
+        run_function(database=database, general=general, config=config, output_dir=output)
+    assert not (output / "function" / "launched").exists()
+
+
+def test_source_evidence_and_failed_metrics_survive_ingestion_and_export(
+    function_campaign, tmp_path,
+):
+    database, general, config, artifacts = function_campaign
+    collected, record = run_function(
+        database=database, general=general, config=config, output_dir=tmp_path / "derived",
+    )
+    assert collected.run.status == RunStatus.PARTIAL
+    assert (collected.run.n_attempted, collected.run.n_produced) == (4, 2)
+    assert collected.run.count_details["n_failed"] == 2
+    assert collected.run.count_details["failures"] == {"input_error": 1, "missing_output": 1}
+    assert collected.run.count_details["n_incomplete"] == 1
+    with CampaignStore(database) as store:
+        store.ingest(collected, configs=[record])
+    with read_only(database) as connection:
+        metrics = select_metrics(connection, run_ids=[collected.run.run_id])
+        assert {
+            (metric.design_id, metric.name, metric.status, metric.value, metric.replicate)
+            for metric in metrics
+        } == {
+            ("d0", "synthetic_byte_count", "ok", 19.0, 0),
+            ("d0", "synthetic_other_value", "ok", 7.0, 0),
+            ("d1", "synthetic_byte_count", "failed", None, 0),
+            ("d1", "synthetic_other_value", "failed", None, 0),
+            ("d2", "synthetic_byte_count", "ok", 19.0, 0),
+        }
+        run = reporting.selected_runs(connection, [collected.run.run_id])[0]
+        report = reporting.summarize_run(connection, run)
+        summaries = {item["name"]: item for item in report["metrics"]}
+        assert summaries["synthetic_byte_count"]["status_counts"] == {"ok": 2, "failed": 1}
+        assert summaries["synthetic_other_value"]["status_counts"] == {"ok": 1, "failed": 1}
+        assert summaries["synthetic_byte_count"]["replica_coverage"] == [
+            {"design_id": "d0", "observed": [0], "finite_ok": [0]},
+            {"design_id": "d1", "observed": [0], "finite_ok": []},
+            {"design_id": "d2", "observed": [0], "finite_ok": [0]},
+        ]
+        query, params = reporting.export_query("metrics", (collected.run.run_id,))
+        exported = reporting.rows(connection, query, params)
+    assert len(exported) == 5
+    for metric in exported:
+        index = int(metric["design_id"][1:])
+        artifact = artifacts[index]
+        evidence = metric["details"]["source_artifact"]
+        source_path = tmp_path / "source" / artifact.uri
+        expected = digest_of(source_path)
+        assert evidence == {
+            "artifact_id": artifact.artifact_id,
+            "run_id": "source",
+            "uri": artifact.uri,
+            "path": str(source_path),
+            "recorded_sha256": artifact.sha256,
+            "recorded_size_bytes": artifact.size_bytes,
+            "sha256": expected.sha256,
+            "size_bytes": expected.size_bytes,
+            "verification": "verified" if artifact.sha256 else "unhashed",
+            "consumed_path": str(tmp_path / "derived" / "structures" / artifact.uri),
+        }
+        assert digest_of(evidence["consumed_path"]).sha256 == evidence["sha256"]
+        assert run["workflow_metadata"]["source_artifacts"][metric["design_id"]] == evidence
+        assert metric["producing_run_id"] == "generate"
+        if metric["status"] == "failed":
+            assert metric["details"]["failure_reason"] == "input_error: original detail"
+        else:
+            assert "failure_reason" not in metric["details"]
+
+
+def test_all_explicit_failures_do_not_count_as_produced(function_campaign, tmp_path):
+    database, general, config, _ = function_campaign
+    config = config.model_copy(update={
+        "function": config.function.model_copy(update={"args": ("--all-failed",)}),
+    })
+    collected, _ = run_function(
+        database=database, general=general, config=config, output_dir=tmp_path / "failed",
+    )
+    assert collected.run.status == RunStatus.FAILED
+    assert collected.run.n_produced == 0
+    assert collected.run.count_details["n_failed"] == 4
+    assert collected.run.count_details["failures"] == {"input_error": 4}
+    assert len(collected.metrics) == 8
+    assert all(metric.status == "failed" and metric.value is None for metric in collected.metrics)
+
+
+def test_explicit_failure_keeps_function_prefix_and_replicate(function_campaign, tmp_path):
+    _, _, config, _ = function_campaign
+    function = config.function.model_copy(update={
+        "prefix": "function", "args": ("--all-failed",),
+    })
+    result = run_custom(
+        function, designs(1, structure=tmp_path / "source" / "0.pdb"),
+        run_id="replicated", work_dir=tmp_path / "replicated", measured_at=WHEN, replicate=3,
+    )
+    assert result.n_scored == 0
+    assert {
+        (record.name, record.design_id, record.replicate, record.status, record.value)
+        for record in result.records
+    } == {
+        ("inspect_byte_count", "d0", 3, "failed", None),
+        ("inspect_other_value", "d0", 3, "failed", None),
+    }
+    assert all(
+        record.details["failure_reason"] == "input_error: original detail"
+        for record in result.records
+    )
+
+
+def test_scoring_consumes_snapshot_even_if_original_changes_after_preflight(
+    function_campaign, tmp_path, monkeypatch,
+):
+    import bindocracy.functions.run as function_run
+
+    database, general, config, artifacts = function_campaign
+    source = tmp_path / "source" / artifacts[0].uri
+    expected = digest_of(source)
+    execute = function_run.run_custom
+
+    def change_source_then_execute(*args, **kwargs):
+        source.write_bytes(b"replacement source")
+        return execute(*args, **kwargs)
+
+    monkeypatch.setattr(function_run, "run_custom", change_source_then_execute)
+    collected, _ = run_function(
+        database=database, general=general, config=config, output_dir=tmp_path / "derived",
+    )
+    measurement = next(
+        metric for metric in collected.metrics
+        if metric.design_id == "d0" and metric.name == "synthetic_byte_count"
+    )
+    evidence = measurement.details["source_artifact"]
+    assert measurement.value == expected.size_bytes
+    assert evidence["sha256"] == artifacts[0].sha256 == expected.sha256
+    assert digest_of(evidence["consumed_path"]).sha256 == expected.sha256
+    assert digest_of(source).sha256 != expected.sha256

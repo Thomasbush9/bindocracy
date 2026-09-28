@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Literal, Self
 
@@ -22,7 +23,7 @@ from bindocracy.functions.models import (
 )
 from bindocracy.functions.runner import FunctionError, preflight_custom, run_custom, write_summary
 from bindocracy.runs.designset import DesignSet, DesignSetError
-from bindocracy.runs.inputs import TargetDigest
+from bindocracy.runs.inputs import TargetDigest, digest_of
 from bindocracy.runs.selection import SelectionError, read_only, resolve_run_ids
 from bindocracy.store.query import select_designs
 from bindocracy.store.records import (
@@ -141,7 +142,7 @@ def _structures(
     placeholders = ", ".join("?" for _ in design_ids)
     rows = connection.execute(
         "SELECT a.design_id, r.output_uri, a.uri, "
-        "json_extract_string(a.metadata, '$.model') "
+        "json_extract_string(a.metadata, '$.model'), a.artifact_id, a.sha256, a.size_bytes "
         "FROM artifacts a JOIN runs r ON r.run_id = a.run_id "
         f"WHERE a.run_id = ? AND a.design_id IN ({placeholders}) "
         "AND a.kind = 'predicted_structure' "
@@ -149,8 +150,8 @@ def _structures(
         "AND json_extract_string(a.metadata, '$.replicate') = '0'",
         [source_run, *design_ids],
     ).fetchall()
-    resolved: dict[str, tuple[Path, str | None]] = {}
-    for design_id, output_uri, uri, model in rows:
+    resolved: dict[str, tuple[Path, str | None, dict]] = {}
+    for design_id, output_uri, uri, model, artifact_id, recorded_hash, recorded_size in rows:
         if design_id in resolved:
             raise FunctionRunError(f"ambiguous complex replicate 0 structure for design {design_id}")
         path = Path(uri)
@@ -162,7 +163,25 @@ def _structures(
             raise FunctionRunError(f"required structure not found: {path}")
         if function.prefix == "source_model" and not model:
             raise FunctionRunError(f"structure for design {design_id} has no source model")
-        resolved[design_id] = (path.resolve(), model)
+        consumed = digest_of(path)
+        if recorded_hash is not None and consumed.sha256 != recorded_hash:
+            raise FunctionRunError(f"structure content hash changed for artifact {artifact_id}: {path}")
+        if recorded_size is not None and consumed.size_bytes != recorded_size:
+            raise FunctionRunError(f"structure size changed for artifact {artifact_id}: {path}")
+        resolved[design_id] = (
+            path.resolve(), model,
+            {
+                "artifact_id": artifact_id,
+                "run_id": source_run,
+                "uri": uri,
+                "path": str(path.resolve()),
+                "recorded_sha256": recorded_hash,
+                "recorded_size_bytes": recorded_size,
+                "sha256": consumed.sha256,
+                "size_bytes": consumed.size_bytes,
+                "verification": "verified" if recorded_hash is not None else "unhashed",
+            },
+        )
     missing = [entry.design_id for entry in design_set.entries if entry.design_id not in resolved]
     if missing:
         raise FunctionRunError(
@@ -235,6 +254,31 @@ def run_function(
         model_schema_version=config.schema_version,
         model_config_json=config.model_dump(mode="json"),
     )
+    try:
+        output.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as error:
+        raise FunctionRunError(f"output directory already exists: {output}") from error
+    # Score a checked snapshot, not a mutable source path. Verify the copied
+    # bytes too, so a change between preflight and staging cannot inherit the
+    # original artifact's identity.
+    try:
+        for entry in entries:
+            if not structures:
+                break
+            path, model, provenance = structures[entry.design_id]
+            archived = output / "structures" / f"{entry.index}{path.suffix}"
+            archived.parent.mkdir(exist_ok=True)
+            shutil.copyfile(path, archived)
+            consumed = digest_of(archived)
+            if (
+                consumed.sha256 != provenance["sha256"]
+                or consumed.size_bytes != provenance["size_bytes"]
+            ):
+                raise FunctionRunError(f"structure changed while staging artifact {provenance['artifact_id']}")
+            provenance["consumed_path"] = str(archived)
+            structures[entry.design_id] = (archived, model, provenance)
+    except OSError as error:
+        raise FunctionRunError(str(error)) from error
     inputs = [
         FunctionInput(
             index=entry.index, design_id=entry.design_id, sequence=entry.sequence,
@@ -244,10 +288,6 @@ def run_function(
         )
         for entry in entries
     ]
-    try:
-        output.mkdir(parents=True, exist_ok=False)
-    except FileExistsError as error:
-        raise FunctionRunError(f"output directory already exists: {output}") from error
     (output / "config.json").write_text(record.model_dump_json(indent=2) + "\n")
     (output / "design_set.json").write_text(design_set.model_dump_json(indent=2) + "\n")
     (output / "target.fasta").write_text(f">{target.name}\n{target_sequence}\n")
@@ -260,6 +300,16 @@ def run_function(
         )
     except FunctionError as error:
         raise FunctionRunError(str(error)) from error
+    if structures:
+        result.records = tuple(
+            metric.model_copy(update={
+                "details": {
+                    **(metric.details or {}),
+                    "source_artifact": structures[metric.design_id][2],
+                },
+            })
+            for metric in result.records
+        )
     write_summary(output / "summary.json", [result])
     status = RunStatus.SUCCEEDED
     if result.failures or result.incomplete or result.n_scored != len(entries):
@@ -285,6 +335,9 @@ def run_function(
             "helper_sha256": result.helper_sha256,
             "target": target.model_dump(mode="json"),
             "structures_from": source_run,
+            "source_artifacts": {
+                design_id: structure[2] for design_id, structure in structures.items()
+            },
             "database": str(Path(database).resolve()),
         },
         output_uri=str(output), created_at=started, started_at=started, finished_at=utc_now(),

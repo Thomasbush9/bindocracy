@@ -112,31 +112,37 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--esmc-weight",
         type=float,
-        default=0.0,
-        help="The wrapped script's own default is 0.5. ZERO HERE: measured on "
-             "this cluster, esmc_pll returns NaN every step, which turns the "
-             "total into mosaic's 1e6 non-finite sentinel and leaves no usable "
-             "gradient, while the structure loss beside it is healthy. "
-             "Suspected to be the missing transformer_engine fallback. Flip to "
-             "0.5 once that is diagnosed; MPNN at weight 1.0 still supplies "
-             "sequence-plausibility pressure meanwhile.",
+        default=0.5,
+        help=(
+            "Weight on the ESM-C pseudolikelihood, clipped to [2,100]. 0.5 is "
+            "the source campaign's value in all ~30 rounds. 0 disables it."
+        ),
     )
     parser.add_argument(
-        "--weights",
+        "--esmc-checkpoint",
         default="",
-        help="MOSAIC_WEIGHTS tree, holding plain-named caches (alphafold/, "
-             "boltz/, hf/ ...). run_design.py builds its models with no "
-             "data_dir and so reaches for ~/.alphafold, ~/.boltz and friends; "
-             "the campaign's mosaic-exec.sh normally bind-mounts them into a "
-             "synthetic HOME, and this harness has no bind hook, so the wrapper "
-             "rebuilds that HOME as symlinks instead. Without it, af2 finds no "
-             "params and boltz2 finds no checkpoint.",
+        help=(
+            "PIN THIS TO A SNAPSHOT DIRECTORY, not to the repo name. "
+            "`from_pretrained` resolves a NAME against the hub and will pull a "
+            "newer revision into the cache, silently repointing refs/main. That "
+            "happened here on 2026-09-26: the upstream repo was re-versioned, "
+            "and the new revision renames the class (ESMCForMaskedLM -> "
+            "EsmcForMaskedLM) and every tensor (esmc.embed.weight -> "
+            "esmc.embed_tokens.weight, transformer.blocks.N -> layers.N), so "
+            "this container's pinned class matches nothing, initializes random "
+            "weights, and esmc_pll becomes NaN. The total loss then sits at "
+            "mosaic's 1e6 sentinel and the run APPEARS to proceed while "
+            "optimizing nothing -- the only symptom is a 'Some weights ... "
+            "newly initialized' line buried in the model-loading output. "
+            "A snapshot path resolves locally and cannot drift. Empty falls "
+            "back to the repo name, which is how this got broken."
+        ),
     )
     parser.add_argument(
         "--num-samples",
         type=int,
         default=4,
-        help="Diffusion samples per evaluation, for samplers that have one. "
+        help="Diffusion samples per evaluation, for backends that have one. "
              "Ignored for af2, which asserts it is handed none.",
     )
     parser.add_argument(
@@ -147,6 +153,32 @@ def build_parser() -> argparse.ArgumentParser:
              "scoring protocol; a gradient loop cannot afford it.",
     )
     parser.add_argument("--extra-msa", type=int, default=512)
+    parser.add_argument(
+        "--weights",
+        default="",
+        help="MOSAIC_WEIGHTS tree, holding plain-named caches (alphafold/, "
+             "boltz/, hf/ ...). run_design.py builds its models with no "
+             "data_dir and so reaches for ~/.alphafold, ~/.boltz and friends; "
+             "mosaic-exec.sh normally bind-mounts them into a synthetic HOME, "
+             "and this harness has no bind hook, so the wrapper rebuilds that "
+             "HOME as symlinks instead. Without it, af2 finds no params and "
+             "boltz2 finds no checkpoint.",
+    )
+    parser.add_argument(
+        "--epitope",
+        default="",
+        help=(
+            "Comma-separated 0-BASED target indices for BinderTargetContact and "
+            "DistogramIPTMProxy. Empty falls back to context['hotspots'], which "
+            "is usually WRONG here: that is the bare 3-hotspot list, which the "
+            "source campaign's R17 measured as the tightest placement and the "
+            "WORST yield. Its production rounds use a 24-residue consensus "
+            "epitope, which cannot be derived from geometry -- "
+            "pocket_residues(shell=6.0) gives the 43-residue CROP and the "
+            "epitope is the subset of it contacted by >=30% of 1500 BoltzGen "
+            "poses, so it has to be inherited from a run that generated it."
+        ),
+    )
     parser.add_argument("--hard-sharp", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser
@@ -260,6 +292,17 @@ def cache_home(work: Path, weights: str) -> dict[str, str]:
     return {"HOME": str(home), "HF_HOME": str(home / ".cache" / "huggingface")}
 
 
+def _epitope(context, args):
+    """The epitope both contact terms slice with, 0-based.
+
+    `--epitope` wins when given. The fallback is `context["hotspots"]`, 1-based
+    FASTA positions resolved and range-checked at plan time, converted here.
+    """
+    if args.epitope.strip():
+        return sorted({int(tok) for tok in args.epitope.split(",") if tok.strip()})
+    return [spot - 1 for spot in context.get("hotspots") or []] or None
+
+
 def design_config(length, seeds_fasta, batch, seed, epitope, context, args):
     """The config `run_design.py --config` consumes, with the epitope INJECTED.
 
@@ -304,7 +347,7 @@ def design_config(length, seeds_fasta, batch, seed, epitope, context, args):
     if args.esmc_weight > 0:
         sequence_models.append({
             "name": "esmc", "weight": args.esmc_weight,
-            "params": {"checkpoint": "biohub/ESMC-300M",
+            "params": {"checkpoint": args.esmc_checkpoint or "biohub/ESMC-300M",
                        "clip_lower": 2.0, "clip_upper": 100.0},
         })
 
@@ -321,14 +364,14 @@ def design_config(length, seeds_fasta, batch, seed, epitope, context, args):
             {"name": "WithinBinderContact", "weight": 1.0, "params": {}},
             {"name": "HelixLoss", "weight": 1.0, "params": {}},
             {"name": "DistogramRadiusOfGyration", "weight": 1.0, "params": {}},
-            # epitope_idx deliberately ABSENT here. Restricted to the 3-residue
-            # hotspot list the proxy's top-k pool is so small that the clip
-            # pins it at exactly 0 -- no value and no gradient, measured on
-            # GPU, and the same failure the source campaign hit at 8 A in round
-            # 3. Its own conclusion is that restricting this term never
-            # produced the targeting anyway.
+            # RESTRICTED, matching every one of the source campaign's runtime
+            # configs. Earlier this was left unrestricted because the proxy
+            # clipped to exactly 0 -- but that was a symptom of passing the
+            # bare 3-hotspot list, not of the restriction: with a 24-residue
+            # epitope the top-k pool is large enough. Note the term reads 0.00
+            # in his logs too, so a zero here is his behaviour, not a fault.
             {"name": "DistogramIPTMProxy", "weight": 2.0,
-             "params": {"contact_distance": 12.0}},
+             "params": {"contact_distance": 12.0, "epitope_idx": epitope}},
             {"name": "PLDDTLoss", "weight": 1.0, "params": {}},
             {"name": "IPSAE_min", "weight": 1.0, "params": {}},
         ],
@@ -367,9 +410,7 @@ def run_chunk(chunk, length, seed, replicates, context, work, args):
     if args.dry_run:
         payload, cycles = _dry_run(chunk, replicates, seed, args)
     else:
-        # 1-based positions in the target's FASTA, resolved and range-checked
-        # when the run was planned; the loss terms slice with 0-based ones.
-        epitope = [spot - 1 for spot in context.get("hotspots") or []] or None
+        epitope = _epitope(context, args)
         config_path = out / "config.json"
         config_path.write_text(json.dumps(
             design_config(length, seeds_fasta, batch, seed, epitope, context, args),

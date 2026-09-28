@@ -203,9 +203,15 @@ args:
   init-noise: 0.15
   cycle-noise: 0.15
   recycling-steps: 1
-  # The wrapped script defaults to 0.5. Zero here because esmc_pll returns NaN
-  # on this cluster, which poisons the whole objective; see the entrypoint.
-  esmc-weight: 0.0
+  # 0.5, the source campaign's value in every round. It was briefly set to 0
+  # here after esmc_pll came back NaN -- but the cause was NOT the image and
+  # NOT the campaign: a probe run from this repo resolved the checkpoint by
+  # REPO NAME against the hub, pulled an upstream re-version into the shared
+  # cache and repointed refs/main. The new revision renames the class and every
+  # tensor, so the container's pinned class initialized random weights.
+  # refs/main has been restored and the checkpoint is now PINNED to a snapshot
+  # path, which is resolved locally and cannot drift.
+  esmc-weight: 0.5
   # A store_true flag: transcribe as a bare `--hard-sharp` or omit it, never as
   # `--hard-sharp false`. Off by default -- it gave 2.2x at one site and was
   # strictly worse at two others.

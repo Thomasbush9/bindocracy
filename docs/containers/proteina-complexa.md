@@ -61,6 +61,19 @@ The registry's `my_target.target_path` must be
 two-bind contract and accepts target-specific paths through environment
 variables; it does not bind or copy the complete config directory.
 
+### Empty hotspots are not omitted conditioning
+
+For a hotspot-free campaign, the supported explicit empty-hotspot representation
+is `hotspot_residues: []` in the registry entry. In the supported upstream path
+this supplies an all-False conditioning mask; it does **not** omit conditioning.
+Whether those modes have equivalent sampling behavior is not established.
+
+Label such runs as **empty-mask conditioning**, not as evidence of a uniform
+unconditioned mode across generators. Preserve the registry and resolved config
+with the results, and report this capability difference when comparing
+targeted/untargeted cohorts. Do not add synthetic hotspots or silently change the
+mask to force comparability.
+
 Complexa, AF2, ESM2, RF3, ProteinMPNN, LigandMPNN, Foldseek, and supporting
 pipeline assets are embedded. Outputs and runtime caches remain writable host
 data; the large SIF itself is immutable and intended to run offline.

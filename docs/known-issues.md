@@ -1,12 +1,25 @@
 # Known issues and traps
 
-Everything here was hit or verified during the archived alpha benchmark.
+Findings here come from the archived alpha benchmark and later campaign reports.
 Issues are ordered by how much damage they can do, not by which tool they
 belong to.
 
 The dangerous ones are at the top because they **do not raise**. A tool that
 crashes costs an hour; a tool that silently designs against the wrong model,
 the wrong chain, or the wrong epitope costs a campaign.
+
+## BindCraft2 target handoff
+
+The KCNK4 campaign exposed a launch-contract bug: the harness serialized
+`--set targets={...}`, but BC2 consumes an array. Its unknown-setting errors
+listed the characters of `chains`, `name`, and `target_path` because it iterated
+the object's keys as targets.
+
+The manifest still records one target object; launch now passes `targets=[{...}]`
+without changing its name, path, chain, or optional hotspots. Regression coverage
+includes the actual BC2 configuration parser on CPU, without launching a design.
+This fixes the handoff, not unrelated invalid authored settings or GPU readiness.
+
 
 ## What was fixed on 2026-08-27
 

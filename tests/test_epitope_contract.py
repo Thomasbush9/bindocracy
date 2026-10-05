@@ -486,7 +486,8 @@ def test_bindcraft2_puts_the_campaign_epitope_on_the_command(tmp_path: Path) -> 
 
     argv = launch_spec(manifest, 0).argv
     block = json.loads(flag(argv, "--set").split("targets=", 1)[-1])
-    assert block["hotspots"] == "A2,A4"
+    assert len(block) == 1
+    assert block[0]["hotspots"] == "A2,A4"
 
 
 def test_bindcraft2_records_whether_the_epitope_was_verified(tmp_path: Path) -> None:

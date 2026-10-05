@@ -109,12 +109,12 @@ def bindcraft2_launch_spec(
 
 
 def _targets(manifest: RunManifest) -> str:
-    """The campaign target block this run was planned with, from the manifest.
+    """Serialize the recorded target object as BC2's single-entry target array.
 
     Read back rather than rebuilt, so a launch cannot derive an epitope
-    different from the one the run recorded. Serialized with sorted keys so the
-    command is identical for identical plans, which is what makes a launch
-    comparable across reruns.
+    different from the one the run recorded. The manifest stores one object;
+    the consumer requires a list even for one target. Sorted keys make the
+    command identical for identical plans and comparable across reruns.
     """
     target = manifest.workflow.get("bindcraft2_target")
     if not target:
@@ -122,7 +122,7 @@ def _targets(manifest: RunManifest) -> str:
             f"run {manifest.run_id} records no bindcraft2_target; it was planned "
             "before the target block was stored and cannot be launched from"
         )
-    return json.dumps(target, sort_keys=True, separators=(",", ":"))
+    return json.dumps([target], sort_keys=True, separators=(",", ":"))
 
 
 def _node_tmp(model: BindCraft2Config, manifest: RunManifest, task_id: int) -> Path:

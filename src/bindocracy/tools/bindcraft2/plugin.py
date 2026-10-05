@@ -118,9 +118,9 @@ class BindCraft2Plugin(ToolPlugin):
             container=model.runtime.container,
             workflow={
                 "target_length": preflight.target_length,
-                # The exact block the launch passes with `--set`, stored so a
-                # launch cannot derive an epitope different from the one the run
-                # recorded.
+                # The target object the launch wraps in BC2's `targets` array,
+                # stored so a launch cannot derive an epitope different from
+                # the one the run recorded.
                 "bindcraft2_target": _target_block(loaded, preflight),
                 "binder_lengths": list(preflight.binder_lengths),
                 "binder_min_length": minimum,
@@ -158,10 +158,10 @@ class BindCraft2Plugin(ToolPlugin):
 
 
 def _target_block(loaded: LoadedConfigs, preflight: BindCraft2Preflight) -> dict[str, Any]:
-    """The campaign target as BC2's `targets` list, resolved once at planning.
+    """The single target object, resolved once at planning.
 
-    One entry: this harness designs against one target, and a second would be a
-    multi-target campaign whose filters and rotation are a different experiment.
+    Launch wraps this object in BC2's `targets` list. This harness designs
+    against one target; a second would be a different multi-target campaign.
     The path is absolute, so nothing depends on the working directory the job
     happens to start in.
     """

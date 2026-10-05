@@ -9,6 +9,8 @@ campaign target and the output looks entirely normal.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -57,19 +59,23 @@ def test_no_driver_is_used(tmp_path: Path) -> None:
 
 
 def test_the_target_block_carries_the_campaign_structure_and_chain(tmp_path: Path) -> None:
-    _, manifest = planned(tmp_path)
+    loaded, manifest = planned(tmp_path)
     spec = launch_spec(manifest, 0)
 
-    target = json.loads(setting(spec.argv, "targets"))
-    assert target["target_path"] == str((tmp_path / "target.pdb").resolve())
-    assert target["chains"] == "A"
+    targets = json.loads(setting(spec.argv, "targets"))
+    assert targets == [{
+        "name": loaded.general.target.name,
+        "target_path": str((tmp_path / "target.pdb").resolve()),
+        "chains": "A",
+    }]
+    assert manifest.workflow["bindcraft2_target"] == targets[0]
 
 
 def test_the_epitope_reaches_the_command(tmp_path: Path) -> None:
     _, manifest = planned(tmp_path, hotspots=["A2", "A4"])
     spec = launch_spec(manifest, 0)
 
-    assert json.loads(setting(spec.argv, "targets"))["hotspots"] == "A2,A4"
+    assert json.loads(setting(spec.argv, "targets"))[0]["hotspots"] == "A2,A4"
 
 
 def test_a_campaign_with_no_epitope_names_none(tmp_path: Path) -> None:
@@ -77,7 +83,47 @@ def test_a_campaign_with_no_epitope_names_none(tmp_path: Path) -> None:
     _, manifest = planned(tmp_path)
     spec = launch_spec(manifest, 0)
 
-    assert "hotspots" not in json.loads(setting(spec.argv, "targets"))
+    targets = json.loads(setting(spec.argv, "targets"))
+    assert len(targets) == 1
+    assert "hotspots" not in targets[0]
+
+
+@pytest.mark.parametrize("hotspots", [None, ["A2", "A4"]])
+def test_launch_settings_reach_the_upstream_config_consumer(
+    tmp_path: Path, hotspots: list[str] | None
+) -> None:
+    """Opt-in CPU integration: parse the real argv without launching a campaign."""
+    container = os.environ.get("BINDCRAFT2_CONTAINER")
+    if not container:
+        pytest.skip("set BINDCRAFT2_CONTAINER to the qualified BC2 1.0.1 image")
+    loaded, manifest = planned(tmp_path, hotspots=hotspots)
+    argv = launch_spec(manifest, 0).argv
+    # Only the configuration parser is imported. No campaign, workers, model
+    # initialization, --nv, or design command is executed.
+    parser = """
+import json
+import sys
+from dataclasses import asdict
+from bindcraft.cli import split_setting_overrides
+from bindcraft.settings import build_design_settings, parse_setting_overrides, read_settings
+paths, assignments = split_setting_overrides(sys.argv[1:])
+settings = read_settings(paths[0], parse_setting_overrides(assignments))
+print(json.dumps([asdict(target) for target in build_design_settings(settings).targets]))
+"""
+    result = subprocess.run(
+        [
+            "singularity", "exec", "--cleanenv", "--env", "JAX_PLATFORMS=cpu",
+            "--bind", f"{tmp_path}:{tmp_path}", container, "python3", "-c", parser,
+            *argv[argv.index("design") + 1:],
+        ],
+        check=True, capture_output=True, text=True, timeout=90,
+    )
+    targets = json.loads(result.stdout)
+    assert len(targets) == 1
+    assert targets[0]["name"] == loaded.general.target.name
+    assert targets[0]["path"] == str((tmp_path / "target.pdb").resolve())
+    assert targets[0]["chains"] == "A"
+    assert targets[0]["hotspots"] == (",".join(hotspots) if hotspots else "")
 
 
 def test_the_four_counters_come_from_the_config(tmp_path: Path) -> None:

@@ -16,6 +16,21 @@ for — the three JAX overlays, the writable `lightning_logs`, the ColabFold
 parameter cache, and a per-task output root — and refuses to start if any of
 them is missing. The manual commands here remain the way to debug one stage.
 
+### Hotspot-free campaign compatibility
+
+The harness's supported binder-design/evaluation path requires a nonempty
+`target_interface_residues.hotspot` list in the problem set: the upstream success
+reducer reads it. When campaign hotspots are supplied, the lists must match.
+An empty campaign hotspot list does not remove conditioning already present in
+the problem set; a genuinely hotspot-free problem set is refused before
+submission. The upstream unconditional examples below do not establish support
+for hotspot-free evaluation through this harness.
+
+For paired targeted/untargeted comparisons, use the common eligible tool roster,
+or report Genie 3 as a separate targeted-only stratum. Do not invent hotspots or
+disable the guard to make the rosters appear identical; record exclusions in the
+comparison.
+
 ## Quick start
 
 Copy and edit one of the repository examples:

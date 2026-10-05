@@ -277,6 +277,155 @@ def test_lossy_cif_to_pdb_refused(target, tmp_path, loss):
     assert not (tmp_path / "pdb").exists()
 
 
+@pytest.fixture
+def cif_target(target, tmp_path):
+    target = structure_target(target, tmp_path)
+    directory = tmp_path / "strict-cif"
+    materialize_target(target, output_dir=directory, formats=["cif"])
+    return target.model_copy(
+        update={
+            "target": target.target.model_copy(
+                update={"structure_pdb": None, "structure_cif": directory / "target.cif"}
+            )
+        }
+    )
+
+
+def test_cif_conversion_reports_independent_blockers_without_changing_source(cif_target, tmp_path):
+    from biotite.structure.io import pdbx
+
+    path = cif_target.target.structure_cif
+    document = pdbx.CIFFile.read(path)
+    document.block["struct"] = pdbx.CIFCategory({"title": ["retained original metadata"]})
+    document.block["cell"] = pdbx.CIFCategory(
+        {
+            "length_a": ["20"],
+            "length_b": ["20"],
+            "length_c": ["20"],
+            "angle_alpha": ["90"],
+            "angle_beta": ["90"],
+            "angle_gamma": ["90"],
+        }
+    )
+    site = document.block["atom_site"]
+    del site["auth_comp_id"]
+    site["label_seq_id"] = ["7", "8", "11", "101"]
+    site["label_entity_id"] = ["1", "1", "?", "?"]
+    site["Cartn_x"] = ["1.00000001", "4", "7", "10"]
+    site["unretained_annotation"] = ["custom"] * 4
+    document.write(path)
+    before = path.read_bytes()
+
+    with pytest.raises(ConfigPreflightError) as caught:
+        materialize_target(cif_target, output_dir=tmp_path / "pdb", formats=["pdb"])
+
+    blockers = caught.value.blockers
+    by_code = {}
+    for blocker in blockers:
+        by_code.setdefault(blocker["code"], []).append(blocker)
+    assert {item["category"] for item in by_code["unsupported_category"]} == {"struct"}
+    assert set(by_code["unit_cell"][0]["fields"]) == {
+        "_cell.length_a", "_cell.length_b", "_cell.length_c",
+        "_cell.angle_alpha", "_cell.angle_beta", "_cell.angle_gamma",
+    }
+    assert by_code["missing_field"][0]["fields"] == ("_atom_site.auth_comp_id",)
+    assert [item["row"] for item in by_code["entity_assignment"]] == [1, 2]
+    mismatch = by_code["identity_mismatch"][0]
+    assert mismatch["row"] == 2
+    assert mismatch["values"] == {
+        "_atom_site.auth_seq_id": "7", "_atom_site.label_seq_id": "8",
+    }
+    assert mismatch["context"]["_atom_site.auth_asym_id"] == "A"
+    assert mismatch["context"]["_atom_site.pdbx_PDB_ins_code"] == "A"
+    assert by_code["numeric_precision"][0]["values"] == {"_atom_site.Cartn_x": "1.00000001"}
+    assert by_code["unsupported_field"][0]["fields"] == ("_atom_site.unretained_annotation",)
+    assert path.read_bytes() == before
+    assert not (tmp_path / "pdb").exists()
+    assert not list(tmp_path.glob(".pdb-*"))
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        ("auth_asym_id", "auth_seq_id", "auth_comp_id", "auth_atom_id"),
+        ("label_asym_id", "label_seq_id", "label_comp_id", "label_atom_id"),
+        ("Cartn_x", "occupancy", "B_iso_or_equiv", "pdbx_PDB_model_num"),
+    ],
+)
+def test_cif_conversion_names_missing_fields_before_structure_parsing(cif_target, tmp_path, missing):
+    from biotite.structure.io import pdbx
+
+    path = cif_target.target.structure_cif
+    document = pdbx.CIFFile.read(path)
+    for field in missing:
+        del document.block["atom_site"][field]
+    document.write(path)
+    before = path.read_bytes()
+
+    with pytest.raises(ConfigPreflightError) as caught:
+        materialize_target(cif_target, output_dir=tmp_path / "pdb", formats=["pdb"])
+
+    assert {
+        blocker["fields"][0]
+        for blocker in caught.value.blockers
+        if blocker["code"] == "missing_field"
+    } == {f"_atom_site.{field}" for field in missing}
+    assert path.read_bytes() == before
+    assert not (tmp_path / "pdb").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "code"),
+    [
+        ("Cartn_x", "?", "invalid_number"),
+        ("occupancy", "NaN", "numeric_precision"),
+        ("label_alt_id", "B", "alternate_location"),
+        ("pdbx_PDB_model_num", "2", "model_number"),
+    ],
+)
+def test_cif_conversion_reports_row_values_before_structure_parsing(
+    cif_target, tmp_path, field, value, code
+):
+    from biotite.structure.io import pdbx
+
+    path = cif_target.target.structure_cif
+    document = pdbx.CIFFile.read(path)
+    values = document.block["atom_site"][field].as_array(str).tolist()
+    values[1] = value
+    document.block["atom_site"][field] = values
+    document.write(path)
+
+    with pytest.raises(ConfigPreflightError) as caught:
+        materialize_target(cif_target, output_dir=tmp_path / "pdb", formats=["pdb"])
+
+    blocker = next(item for item in caught.value.blockers if item["code"] == code)
+    assert blocker["row"] == 2
+    assert blocker["fields"] == (f"_atom_site.{field}",)
+    assert blocker["values"] == {f"_atom_site.{field}": value}
+    assert blocker["context"]["_atom_site.auth_seq_id"] == "7"
+    assert blocker["context"]["_atom_site.pdbx_PDB_ins_code"] == "A"
+    assert not (tmp_path / "pdb").exists()
+
+
+def test_cif_conversion_missing_atom_site_stops_before_row_checks(cif_target, tmp_path):
+    from biotite.structure.io import pdbx
+
+    path = cif_target.target.structure_cif
+    document = pdbx.CIFFile.read(path)
+    document.block["struct"] = pdbx.CIFCategory({"title": ["metadata without coordinates"]})
+    del document.block["atom_site"]
+    document.write(path)
+
+    with pytest.raises(ConfigPreflightError) as caught:
+        materialize_target(cif_target, output_dir=tmp_path / "pdb", formats=["pdb"])
+
+    assert {(item["code"], item["category"]) for item in caught.value.blockers} == {
+        ("unsupported_category", "struct"),
+        ("missing_category", "atom_site"),
+    }
+    assert not (tmp_path / "pdb").exists()
+
+
 @pytest.mark.skipif(
     not os.environ.get("CHAI_TEST_IMAGE"), reason="opt-in CPU-only container parser check"
 )

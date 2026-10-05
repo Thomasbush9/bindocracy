@@ -121,6 +121,21 @@ it as, and refuse anything you cannot map. A tool with no way to express one
 query is the campaign target. An a3m for something else is a well-formed file
 that folds the wrong target and looks entirely normal.
 
+**Keep the canonical rich CIF separate from PDB conversion inputs.** BoltzGen
+needs polymer/entity metadata that PDB cannot represent. Do not strip
+`target.structure_cif` to make another tool's conversion succeed. Prefer an
+explicit target PDB from the original source, or a separately prepared and
+reviewed coordinate-only representation with its source/provenance retained;
+keep the rich CIF configured for consumers that need it.
+
+`target materialize` remains lossless and refuses unsupported conversion.
+For CIF-to-PDB, it reports independently checkable blockers together: qualified
+category/field names, one-based atom rows, and offending values/identity context.
+Python callers can inspect the raised `ConfigPreflightError`'s `blockers` facts
+for these structured conversion refusals. Malformed document syntax can still
+stop parsing immediately. Refusal does not rewrite the source or publish a
+partial representation; it is not permission to discard the named metadata.
+
 ### 3. `tool_plan` — the shape of a run
 
 ```python

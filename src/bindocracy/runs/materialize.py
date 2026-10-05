@@ -109,7 +109,150 @@ def _chai(path: Path, records: list[tuple[str, str]], source: str) -> None:
         raise ConfigPreflightError("Chai parquet did not retain its input records")
 
 
-def _read_structure(path: Path, kind: str):
+class _CifConversionError(ConfigPreflightError):
+    """Lossless-conversion refusal with field names and one-based atom-site rows."""
+
+    def __init__(self, blockers: list[dict]):
+        self.blockers = tuple(blockers)
+        details = []
+        for blocker in blockers:
+            facts = {key: value for key, value in blocker.items() if key not in {"code", "message"}}
+            details.append(f"- [{blocker['code']}] {blocker['message']}: {facts}")
+        super().__init__("Strict mmCIF-to-PDB conversion refused:\n" + "\n".join(details))
+
+
+def _check_cif_to_pdb(document) -> None:
+    """Collect independent raw-CIF blockers before the atom parser can infer fields."""
+    from decimal import Decimal, InvalidOperation
+
+    blockers: list[dict] = []
+    for category in sorted(set(document.block) - {"atom_site"}):
+        unit_cell = category == "cell"
+        blockers.append(
+            {
+                "code": "unit_cell" if unit_cell else "unsupported_category",
+                "message": "PDB conversion cannot retain this CIF category",
+                "category": category,
+                "fields": tuple(f"_{category}.{field}" for field in document.block[category]),
+            }
+        )
+    if "atom_site" not in document.block:
+        blockers.append(
+            {
+                "code": "missing_category",
+                "message": "CIF coordinates require atom_site",
+                "category": "atom_site",
+            }
+        )
+        raise _CifConversionError(blockers)
+
+    site = document.block["atom_site"]
+    columns = {field: site[field].as_array(str) for field in site}
+    numeric = {
+        "Cartn_x": 3, "Cartn_y": 3, "Cartn_z": 3, "occupancy": 2, "B_iso_or_equiv": 2,
+    }
+    pairs = [
+        (f"auth_{suffix}", f"label_{suffix}")
+        for suffix in ("asym_id", "seq_id", "comp_id", "atom_id")
+    ]
+    required = set(numeric) | {field for pair in pairs for field in pair} | {"pdbx_PDB_model_num"}
+    for field in sorted(required - columns.keys()):
+        blockers.append(
+            {
+                "code": "missing_field",
+                "message": "Required CIF field is absent; no values or identities are inferred",
+                "fields": (f"_atom_site.{field}",),
+            }
+        )
+    allowed = required | {
+        "group_PDB", "id", "type_symbol", "label_alt_id", "label_entity_id",
+        "pdbx_PDB_ins_code", "pdbx_formal_charge",
+    }
+    for field in sorted(columns.keys() - allowed):
+        blockers.append(
+            {
+                "code": "unsupported_field",
+                "message": "PDB conversion cannot retain this atom field",
+                "fields": (f"_atom_site.{field}",),
+            }
+        )
+    lengths = {field: len(values) for field, values in columns.items()}
+    if len(set(lengths.values())) > 1:
+        blockers.append(
+            {
+                "code": "column_length",
+                "message": "Atom-site columns have inconsistent row counts; row checks are unsafe",
+                "values": {f"_atom_site.{field}": length for field, length in lengths.items()},
+            }
+        )
+        raise _CifConversionError(blockers)
+
+    def row_blocker(code: str, message: str, index: int, fields: tuple[str, ...]) -> None:
+        blockers.append(
+            {
+                "code": code,
+                "message": message,
+                "fields": tuple(f"_atom_site.{field}" for field in fields),
+                "row": index + 1,
+                "values": {f"_atom_site.{field}": str(columns[field][index]) for field in fields},
+                "context": {
+                    f"_atom_site.{field}": str(columns[field][index])
+                    for field in (
+                        "id", "auth_asym_id", "label_asym_id", "auth_seq_id", "label_seq_id",
+                        "pdbx_PDB_ins_code", "auth_comp_id", "label_comp_id",
+                        "auth_atom_id", "label_atom_id",
+                    )
+                    if field in columns
+                },
+            }
+        )
+
+    for field, code, message in (
+        ("label_entity_id", "entity_assignment", "PDB cannot retain CIF entity assignments"),
+        ("label_alt_id", "alternate_location", "Conversion would lose alternate-location identifiers"),
+        ("pdbx_PDB_model_num", "model_number", "Conversion requires exactly one model numbered 1"),
+    ):
+        for index, raw in enumerate(columns.get(field, ())):
+            if field == "pdbx_PDB_model_num":
+                invalid = raw != "1"
+            elif field == "label_alt_id":
+                invalid = bool(str(raw).strip(" .?"))
+            else:
+                invalid = raw not in {"", ".", "?"}
+            if invalid:
+                row_blocker(code, message, index, (field,))
+
+    for field, places in numeric.items():
+        for index, raw in enumerate(columns.get(field, ())):
+            try:
+                value = Decimal(raw)
+                exact = value.is_finite() and value == value.quantize(Decimal(10) ** -places)
+            except InvalidOperation:
+                row_blocker(
+                    "invalid_number", "CIF value cannot be represented as a PDB number", index, (field,)
+                )
+                continue
+            if not exact:
+                row_blocker(
+                    "numeric_precision", "PDB cannot retain this CIF numeric value exactly",
+                    index, (field,),
+                )
+    for author, label in pairs:
+        if author not in columns or label not in columns:
+            continue
+        for index, (author_value, label_value) in enumerate(
+            zip(columns[author], columns[label], strict=True)
+        ):
+            if author_value != label_value:
+                row_blocker(
+                    "identity_mismatch", "PDB cannot retain differing author/label identities",
+                    index, (author, label),
+                )
+    if blockers:
+        raise _CifConversionError(blockers)
+
+
+def _read_structure(path: Path, kind: str, *, strict_pdb: bool = False):
     try:
         from biotite.structure.io import pdb, pdbx
     except ImportError as exc:
@@ -130,6 +273,8 @@ def _read_structure(path: Path, kind: str):
                 raise ConfigPreflightError(
                     "structure materialization requires exactly one CIF block"
                 )
+            if strict_pdb:
+                _check_cif_to_pdb(document)
             site = document.block["atom_site"]
             if set(site["pdbx_PDB_model_num"].as_array(str)) != {"1"}:
                 raise ConfigPreflightError(
@@ -189,7 +334,9 @@ def _structure(
     import numpy as np
     from biotite.structure.io import pdb, pdbx
 
-    document, atoms = _read_structure(source, source_kind)
+    document, atoms = _read_structure(
+        source, source_kind, strict_pdb=source_kind == "cif" and kind == "pdb"
+    )
     _validate_structure(atoms, sequence, chain)
     if source_kind == kind:
         output.write_bytes(source.read_bytes())
@@ -222,67 +369,6 @@ def _structure(
             mask=np.full(len(atoms), pdbx.MaskValue.MISSING),
         )
     else:
-        if set(document.block) != {"atom_site"}:
-            raise ConfigPreflightError(
-                "mmCIF contains metadata/connectivity categories this conversion cannot retain"
-            )
-        site = document.block["atom_site"]
-        if "label_entity_id" in site and any(
-            value not in {"", ".", "?"} for value in site["label_entity_id"].as_array(str)
-        ):
-            raise ConfigPreflightError("PDB conversion cannot retain mmCIF entity assignments")
-        from decimal import Decimal
-
-        for field, places in (
-            ("Cartn_x", 3),
-            ("Cartn_y", 3),
-            ("Cartn_z", 3),
-            ("occupancy", 2),
-            ("B_iso_or_equiv", 2),
-        ):
-            if field not in site:
-                raise ConfigPreflightError(
-                    f"mmCIF is missing {field}; no numeric values are inferred"
-                )
-            for raw in site[field].as_array(str):
-                value = Decimal(raw)
-                if not value.is_finite() or value != value.quantize(Decimal(10) ** -places):
-                    raise ConfigPreflightError(f"PDB cannot retain the precision of mmCIF {field}")
-        for suffix in ("asym_id", "seq_id", "comp_id", "atom_id"):
-            author, label = f"auth_{suffix}", f"label_{suffix}"
-            if (
-                author not in site
-                or label not in site
-                or not np.array_equal(site[author].as_array(str), site[label].as_array(str))
-            ):
-                raise ConfigPreflightError(
-                    "mmCIF author/label identities differ or are missing; PDB cannot retain both"
-                )
-        allowed = {
-            "group_PDB",
-            "id",
-            "type_symbol",
-            "label_atom_id",
-            "label_alt_id",
-            "label_comp_id",
-            "label_asym_id",
-            "label_entity_id",
-            "label_seq_id",
-            "pdbx_PDB_ins_code",
-            "Cartn_x",
-            "Cartn_y",
-            "Cartn_z",
-            "occupancy",
-            "B_iso_or_equiv",
-            "pdbx_formal_charge",
-            "auth_seq_id",
-            "auth_comp_id",
-            "auth_asym_id",
-            "auth_atom_id",
-            "pdbx_PDB_model_num",
-        }
-        if set(site) - allowed:
-            raise ConfigPreflightError("mmCIF has atom fields PDB cannot retain")
         target = pdb.PDBFile()
         target.set_structure(atoms, hybrid36=False)
     target.write(output)

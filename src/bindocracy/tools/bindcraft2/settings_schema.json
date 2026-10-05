@@ -1,0 +1,955 @@
+{
+  "campaign": [
+    "aa_bias",
+    "anneal_steps",
+    "archive_trajectories",
+    "attention_backend",
+    "auto_multi_gpu",
+    "autotune",
+    "autotune_loss_weights",
+    "betasheet_reopt_extra_anneal_steps",
+    "betasheet_reopt_extra_refine_steps",
+    "betasheet_reopt_recycles",
+    "betasheet_reopt_trigger",
+    "bigbang",
+    "bigbang_initialization",
+    "binder_chain",
+    "binder_lengths",
+    "binder_name",
+    "binder_scaffold",
+    "binder_shapes",
+    "campaign_name",
+    "campaign_seed",
+    "compile_next_length",
+    "copies",
+    "core",
+    "crop_fasta_sequence",
+    "cyclic_offset_mode",
+    "cyclize_peptide",
+    "design_dropout",
+    "design_models",
+    "design_recycles",
+    "design_workers",
+    "desperation",
+    "desperation_trajectories",
+    "detarget_check_interval",
+    "disulfide_distance",
+    "disulfide_sequence_separation",
+    "disulfide_sigma",
+    "disulfide_staple",
+    "disulfide_temperature",
+    "domain_contact_cutoff",
+    "domain_linker_fix_cut",
+    "domain_linker_gap",
+    "domain_linker_helix_weight",
+    "domain_linker_sharpness",
+    "domain_pae_margin",
+    "domain_rg_weight",
+    "domain_sep_weight",
+    "enough_passing_sequences",
+    "exposed_loops_distinguish_sheets",
+    "exposed_loops_measure",
+    "filters",
+    "forced_targeting",
+    "forced_targeting_shell",
+    "gpu_ids",
+    "harden_steps",
+    "hash_design_names",
+    "humanization_coupling_weight",
+    "humanization_hydro_weight",
+    "humanization_mhc2_weight",
+    "humanization_species",
+    "humanize",
+    "idr_crop_count",
+    "induced_fit_delta",
+    "induced_fit_interface_cutoff",
+    "induced_fit_monomer_adaptive",
+    "induced_fit_monomer_chunk",
+    "induced_fit_monomer_plddt",
+    "induced_fit_monomer_steps",
+    "induced_fit_mpnn_designed_share",
+    "induced_fit_mpnn_shell",
+    "induced_fit_mpnn_threshold",
+    "induced_fit_steps",
+    "induced_fit_tm_target",
+    "initial_guess",
+    "interface_contact_distance",
+    "kept_sequences",
+    "length_bucket_size",
+    "losses",
+    "max_binder_chain_breaks_final",
+    "max_binder_free_cysteines_final",
+    "max_coldspot_contact_final",
+    "max_cyclic_closure_distance_final",
+    "max_detarget_interface_residues_final",
+    "max_detarget_iptm",
+    "max_detarget_iptm_anneal",
+    "max_detarget_iptm_final",
+    "max_detarget_iptm_harden",
+    "max_detarget_iptm_mutate",
+    "max_detarget_iptm_refine",
+    "max_detarget_iptm_screen",
+    "max_detarget_rounds",
+    "max_domain_size",
+    "max_domains",
+    "max_exposed_loop_fraction_final",
+    "max_helix_fraction_final",
+    "max_induced_fit_tm_final",
+    "max_interdomain_contact_final",
+    "max_ipae_final",
+    "max_mhc_anchor_score_final",
+    "max_off_epitope_contact_final",
+    "max_off_paratope_contact_final",
+    "max_oligomer_symmetry_rmsd_final",
+    "max_protease_site_score_final",
+    "max_scaffold_framework_rmsd_final",
+    "max_surface_hydrophobicity_final",
+    "max_termini_distance_final",
+    "max_terminus_exposure_final",
+    "max_trajectories",
+    "max_workers_per_gpu",
+    "min_binder_disulfides_final",
+    "min_c_terminus_away_cosine_final",
+    "min_domain_separation_ratio_final",
+    "min_domain_size",
+    "min_epitope_residues_contacted_final",
+    "min_framework_packing_final",
+    "min_hotspot_contact_final",
+    "min_induced_fit_interface_rmsd_final",
+    "min_interface_buried_area_final",
+    "min_iptm_anneal",
+    "min_iptm_final",
+    "min_iptm_harden",
+    "min_iptm_mutate",
+    "min_iptm_refine",
+    "min_iptm_screen",
+    "min_monomer_plddt_final",
+    "min_n_terminus_away_cosine_final",
+    "min_plddt_anneal",
+    "min_plddt_final",
+    "min_plddt_harden",
+    "min_plddt_mutate",
+    "min_plddt_refine",
+    "min_plddt_screen",
+    "min_ptm_final",
+    "min_receptor_chains_contacted_final",
+    "min_scaffold_sequence_retained_final",
+    "min_target_crop_length_final",
+    "min_target_plddt_final",
+    "min_termini_away_cosine_final",
+    "mixed_topology",
+    "modality",
+    "mpnn_fix_linker",
+    "mpnn_model",
+    "mpnn_variant",
+    "multitarget_best_round",
+    "multitarget_cumulative_filter",
+    "multitarget_filter_models",
+    "multitarget_merged_gradient_budget",
+    "multitarget_merged_gradients",
+    "multitarget_rounds_per_target",
+    "multitarget_steps",
+    "multitarget_swap_patience",
+    "multitarget_swap_threshold",
+    "multitarget_tied_redesign",
+    "multitarget_warmup_patience",
+    "mutate_positions",
+    "mutate_steps",
+    "n_domains",
+    "non_contact_distance",
+    "number_of_final_designs",
+    "oligomer_tie",
+    "parameter_sweep",
+    "paratope_conformations",
+    "project_folder",
+    "protease_stable",
+    "redesign_interface",
+    "refine_steps",
+    "relax_accepted_designs",
+    "relax_learning_rate",
+    "relax_min_sep",
+    "relax_overlap_tol",
+    "relax_restraint_backbone",
+    "relax_restraint_sidechain",
+    "relax_steps",
+    "relax_weight_bond",
+    "relax_weight_clash",
+    "resume",
+    "save_binder_monomers",
+    "save_design_animations",
+    "save_design_frames",
+    "save_design_sequences",
+    "save_design_trajectory",
+    "save_failed_refolds",
+    "save_failed_trajectories",
+    "save_loss_plots",
+    "screen_steps",
+    "sequence_candidates",
+    "sparse_output",
+    "subbatch_size",
+    "target",
+    "target_chain",
+    "target_flexibility",
+    "targets",
+    "termini_accessible",
+    "termini_distance_threshold",
+    "termini_together",
+    "trajectory_only",
+    "use_cueq",
+    "validation_crop_flank",
+    "validation_model",
+    "validation_models",
+    "validation_recycles",
+    "weights_binder_coldspot",
+    "weights_binder_contacts",
+    "weights_binder_helicity",
+    "weights_binder_intra_coldspot",
+    "weights_binder_intra_hotspot",
+    "weights_binder_pae",
+    "weights_c_terminus_away",
+    "weights_coldspot_repel",
+    "weights_collective_softness",
+    "weights_com_distance",
+    "weights_compactness",
+    "weights_distogram_cce",
+    "weights_disulfide",
+    "weights_experimentally_resolved",
+    "weights_exposed_loops",
+    "weights_exposed_termini",
+    "weights_fold_switching",
+    "weights_humanization",
+    "weights_induced_fit_global",
+    "weights_induced_fit_interface",
+    "weights_interface_contacts",
+    "weights_interface_pae",
+    "weights_iptm_loss",
+    "weights_multidomain",
+    "weights_n_terminus_away",
+    "weights_non_contact",
+    "weights_non_helical",
+    "weights_plddt_loss",
+    "weights_protease_sites",
+    "weights_ptm_loss",
+    "weights_sequence_entropy",
+    "weights_target_helicity",
+    "weights_target_plddt",
+    "weights_target_rigidity",
+    "weights_target_rmsd",
+    "weights_termini_angle",
+    "weights_termini_distance",
+    "worker_launch_stagger",
+    "workers_per_gpu"
+  ],
+  "filter_entry": [
+    "higher",
+    "mandatory",
+    "params",
+    "prediction_state",
+    "threshold"
+  ],
+  "filters": {
+    "All_Atom_Clashes": [
+      "cutoff",
+      "prediction_state"
+    ],
+    "Backbone_Clashes": [
+      "cutoff",
+      "prediction_state"
+    ],
+    "Binder_BetaSheet_Fraction": [
+      "binder",
+      "prediction_state"
+    ],
+    "Binder_Chain_Breaks": [
+      "binder",
+      "maximum_bond",
+      "minimum_bond",
+      "prediction_state"
+    ],
+    "Binder_Cysteines": [
+      "binder",
+      "prediction_state",
+      "reading"
+    ],
+    "Binder_Disulfides": [
+      "binder",
+      "distance",
+      "prediction_state",
+      "sequence_separation",
+      "tolerance"
+    ],
+    "Binder_Extinction": [
+      "binder",
+      "prediction_state"
+    ],
+    "Binder_Free_Cysteines": [
+      "binder",
+      "prediction_state"
+    ],
+    "Binder_Helix_Fraction": [
+      "binder",
+      "prediction_state"
+    ],
+    "Binder_Length": [
+      "binder",
+      "prediction_state",
+      "reading"
+    ],
+    "Binder_Loop_Fraction": [
+      "binder",
+      "prediction_state"
+    ],
+    "Binder_Mass_kDa": [
+      "binder",
+      "prediction_state",
+      "reading"
+    ],
+    "Binder_Net_Charge": [
+      "binder",
+      "prediction_state",
+      "reading"
+    ],
+    "Binder_RMSD": [
+      "binder",
+      "prediction_state",
+      "reference_state"
+    ],
+    "Binder_pI": [
+      "binder",
+      "prediction_state",
+      "reading"
+    ],
+    "C_Terminus_Away_Cosine": [
+      "binder",
+      "prediction_state",
+      "target",
+      "terminus"
+    ],
+    "Coldspot_Contact_Fraction": [
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Cyclic_Closure_Distance": [
+      "binder",
+      "prediction_state"
+    ],
+    "Domain_Separation_Ratio": [
+      "binder",
+      "domain_contact_cutoff",
+      "min_domain_size",
+      "n_domains",
+      "prediction_state"
+    ],
+    "Epitope_Residues_Contacted": [
+      "binder",
+      "cutoff",
+      "epitope_cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Exposed_Loop_Fraction": [
+      "binder",
+      "prediction_state"
+    ],
+    "Framework_Packing_Fraction": [
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "sequence_separation"
+    ],
+    "Hotspot_Contact_Fraction": [
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Induced_Fit_Interface_RMSD": [
+      "binder",
+      "cutoff",
+      "interface_residues",
+      "prediction_state",
+      "reference_state",
+      "target"
+    ],
+    "Induced_Fit_RMSD": [
+      "binder",
+      "prediction_state",
+      "reference_state"
+    ],
+    "Induced_Fit_TM": [
+      "binder",
+      "prediction_state",
+      "reference_state"
+    ],
+    "Interdomain_Contact_Fraction": [
+      "binder",
+      "domain_contact_cutoff",
+      "min_domain_size",
+      "n_domains",
+      "prediction_state"
+    ],
+    "Interface_A_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_BetaSheet_Fraction": [
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "secondary_structure_code",
+      "target"
+    ],
+    "Interface_BuriedArea": [
+      "binder",
+      "prediction_state"
+    ],
+    "Interface_BuriedArea_Fraction": [
+      "binder",
+      "prediction_state"
+    ],
+    "Interface_C_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_D_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_E_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_F_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_G_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_H_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_Helix_Fraction": [
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "secondary_structure_code",
+      "target"
+    ],
+    "Interface_Hydrophobicity": [
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_I_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_K_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_L_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_Loop_Fraction": [
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "secondary_structure_code",
+      "target"
+    ],
+    "Interface_M_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_N_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_P_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_Q_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_R_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_Residues": [
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_Residues_detarget": [
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_S_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_T_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_V_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_W_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Interface_Y_Count": [
+      "amino_acid",
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "MHC_Anchor_Score": [
+      "binder",
+      "coupling_weight",
+      "hydrophobicity_weight",
+      "mhc_class_ii_weight",
+      "prediction_state",
+      "species",
+      "temperature"
+    ],
+    "N_Terminus_Away_Cosine": [
+      "binder",
+      "prediction_state",
+      "target",
+      "terminus"
+    ],
+    "Off_Epitope_Contact_Fraction": [
+      "binder",
+      "cutoff",
+      "epitope_cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Off_Paratope_Contact_Fraction": [
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "Oligomer_Symmetry_RMSD": [
+      "binder",
+      "prediction_state"
+    ],
+    "Protease_Site_Score": [
+      "binder",
+      "prediction_state"
+    ],
+    "Receptor_Chains_Contacted": [
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "SS_pLDDT": [
+      "binder",
+      "prediction_state"
+    ],
+    "Scaffold_Framework_RMSD": [
+      "binder",
+      "prediction_state",
+      "scaffold",
+      "scaffold_chain",
+      "scaffold_edits"
+    ],
+    "Scaffold_Sequence_Retained_Fraction": [
+      "binder",
+      "prediction_state",
+      "scaffold",
+      "scaffold_chain",
+      "scaffold_edits"
+    ],
+    "Surface_Hydrophobicity": [
+      "binder",
+      "prediction_state"
+    ],
+    "Target_Crop_Length": [
+      "prediction_state",
+      "target"
+    ],
+    "Target_RMSD": [
+      "prediction_state",
+      "target"
+    ],
+    "Target_pLDDT": [
+      "chain",
+      "prediction_state"
+    ],
+    "Termini_Away_Cosine": [
+      "binder",
+      "prediction_state",
+      "target",
+      "terminus"
+    ],
+    "Termini_Distance": [
+      "binder",
+      "prediction_state"
+    ],
+    "Terminus_Exposure": [
+      "binder",
+      "prediction_state",
+      "terminus_length"
+    ],
+    "Unbound_Binder_pLDDT": [
+      "chain",
+      "prediction_state"
+    ],
+    "i_pAE": [
+      "binder",
+      "prediction_state",
+      "target"
+    ],
+    "i_pAE_detarget": [
+      "binder",
+      "prediction_state",
+      "target"
+    ],
+    "i_pDAE": [
+      "binder",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "i_pTM": [
+      "prediction_state"
+    ],
+    "i_pTM_detarget": [
+      "prediction_state"
+    ],
+    "pTM": [
+      "prediction_state"
+    ]
+  },
+  "loss_entry": [
+    "params",
+    "prediction_state"
+  ],
+  "losses": {
+    "binder_coldspot": [
+      "binder",
+      "contacts_per_residue",
+      "cutoff",
+      "designed_only",
+      "prediction_state",
+      "target"
+    ],
+    "binder_contacts": [
+      "chain",
+      "contact_residue_count",
+      "contacts_per_residue",
+      "cutoff",
+      "per_protomer",
+      "prediction_state",
+      "sequence_separation"
+    ],
+    "binder_helicity": [
+      "chain",
+      "cutoff",
+      "prediction_state"
+    ],
+    "binder_intra_coldspot": [
+      "binder",
+      "contacts_per_residue",
+      "cutoff",
+      "prediction_state",
+      "sequence_separation"
+    ],
+    "binder_intra_hotspot": [
+      "binder",
+      "contacts_per_residue",
+      "cutoff",
+      "prediction_state",
+      "sequence_separation"
+    ],
+    "binder_pae": [
+      "chain",
+      "domain_ids",
+      "per_protomer",
+      "prediction_state"
+    ],
+    "c_terminus_away": [
+      "binder",
+      "prediction_state",
+      "target"
+    ],
+    "coldspot_repel": [
+      "binder",
+      "contacts_per_residue",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "collective_softness": [
+      "chain",
+      "contact_decay",
+      "damping",
+      "eps",
+      "power_iterations",
+      "prediction_state"
+    ],
+    "com_distance": [
+      "binder",
+      "eps",
+      "prediction_state",
+      "radius_ratio",
+      "target"
+    ],
+    "compactness": [
+      "chain",
+      "eps",
+      "per_protomer",
+      "prediction_state"
+    ],
+    "distogram_cce": [
+      "chain",
+      "prediction_state"
+    ],
+    "disulfide": [
+      "chain",
+      "distance",
+      "prediction_state",
+      "sequence_separation",
+      "sigma",
+      "temperature"
+    ],
+    "experimentally_resolved": [
+      "chain",
+      "prediction_state"
+    ],
+    "exposed_loops": [
+      "chain",
+      "distinguish_sheets",
+      "measure",
+      "plddt_temperature",
+      "plddt_threshold",
+      "prediction_state",
+      "window"
+    ],
+    "exposed_termini": [
+      "chain",
+      "prediction_state",
+      "terminus_length"
+    ],
+    "fold_switching": [
+      "binder_shapes",
+      "chain",
+      "tm_target"
+    ],
+    "humanization": [
+      "chain",
+      "coupling_weight",
+      "hydrophobicity_weight",
+      "mhc_class_ii_weight",
+      "prediction_state",
+      "species",
+      "temperature"
+    ],
+    "induced_fit_global": [
+      "chain",
+      "prediction_state",
+      "reference_state",
+      "tm_target"
+    ],
+    "induced_fit_interface": [
+      "chain",
+      "cutoff",
+      "interface_mask",
+      "interface_rmsd_target",
+      "prediction_state",
+      "reference_state",
+      "target"
+    ],
+    "interface_contacts": [
+      "binder",
+      "contact_residue_count",
+      "contacts_per_residue",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "interface_pae": [
+      "binder",
+      "prediction_state",
+      "target"
+    ],
+    "iptm_loss": [
+      "prediction_state"
+    ],
+    "multidomain": [
+      "chain",
+      "domain_contact_cutoff",
+      "domain_ids",
+      "domain_linker_gap",
+      "domain_linker_helix_weight",
+      "domain_linker_sharpness",
+      "domain_pae_margin",
+      "domain_rg_weight",
+      "domain_sep_weight",
+      "max_domain_size",
+      "max_domains",
+      "min_domain_size",
+      "n_domains",
+      "prediction_state",
+      "seed"
+    ],
+    "n_terminus_away": [
+      "binder",
+      "prediction_state",
+      "target"
+    ],
+    "non_contact": [
+      "binder",
+      "contacts_per_residue",
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "non_helical": [
+      "chain",
+      "cutoff",
+      "prediction_state"
+    ],
+    "plddt_loss": [
+      "chain",
+      "prediction_state"
+    ],
+    "protease_sites": [
+      "chain",
+      "prediction_state"
+    ],
+    "ptm_loss": [
+      "prediction_state"
+    ],
+    "sequence_entropy": [
+      "chain",
+      "prediction_state"
+    ],
+    "target_helicity": [
+      "cutoff",
+      "prediction_state",
+      "target"
+    ],
+    "target_plddt": [
+      "prediction_state",
+      "target"
+    ],
+    "target_rigidity": [
+      "prediction_state",
+      "target"
+    ],
+    "target_rmsd": [
+      "prediction_state",
+      "target"
+    ],
+    "termini_angle": [
+      "binder",
+      "prediction_state",
+      "target"
+    ],
+    "termini_distance": [
+      "chain",
+      "prediction_state",
+      "threshold_distance"
+    ]
+  },
+  "provenance": {
+    "extraction": "bindcraft.settings: known_campaign_settings(), TARGET_SETTING_NAMES, METRIC_ENTRY_NAMES, FILTER_ENTRY_NAMES; metric_parameter_names() for every REGISTERED_LOSSES and REGISTERED_FILTER_METRICS entry. Import with JAX_PLATFORMS=cpu in the qualified image; never import campaign or run design.",
+    "scope": "Accepted keys only; values, preset expansion, and runtime prerequisites remain upstream checks.",
+    "source_revision": "d5bae16e9fee95f4c97fc16bc05dcbde4ccb885f-dirty",
+    "source_sha256": {
+      "bindcraft/filters.py": "737225ef652fd6a8b5501c7699e0e7a1a43f3712e07ffca98a6f10c2cc7adb0b",
+      "bindcraft/loss.py": "625f9c4a1eb028aab59d06550994350c05a226d282eac2329d92038bceb3a323",
+      "bindcraft/settings.py": "d88f87212929bfc7a8ae186189eab70a527d04aa2d89f5d6adee1f6af4993cfa",
+      "settings/core/default.json": "4b929f04e58f16d83d058155513bacbcdd8a818da16ac91ea53d9c015212ad22"
+    },
+    "upstream": "https://github.com/PacesaLab/BindCraft2",
+    "version": "1.0.1"
+  },
+  "target": [
+    "chains",
+    "coldspots",
+    "hotspots",
+    "name",
+    "objective",
+    "target_path",
+    "weight"
+  ]
+}

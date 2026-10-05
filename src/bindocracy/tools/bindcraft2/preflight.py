@@ -3,13 +3,18 @@
 BC2 reads one campaign document and one structure, so every check here is about
 one of them disagreeing with the campaign while the run still looks normal.
 
-Four earn their place:
+Five earn their place:
 
 * **Six settings are harness-owned.** The output directory, the design count,
   the trajectory budget, the seed, the resume switch and the whole `targets`
   block are written per task from the campaign and this config. An authored
   value for any of them is a second answer, and it is not the one the run
   would use, because `--set` wins over the document.
+
+* **Settings keys must belong to the qualified consumer schema.** A bundled
+  snapshot of BC2 1.0.1's actual key registries checks campaign settings and
+  nested loss/filter entries without importing GPU libraries. It does not
+  expand presets or validate arbitrary values; those remain upstream checks.
 
 * **The epitope is resolved against the real structure.** BC2 maps each hotspot
   onto the target's author numbering and refuses one it cannot place -- but it
@@ -37,6 +42,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import cache
+from importlib.resources import files
 from pathlib import Path
 
 from bindocracy.config.models import GeneralConfig
@@ -103,6 +110,7 @@ def preflight_bindcraft2(
     settings = _load_json(model.settings.template, "campaign settings")
 
     _require_harness_owned_absent(settings, model.settings.template)
+    _require_known_settings(settings, model.settings.template)
     binder_lengths = _binder_lengths(settings, model.settings.template)
 
     chain_id = general.target.chain_id
@@ -166,6 +174,58 @@ def _load_json(path: Path, described_as: str) -> dict:
             f"BindCraft 2 {described_as} must be a JSON object: {path}"
         )
     return document
+
+
+@cache
+def _settings_schema() -> dict:
+    """The packaged key schema, extracted from the qualified BC2 image.
+
+    Provenance, source hashes, and extraction APIs travel with the snapshot.
+    Refresh it when qualifying a different consumer; do not replace the full
+    registries with the keys occurring in an example campaign.
+    """
+    return json.loads(
+        files("bindocracy.tools.bindcraft2").joinpath("settings_schema.json").read_text()
+    )
+
+
+def _require_known_settings(settings: dict, path: Path) -> None:
+    """Match upstream reject_unrecognized_settings, for keys rather than values.
+
+    Preset selectors and derived shorthand names are included in the snapshot.
+    Loss/filter parameters are accepted per registered metric, not flattened
+    into a single allowlist. No key, including an underscore key, is stripped.
+    """
+    schema = _settings_schema()
+    unknown = [name for name in settings if name not in schema["campaign"]]
+    for block, entry_schema in (("losses", "loss_entry"), ("filters", "filter_entry")):
+        configured = settings.get(block)
+        if not isinstance(configured, dict):
+            continue
+        registry = schema[block]
+        for name, entry in configured.items():
+            prefix = f"{block}.{name}"
+            if name not in registry:
+                unknown.append(prefix)
+                continue
+            if not isinstance(entry, dict):
+                continue
+            unknown.extend(
+                f"{prefix}.{key}" for key in entry if key not in schema[entry_schema]
+            )
+            parameters = entry.get("params")
+            if isinstance(parameters, dict):
+                unknown.extend(
+                    f"{prefix}.params.{key}" for key in parameters if key not in registry[name]
+                )
+    if unknown:
+        provenance = schema["provenance"]
+        raise ConfigPreflightError(
+            f"BindCraft 2 campaign settings {path} contain unrecognized consumer "
+            f"keys: {', '.join(sorted(unknown))}. Checked against BC2 "
+            f"{provenance['version']} ({provenance['source_revision']}); remove "
+            "unsupported keys or qualify an updated schema for a newer consumer."
+        )
 
 
 def _require_harness_owned_absent(settings: dict, path: Path) -> None:

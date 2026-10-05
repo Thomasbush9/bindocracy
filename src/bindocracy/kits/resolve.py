@@ -19,7 +19,7 @@ from typing import Any, Literal
 
 import yaml
 from packaging.specifiers import SpecifierSet
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from bindocracy.kits.bundle import KitRelease, inspect_kit
 from bindocracy.kits.models import KitError, KitManifest, safe_relative
@@ -39,7 +39,7 @@ class KitLock(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    lock_schema: Literal[1] = 1
+    lock_schema: Literal[2] = 2
     digest: str = Field(pattern=_DIGEST)
     kit_root: Path
     bundle_digest: str = Field(pattern=_DIGEST)
@@ -51,6 +51,16 @@ class KitLock(BaseModel):
     runtime: dict[str, Any]
     approved_digest: str | None = Field(default=None, pattern=_DIGEST)
     checks: list[dict[str, Any]]
+
+    @field_validator("lock_schema", mode="before")
+    @classmethod
+    def supported_schema(cls, value: object) -> object:
+        if type(value) is not int or value != 2:
+            raise ValueError(
+                "Unsupported kit lock schema; relock with this harness by resolving "
+                "the kit again and writing a new lock outside the existing bundle"
+            )
+        return value
 
 
 class _Binding(BaseModel):
@@ -91,7 +101,7 @@ def _file_digest(path: Path) -> str:
     digest = hashlib.sha256()
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
-        if _stat_record(before) != _stat_record(os.fstat(stream.fileno())):
+        if not _same_local_file(before, os.fstat(stream.fileno())):
             raise KitError(f"Dependency changed while being opened: {path}")
         size = 0
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -99,22 +109,27 @@ def _file_digest(path: Path) -> str:
             if size > before.st_size or size > _MAX_SOURCE_BYTES:
                 raise KitError(f"Dependency changed or exceeded content-hash limit: {path}")
             digest.update(chunk)
-        if size != before.st_size or _stat_record(before) != _stat_record(os.fstat(stream.fileno())):
+        if size != before.st_size or not _same_local_file(before, os.fstat(stream.fileno())):
             raise KitError(f"Dependency changed while being hashed: {path}")
-    if _stat_record(before) != _stat_record(path.stat(follow_symlinks=False)):
+    if not _same_local_file(before, path.stat(follow_symlinks=False)):
         raise KitError(f"Dependency changed while being hashed: {path}")
     return "sha256:" + digest.hexdigest()
 
 
 def _stat_record(info: os.stat_result) -> dict[str, int]:
+    """Portable persisted identity; shared mounts may have node-local devices."""
     return {
         "mode": info.st_mode,
         "size": info.st_size,
         "mtime_ns": info.st_mtime_ns,
         "ctime_ns": info.st_ctime_ns,
-        "device": info.st_dev,
         "inode": info.st_ino,
     }
+
+
+def _same_local_file(before: os.stat_result, after: os.stat_result) -> bool:
+    # Unlike persisted identity, same-host open/read races must include device.
+    return before.st_dev == after.st_dev and _stat_record(before) == _stat_record(after)
 
 
 def _identity(path: Path, kind: str, files: tuple[str, ...] = ()) -> dict[str, Any]:
@@ -344,7 +359,7 @@ def _resolve(
         checks.append(_check("kit.python", f"Host Python {host} satisfies {manifest.python}"))
     checks.append(_check("kit.approval", "Explicit source digest approved; this is not isolation or publisher authentication" if approved_digest else "Source execution is unapproved; explicit matching bundle digest approval is required", "ready" if approved_digest else "unknown"))
     payload = {
-        "lock_schema": 1,
+        "lock_schema": 2,
         "kit_root": str(release.root),
         "bundle_digest": release.digest,
         "manifest": manifest.model_dump(mode="json"),

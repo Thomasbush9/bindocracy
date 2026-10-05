@@ -3,6 +3,7 @@
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import duckdb
 import pytest
@@ -12,6 +13,7 @@ from typer.testing import CliRunner
 from bindocracy.campaign.plan import PlanError, build_plan, load_plan
 from bindocracy.campaign.plan_cli import app
 from bindocracy.runs.manifest import RunManifest
+from bindocracy.store.records import canonical_json, sha256_text
 
 
 def _request(tmp_path, configs, *, controller_gpus=0, max_total_gpus=2):
@@ -159,6 +161,61 @@ def test_changed_execution_closure_refuses_loading(configs, tmp_path, changed):
         load_plan(request[2] / "plan.json")
     # Cancellation/history must remain possible when execution inputs go away.
     assert load_plan(request[2] / "plan.json", verify=False)["digest"] == plan["digest"]
+
+
+def test_runtime_assets_accept_mount_device_changes(configs, tmp_path, monkeypatch):
+    request = _request(tmp_path, configs)
+    plan = build_plan(*request)
+    interpreter = Path(plan["python"])
+    original_stat = Path.stat
+
+    def remounted_stat(path, *args, **kwargs):
+        info = original_stat(path, *args, **kwargs)
+        if path == interpreter:
+            fields = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+            fields["st_dev"] += 3
+            return SimpleNamespace(**fields)
+        return info
+
+    monkeypatch.setattr(Path, "stat", remounted_stat)
+    assert load_plan(request[2] / "plan.json") == plan
+    assert build_plan(*request) == plan
+
+
+@pytest.mark.parametrize("field", ["st_size", "st_mtime_ns", "st_ctime_ns", "st_ino"])
+def test_runtime_assets_still_reject_portable_stat_drift(configs, tmp_path, monkeypatch, field):
+    request = _request(tmp_path, configs)
+    plan = build_plan(*request)
+    interpreter = Path(plan["python"])
+    original_stat = Path.stat
+
+    def changed_stat(path, *args, **kwargs):
+        info = original_stat(path, *args, **kwargs)
+        if path == interpreter:
+            fields = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+            fields[field] += 1
+            return SimpleNamespace(**fields)
+        return info
+
+    monkeypatch.setattr(Path, "stat", changed_stat)
+    with pytest.raises(PlanError, match="runtime asset identity changed"):
+        load_plan(request[2] / "plan.json")
+
+
+@pytest.mark.parametrize("verify", [True, False])
+def test_legacy_device_bound_plan_requires_replanning(configs, tmp_path, verify):
+    request = _request(tmp_path, configs)
+    plan = build_plan(*request)
+    plan["schema_version"] = 1
+    plan["runtime_assets"][plan["python"]]["stat"]["device"] = Path(plan["python"]).stat().st_dev
+    plan["digest"] = sha256_text(
+        canonical_json({key: value for key, value in plan.items() if key != "digest"})
+    )
+    path = request[2] / "plan.json"
+    path.write_text(json.dumps(plan))
+    with pytest.raises(PlanError, match="replan"):
+        load_plan(path, verify=verify)
+
 
 
 def test_plan_budget_tampering_is_not_a_new_approval(configs, tmp_path):

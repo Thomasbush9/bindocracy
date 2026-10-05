@@ -304,7 +304,7 @@ def frozen(tmp_path, config):
     plan_dir.mkdir()
     database = tmp_path / "campaign.duckdb"
     plan = {
-        "schema_version": 1,
+        "schema_version": 2,
         "plan_dir": str(plan_dir),
         "database": str(database),
         "runs": [

@@ -1,5 +1,6 @@
 """Distribution is inert and content-addressed, even for hostile input bytes."""
 
+import hashlib
 import json
 import os
 import shutil
@@ -10,13 +11,16 @@ import warnings
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
 
 from bindocracy.kits.bundle import cache_kit, inspect_kit
 from bindocracy.kits.models import KitError, KitManifest
+from bindocracy.kits.resolve import load_lock, resolve_kit, verify_lock, write_lock
 from bindocracy.kits.store import _HTTPSRedirects, fetch_kit, list_releases, publish_kit
+from bindocracy.store.records import canonical_json
 
 
 @pytest.fixture
@@ -282,3 +286,126 @@ def test_source_mutation_during_copy_never_publishes_cache(kit, tmp_path, monkey
     with pytest.raises(KitError, match="changed"):
         cache_kit(kit, tmp_path / "cache", expected_digest=digest)
     assert not (tmp_path / "cache" / digest[7:]).exists()
+
+
+def _dependency_binding(kit, tmp_path, kind):
+    dependency = tmp_path / "dependency"
+    dependency.mkdir()
+    (dependency / "payload").write_bytes(b"original")
+    manifest_path = kit / "kit.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["requires"] = [{"name": "asset", "kind": kind}]
+    manifest_path.write_text(yaml.safe_dump(manifest))
+    bindings = tmp_path / "bindings.yaml"
+    bindings.write_text(yaml.safe_dump({
+        "bindings_schema": 1,
+        "asset": {"kind": kind, "path": str(dependency)},
+    }))
+    return dependency, bindings
+
+
+def _changed_stat(info, field):
+    fields = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+    fields[field] += 1
+    return SimpleNamespace(**fields)
+
+
+def test_kit_lock_accepts_remounted_assets_without_reading_payload(kit, tmp_path, monkeypatch):
+    dependency, bindings = _dependency_binding(kit, tmp_path, "weights")
+    approved = inspect_kit(kit).digest
+    lock = resolve_kit(kit, bindings, approved_digest=approved)
+    path = write_lock(lock, tmp_path / "lock.json")
+    original_stat = Path.stat
+    original_open = Path.open
+    original_os_open = os.open
+
+    def remounted_stat(path, *args, **kwargs):
+        info = original_stat(path, *args, **kwargs)
+        return _changed_stat(info, "st_dev") if path.is_relative_to(dependency) else info
+
+    def guarded_open(path, *args, **kwargs):
+        assert not path.is_relative_to(dependency), "Large assets must remain stat-only"
+        return original_open(path, *args, **kwargs)
+
+    def guarded_os_open(path, *args, **kwargs):
+        assert not Path(path).is_relative_to(dependency), "Large assets must remain stat-only"
+        return original_os_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", remounted_stat)
+    monkeypatch.setattr(Path, "open", guarded_open)
+    monkeypatch.setattr(os, "open", guarded_os_open)
+    assert load_lock(path) == lock
+    assert resolve_kit(kit, bindings, approved_digest=approved) == lock
+
+
+@pytest.mark.parametrize("field", ["st_mode", "st_size", "st_mtime_ns", "st_ctime_ns", "st_ino"])
+def test_kit_lock_still_rejects_portable_stat_drift(kit, tmp_path, monkeypatch, field):
+    dependency, bindings = _dependency_binding(kit, tmp_path, "weights")
+    lock = resolve_kit(kit, bindings, approved_digest=inspect_kit(kit).digest)
+    original_stat = Path.stat
+
+    def changed_stat(path, *args, **kwargs):
+        info = original_stat(path, *args, **kwargs)
+        return _changed_stat(info, field) if path == dependency / "payload" else info
+
+    monkeypatch.setattr(Path, "stat", changed_stat)
+    with pytest.raises(KitError, match="dependency identity"):
+        verify_lock(lock)
+
+
+@pytest.mark.parametrize("kind", ["weights", "source_overlay"])
+def test_kit_lock_still_rejects_changed_dependency_contents(kit, tmp_path, kind):
+    dependency, bindings = _dependency_binding(kit, tmp_path, kind)
+    lock = resolve_kit(kit, bindings, approved_digest=inspect_kit(kit).digest)
+    (dependency / "payload").write_bytes(b"changed contents")
+    with pytest.raises(KitError, match="dependency identity"):
+        verify_lock(lock)
+
+
+@pytest.mark.parametrize("phase", ["open", "read", "path"])
+def test_kit_hashing_rejects_same_host_device_races(kit, tmp_path, monkeypatch, phase):
+    dependency, bindings = _dependency_binding(kit, tmp_path, "source_overlay")
+    payload = dependency / "payload"
+    inode = payload.stat().st_ino
+    original_fstat = os.fstat
+    original_stat = Path.stat
+    calls = 0
+
+    def raced_fstat(descriptor):
+        nonlocal calls
+        info = original_fstat(descriptor)
+        if info.st_ino == inode:
+            calls += 1
+            if (phase == "open" and calls == 1) or (phase == "read" and calls == 2):
+                return _changed_stat(info, "st_dev")
+        return info
+
+    def raced_stat(path, *args, **kwargs):
+        info = original_stat(path, *args, **kwargs)
+        if phase == "path" and path == payload and calls >= 2:
+            return _changed_stat(info, "st_dev")
+        return info
+
+    monkeypatch.setattr(os, "fstat", raced_fstat)
+    monkeypatch.setattr(Path, "stat", raced_stat)
+    with pytest.raises(KitError, match="Dependency changed while"):
+        resolve_kit(kit, bindings)
+
+
+@pytest.mark.parametrize("verify", [True, False])
+def test_legacy_device_bound_lock_requires_relocking(kit, tmp_path, verify):
+    dependency, bindings = _dependency_binding(kit, tmp_path, "weights")
+    lock = resolve_kit(kit, bindings, approved_digest=inspect_kit(kit).digest)
+    record = lock.model_dump(mode="json", exclude={"digest"})
+    record["lock_schema"] = 1
+    identity = record["dependencies"]["asset"]["identity"]
+    for relative, entry in identity["entries"].items():
+        entry["device"] = (dependency / relative).stat().st_dev
+    identity["digest"] = "sha256:" + hashlib.sha256(
+        canonical_json(identity["entries"]).encode()
+    ).hexdigest()
+    record["digest"] = "sha256:" + hashlib.sha256(canonical_json(record).encode()).hexdigest()
+    path = tmp_path / "legacy-lock.json"
+    path.write_text(json.dumps(record))
+    with pytest.raises(KitError, match="relock"):
+        load_lock(path, verify=verify)

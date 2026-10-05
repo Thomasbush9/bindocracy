@@ -29,6 +29,27 @@ The wheel cache for this environment is ~850 MB and the venv itself another
 do not want to repeat it. The cache lives at `binder_design/.uv-cache`, one level
 *above* the repo, so it is outside version control by construction.
 
+### Shared-filesystem identities and schema-2 cutover
+
+NFS mount device numbers (`st_dev`) can differ between login and compute nodes
+for the same file. Frozen campaign plans and kit dependency locks no longer
+persist that node-local number as cross-node identity. Resolved paths and the
+remaining recorded file attributes still matter; small content-hashed inputs
+remain content-verified. Large stat-only assets are not promoted to cryptographic
+content verification. Same-host open/read race checks still compare device IDs.
+
+This is a versioned cutover: frozen campaign plans use `schema_version: 2` and
+kit locks use `lock_schema: 2`. Schema-1 records are rejected with regeneration
+instructions, including inspection with verification disabled. Resolve/write a
+new kit lock, regenerate dependent frozen configurations, and plan into a new
+output directory with new run names. Review and approve the new digests; do not
+edit old records to change their version or remove fields.
+
+Keep the original pinned checkout for operating or inspecting an existing
+approved execution. Do not replace its harness beneath running jobs. These
+versions do not change authored general/model configuration schema versions.
+
+
 ## What is in it, and why
 
 | Package | Why it is here |

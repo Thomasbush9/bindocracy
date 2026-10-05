@@ -68,6 +68,7 @@ def _tree(root: Path) -> dict[str, str]:
 
 
 def _stat(path: Path) -> dict[str, int | str]:
+    # Mount device numbers are node-local, even for the same shared-NFS file.
     info = path.stat()
     return {
         "resolved": str(path.resolve()),
@@ -75,7 +76,6 @@ def _stat(path: Path) -> dict[str, int | str]:
         "mtime_ns": info.st_mtime_ns,
         "ctime_ns": info.st_ctime_ns,
         "inode": info.st_ino,
-        "device": info.st_dev,
     }
 
 
@@ -435,7 +435,7 @@ def build_plan(index_path: str | Path, site_path: str | Path, output_dir: str | 
     total_tasks = sum(run["tasks"] for run in runs)
     worker_budget = site.max_total_gpus - site.controller.gpus
     plan = {
-        "schema_version": 1,
+        "schema_version": 2,
         "plan_dir": str(directory),
         "workflow_index": str(frozen_index),
         "snakefile": str(frozen_workflow),
@@ -498,8 +498,11 @@ def load_plan(path: str | Path, verify: bool = True) -> dict:
     """
     try:
         plan = json.loads(Path(path).read_text())
-        if not isinstance(plan, dict) or plan.get("schema_version") != 1:
-            raise PlanError("unsupported campaign plan schema")
+        if not isinstance(plan, dict) or plan.get("schema_version") != 2:
+            raise PlanError(
+                "unsupported campaign plan schema; replan with this harness "
+                "in a new output directory and use new run names"
+            )
         if plan.get("digest") != _identity(plan):
             raise PlanError("campaign plan digest mismatch")
         if Path(path).resolve() != Path(plan["plan_dir"]) / "plan.json":

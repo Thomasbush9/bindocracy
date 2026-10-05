@@ -66,6 +66,14 @@ distinct fields, plus the filter definition that produced the third. A single
 `n_designs` field would have recorded "40" for PXDesign and for Genie 3 and
 hidden that one had 5 dual-filter passes and the other had none.
 
+BindCraft2's `budget_exhausted` is a separate evidence claim, not a synonym for
+an accepted-output shortfall. It requires both a shortfall and recorded trajectory
+outcomes reaching the configured trajectory budget. A configuration crash with
+zero attempts is not exhaustion. Neither exit zero nor a counter that reserves
+trajectory slots before work proves it. `false` means exhaustion is not established
+by the retained records; missing records do not prove unused budget. Task failure
+and partial-output statuses remain independent of this accounting.
+
 ## 3. Output adapters are unavoidable — there is no common format
 
 Only Genie 3 writes a FASTA. Everywhere else sequences are a CSV column, and no

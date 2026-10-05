@@ -41,8 +41,8 @@ trajectories, 248 refolded candidates, 11 accepted designs on four H100s in
 
 * **A task overshoots its design budget rather than hitting it.** 20 workers
   accept independently, so a budget of 10 returned 11. That is recorded as an
-  expected surplus, not a shape problem; a *shortfall* is what means the
-  trajectory budget ran out first.
+  expected surplus, not a shape problem. A shortfall establishes trajectory
+  budget exhaustion only when the recorded attempts also reach that budget.
 
 Metric names are BindCraft 2's own column names, unchanged. Where a name
 coincides with FreeBindCraft's -- `pLDDT`, `pTM`, `i_pTM`, `i_pAE`,
@@ -211,9 +211,9 @@ class TaskTables:
         """What the tables say that they should not, per task rather than in total.
 
         A surplus of accepted designs is not a problem: workers accept
-        independently and a task overshoots. A shortfall is not a problem
-        either -- it means the trajectory budget ended the task -- but it is
-        recorded as such rather than silently.
+        independently and a task overshoots. A shortfall is not a shape problem
+        either; budget exhaustion is recorded separately when the trajectory
+        accounting establishes it.
         """
         problems: list[str] = []
         if self.unmatched_ranked:
@@ -374,8 +374,8 @@ def _task_details(
     accepted = len(tables.ranked)
     return {
         "status": status.status if status else "missing",
-        # The census that says why a task stopped. Every attempt counts against
-        # the budget, including one terminated at the first gate.
+        # Recorded trajectory outcomes, including first-gate terminations.
+        # An interrupted attempt may never write a row.
         "trajectories": {
             "attempted": len(tables.trajectories),
             "budget": task.n_generated,
@@ -388,10 +388,18 @@ def _task_details(
         # smaller than the number that passed.
         "accepted": accepted,
         "requested": task.n_requested,
-        # Workers accept independently, so a surplus is expected and a shortfall
-        # means the trajectory budget ended the task first.
+        # Workers accept independently, so a surplus is expected. A shortfall
+        # alone does not explain why the task stopped. State counters reserve
+        # slots before work runs, and exit zero does not prove exhaustion.
         "surplus": accepted - task.n_requested,
-        "budget_exhausted": accepted < task.n_requested,
+        # False means exhaustion is not established by recorded outcomes; it
+        # does not claim unused budget when trajectory records are missing.
+        # This accounting never overrides the task's failure/partial status.
+        "budget_exhausted": (
+            accepted < task.n_requested
+            and task.n_generated is not None
+            and len(tables.trajectories) >= task.n_generated
+        ),
         # BC2's own tally of which filter rejected what, written independently
         # of the tables and therefore worth keeping beside them.
         "failed_filters": rejections.get("failed_filters") or {},

@@ -13,6 +13,7 @@ nobody asked for.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -26,14 +27,19 @@ from bindocracy.tools.bindcraft2.adapter import BindCraft2OutputAdapter
 SUCCEEDED = {"task_id": 0, "status": "succeeded", "n_produced": 6}
 
 
-def collected(root: Path, *, tasks: int = 1, **task_kwargs):
-    general, model = write_bindcraft2_configs(root, sampling={"jobs": tasks})
+def collected(
+    root: Path, *, tasks: int = 1, sampling: dict | None = None,
+    status: dict | None = SUCCEEDED, **task_kwargs,
+):
+    general, model = write_bindcraft2_configs(
+        root, sampling={"jobs": tasks, **(sampling or {})},
+    )
     manifest = plan(load_configs(general, model), root / "run")
     for task_id in range(tasks):
         write_bindcraft2_task(
             manifest.directory,
             task_id,
-            status={**SUCCEEDED, "task_id": task_id},
+            status={**status, "task_id": task_id} if status is not None else None,
             **task_kwargs,
         )
     return manifest, collect_run(manifest.directory / "run.json")
@@ -67,15 +73,141 @@ def test_the_trajectory_census_says_why_the_task_stopped(tmp_path: Path) -> None
     assert task["trajectories"]["budget"] == 6
 
 
-def test_a_shortfall_is_recorded_as_the_budget_running_out(tmp_path: Path) -> None:
-    """One accepted design against a request of two is not a parse failure."""
-    _, run = collected(tmp_path)
+def test_missing_trajectory_budget_does_not_establish_exhaustion(tmp_path: Path) -> None:
+    manifest, _ = collected(tmp_path)
+    manifest_path = manifest.directory / "run.json"
+    document = json.loads(manifest_path.read_text())
+    document["tasks"][0].pop("n_generated")
+    manifest_path.write_text(json.dumps(document))
+
+    run = collect_run(manifest_path)
+    task = run.run.count_details["tasks"]["0000"]
+
+    assert task["trajectories"]["budget"] is None
+    assert task["budget_exhausted"] is False
+    assert len(run.designs) == 6
+
+
+def test_a_successful_exit_with_shortfall_does_not_prove_exhaustion(tmp_path: Path) -> None:
+    """The fixture records three attempts, not the full six-attempt budget."""
+    _, run = collected(tmp_path, status={**SUCCEEDED, "exit_code": 0})
     task = run.run.count_details["tasks"]["0000"]
 
     assert task["requested"] == 2
     assert task["surplus"] == -1
+    assert task["budget_exhausted"] is False
+    assert task["shape_problems"] == []
+
+
+@pytest.mark.parametrize("budget", [2, 3])
+def test_recorded_trajectories_exhaust_the_budget_with_shortfall(
+    tmp_path: Path, budget: int,
+) -> None:
+    _, run = collected(tmp_path, sampling={"max_trajectories": budget})
+    task = run.run.count_details["tasks"]["0000"]
+
+    assert task["trajectories"]["attempted"] == 3
+    assert task["trajectories"]["budget"] == budget
+    assert task["surplus"] == -1
     assert task["budget_exhausted"] is True
     assert task["shape_problems"] == []
+    assert len(run.designs) == 6
+
+
+@pytest.mark.parametrize("budget", [3, 6])
+def test_sufficient_accepted_outputs_are_not_budget_exhaustion(
+    tmp_path: Path, budget: int,
+) -> None:
+    _, run = collected(
+        tmp_path, sampling={"designs_per_job": 1, "max_trajectories": budget},
+    )
+    task = run.run.count_details["tasks"]["0000"]
+
+    assert task["accepted"] == task["requested"] == 1
+    assert task["budget_exhausted"] is False
+    assert run.run.status == "succeeded"
+
+
+@pytest.mark.parametrize("empty_tables", [False, True])
+def test_configuration_crash_before_any_attempt_does_not_exhaust_budget(
+    tmp_path: Path, empty_tables: bool,
+) -> None:
+    general, model = write_bindcraft2_configs(
+        tmp_path, sampling={"max_trajectories": 60},
+    )
+    manifest = plan(load_configs(general, model), tmp_path / "run")
+    task_plan = manifest.tasks[0]
+    task_dir = manifest.directory / task_plan.directory
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (manifest.directory / task_plan.status).write_text(json.dumps({
+        "task_id": 0, "status": "failed", "exit_code": 1,
+        "error": "ValueError: invalid campaign configuration",
+    }))
+    if empty_tables:
+        campaign = task_dir / "campaign"
+        trajectories = campaign / "1_Trajectories"
+        trajectories.mkdir(parents=True)
+        (trajectories / "!_Trajectories.csv").write_text("trajectory,design,terminated\n")
+        (campaign / ".campaign_state.json").write_text(json.dumps({
+            "trajectories": 0, "accepted": 0, "attempted": [],
+        }))
+        (campaign / "summary.csv").write_text(
+            "campaign,scope,metric,samples,mean,std,min,max\n"
+            "fixture,campaign,trajectories,1,0,0,0,0\n"
+        )
+
+    run = collect_run(manifest.directory / "run.json")
+    task = run.run.count_details["tasks"]["0000"]
+
+    assert task["status"] == "failed"
+    assert task["trajectories"]["attempted"] == 0
+    assert task["trajectories"]["budget"] == 60
+    assert task["budget_exhausted"] is False
+    assert run.run.status == "failed"
+    assert run.run.n_produced == 0
+    assert not run.designs
+
+
+@pytest.mark.parametrize("status", [
+    {"task_id": 0, "status": "failed", "exit_code": 1},
+    {"task_id": 0, "status": "partial", "exit_code": 143},
+    None,
+])
+@pytest.mark.parametrize("budget", [3, 6])
+def test_interrupted_collection_keeps_outputs_and_budget_evidence(
+    tmp_path: Path, status: dict | None, budget: int,
+) -> None:
+    _, run = collected(
+        tmp_path, status=status, sampling={"max_trajectories": budget},
+    )
+    task = run.run.count_details["tasks"]["0000"]
+
+    assert task["status"] == (status["status"] if status else "missing")
+    assert task["budget_exhausted"] is (budget == 3)
+    assert task["accepted"] == 1
+    assert len(run.designs) == run.run.n_produced == 6
+    assert run.run.status == "partial"
+
+
+def test_claimed_but_unrecorded_trajectories_do_not_prove_exhaustion(
+    tmp_path: Path,
+) -> None:
+    manifest, _ = collected(
+        tmp_path, status={"task_id": 0, "status": "failed", "exit_code": 1},
+    )
+    state_path = manifest.directory / "tasks/0000/campaign/.campaign_state.json"
+    state = json.loads(state_path.read_text())
+    # Upstream reserves the budget slot before the trajectory runs.
+    state["trajectories"] = 6
+    state_path.write_text(json.dumps(state))
+
+    run = collect_run(manifest.directory / "run.json")
+    task = run.run.count_details["tasks"]["0000"]
+
+    assert task["trajectories"]["attempted"] == 3
+    assert task["budget_exhausted"] is False
+    assert len(run.designs) == 6
+    assert run.run.status == "partial"
 
 
 # --- the join the tables do not make -------------------------------------
@@ -211,7 +343,7 @@ def test_each_candidate_keeps_its_structures(tmp_path: Path) -> None:
 
 
 def test_a_task_that_accepted_nothing_still_collects(tmp_path: Path) -> None:
-    """No ranked table is a real outcome: the trajectory budget ran out."""
+    """No ranked table must not prevent collecting scored candidates."""
     _, run = collected(tmp_path, ranked=False)
 
     assert run.run.n_produced == 6

@@ -31,8 +31,8 @@ sampling:
   jobs: 1
   # ACCEPTED designs, and a stopping condition rather than a table size. Several
   # workers accept independently, so a task overshoots: the 2026-09-22 DIO3 run
-  # asked for 10 and delivered 11. Fewer than this means the trajectory budget
-  # ran out first.
+  # asked for 10 and delivered 11. A shortfall alone does not establish why it
+  # stopped: budget exhaustion also requires recorded attempts reaching the cap.
   designs_per_job: 10
   # Trajectory ATTEMPTS. Not designs, and not successful trajectories: an
   # attempt terminated at the first stage gate still counts. On that run 184

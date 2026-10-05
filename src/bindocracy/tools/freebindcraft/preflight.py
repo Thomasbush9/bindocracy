@@ -29,8 +29,8 @@ The filter set is not refused, only described. Every filter file the image
 ships puts a threshold on at least one metric a PyRosetta-free run does not
 compute -- `dG`, `Binder_Energy_Score`, the hydrogen-bond counts -- and
 `pr_alternative_utils` fills those with constants "chosen to pass active
-filters". Refusing them would leave no usable filter set, so the run records
-which of its own thresholds were inert instead.
+filters". Refusing them would leave no usable filter set, so preflight warns
+which configured thresholds lack measurements and the run records them.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -203,6 +204,14 @@ def preflight_freebindcraft(
         general, residues, target_pdb, model.target.template
     )
     active, inert = _filter_names(filters, model.filters.template)
+    if inert:
+        warnings.warn(
+            "FreeBindCraft configured filters lack real measurements without PyRosetta: "
+            f"{', '.join(inert)}. These checks use placeholder constants, not measured "
+            "values; passing them does not establish the requested measurements.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     return FreeBindCraftPreflight(
         target_sequence=read_single_fasta(general.target.sequence_fasta),

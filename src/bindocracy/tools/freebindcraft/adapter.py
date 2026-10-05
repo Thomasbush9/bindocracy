@@ -164,6 +164,7 @@ class FreeBindCraftOutputAdapter(OutputAdapter):
         per_task: dict[str, Any] = {}
         passed = 0
         evaluated = True
+        scoring_complete = True
 
         for task in manifest.tasks:
             status = read_task_status(run_dir / task.status)
@@ -176,6 +177,28 @@ class FreeBindCraftOutputAdapter(OutputAdapter):
             complete = not problems and bool(table.scored or table.unscored)
             evaluated = evaluated and complete
             passed += len(table.accepted)
+            # Run-level coverage must not turn missing output or unfinished
+            # work into measured zeros. Retain observed per-task counts even
+            # when they cannot establish a complete run total.
+            scoring_complete = (
+                scoring_complete
+                and complete
+                and status is not None
+                and status.status == "succeeded"
+                and all(
+                    (run_dir / task.directory / filename).is_file()
+                    for filename in (DESIGNS_FILE, REJECTED_FILE)
+                )
+                and not any(
+                    table.rejections[name]
+                    for name in (
+                        "n_invalid",
+                        "n_foreign",
+                        "n_rejected_invalid",
+                        "n_rejected_unverifiable",
+                    )
+                )
+            )
 
             per_task[f"{task.task_id:04d}"] = {
                 "status": status.status if status else "missing",
@@ -263,6 +286,16 @@ class FreeBindCraftOutputAdapter(OutputAdapter):
                     # rejected nothing and a filter that measured nothing.
                     "pyrosetta": manifest.workflow.get("pyrosetta"),
                     "inert_filters": list(manifest.workflow.get("inert_filters") or ()),
+                    # "Scored" means reaching the full scoring table, not
+                    # that the unavailable PyRosetta metrics were measured.
+                    "n_scored": (
+                        sum(task["n_scored"] for task in per_task.values())
+                        if scoring_complete else None
+                    ),
+                    "n_rejected_before_scoring": (
+                        sum(task["n_rejected_before_scoring"] for task in per_task.values())
+                        if scoring_complete else None
+                    ),
                     "tasks": per_task,
                 },
                 "started_at": started,
@@ -562,6 +595,9 @@ def _read_rejected(
         candidate_is_valid = (
             sequence and _SEQUENCE.fullmatch(sequence) is not None and "X" not in sequence
         )
+        if name not in scored_names and not candidate_is_valid:
+            counts["n_rejected_invalid"] += 1
+            continue
         if name not in scored_names and candidate_is_valid and not admit_unscored:
             # Rejected-only rows carry no settings or hotspot stamps. Once the
             # scored table proves this directory contains foreign output,

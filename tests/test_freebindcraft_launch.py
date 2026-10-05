@@ -11,6 +11,7 @@ epitope is one more thing that can drift.
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 
 import pytest
@@ -151,6 +152,46 @@ def test_a_campaign_without_a_pdb_is_refused(tmp_path: Path) -> None:
 
 
 # --- filters that cannot bite ----------------------------------------------
+
+
+def test_preflight_warns_for_configured_unavailable_measurements(tmp_path: Path) -> None:
+    general, model = write_freebindcraft_configs(
+        tmp_path,
+        filters={
+            "Average_dG": {"threshold": 0.0, "higher": False},
+            "1_dG": {"threshold": 0.0, "higher": False},
+            "Average_n_InterfaceHbonds": {"threshold": 1, "higher": True},
+            "Average_i_pTM": {"threshold": 0.5, "higher": True},
+        },
+    )
+
+    with pytest.warns(UserWarning) as captured:
+        loaded = load_configs(general, model)
+
+    assert len(captured) == 1
+    assert loaded.preflight.inert_filters == ("dG", "n_InterfaceHbonds")
+    message = str(captured[0].message)
+    for metric in loaded.preflight.inert_filters:
+        assert metric in message
+    assert "i_pTM" not in message
+
+
+@pytest.mark.parametrize("include_disabled_placeholder", [False, True])
+def test_preflight_does_not_warn_for_measured_or_disabled_filters(
+    tmp_path: Path, include_disabled_placeholder: bool
+) -> None:
+    filters = {"Average_i_pTM": {"threshold": 0.5, "higher": True}}
+    if include_disabled_placeholder:
+        filters["Average_dG"] = {"threshold": None, "higher": False}
+    general, model = write_freebindcraft_configs(tmp_path, filters=filters)
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        loaded = load_configs(general, model)
+
+    assert loaded.preflight.active_filters == ("i_pTM",)
+    assert loaded.preflight.inert_filters == ()
+    assert not captured
 
 
 def test_a_threshold_on_a_placeholder_metric_is_recorded_as_inert(

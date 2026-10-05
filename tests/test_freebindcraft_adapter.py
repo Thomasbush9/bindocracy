@@ -9,6 +9,7 @@ agree about it.
 
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 import pytest
@@ -94,6 +95,74 @@ def test_the_trajectory_census_says_why_a_task_stopped(run) -> None:
     }
     assert task["n_scored"] == 7
     assert task["n_rejected_before_scoring"] == 2
+
+
+def test_run_level_scoring_counts_sum_all_tasks(tmp_path: Path) -> None:
+    general, model = write_freebindcraft_configs(tmp_path, sampling={"jobs": 2})
+    manifest = plan(load_configs(general, model), tmp_path / "run")
+    for task_id in (0, 1):
+        write_freebindcraft_task(manifest.directory, task_id, status={})
+
+    bundle = collected(manifest)
+    details = bundle.run.count_details
+
+    assert bundle.run.n_produced == 18
+    assert bundle.run.n_passed == 4
+    assert details["n_scored"] == 14
+    assert details["n_rejected_before_scoring"] == 4
+    for name in ("n_scored", "n_rejected_before_scoring"):
+        assert details[name] == sum(task[name] for task in details["tasks"].values())
+    assert details["n_scored"] + details["n_rejected_before_scoring"] == bundle.run.n_produced
+
+
+def test_missing_task_does_not_report_partial_scoring_counts_as_run_totals(
+    tmp_path: Path,
+) -> None:
+    general, model = write_freebindcraft_configs(tmp_path, sampling={"jobs": 2})
+    manifest = plan(load_configs(general, model), tmp_path / "run")
+    write_freebindcraft_task(manifest.directory, 0, status={})
+
+    bundle = collected(manifest)
+    details = bundle.run.count_details
+
+    assert bundle.run.status == RunStatus.PARTIAL
+    assert bundle.run.n_produced == 9
+    assert bundle.run.n_passed is None
+    assert details["n_scored"] is None
+    assert details["n_rejected_before_scoring"] is None
+    assert details["tasks"]["0000"]["n_scored"] == 7
+    assert details["tasks"]["0000"]["n_rejected_before_scoring"] == 2
+
+
+@pytest.mark.parametrize("status", ["failed", "partial"])
+def test_unfinished_task_does_not_report_final_scoring_totals(
+    freebindcraft_configs, tmp_path: Path, status: str
+) -> None:
+    manifest = plan(load_configs(*freebindcraft_configs), tmp_path / "run")
+    write_freebindcraft_task(manifest.directory, 0, status={"status": status})
+
+    bundle = collected(manifest)
+
+    assert bundle.run.status == RunStatus.PARTIAL
+    assert bundle.run.count_details["n_scored"] is None
+    assert bundle.run.count_details["n_rejected_before_scoring"] is None
+
+
+@pytest.mark.parametrize("missing", ["mpnn_design_stats.csv", "rejected_mpnn_full_stats.csv"])
+def test_missing_scoring_table_does_not_establish_zero_scoring_counts(
+    freebindcraft_configs, tmp_path: Path, missing: str
+) -> None:
+    manifest = plan(load_configs(*freebindcraft_configs), tmp_path / "run")
+    header = Path(__file__).parent / "fixtures/freebindcraft/mpnn_design_stats.csv"
+    write_freebindcraft_task(
+        manifest.directory, 0, scored=header.read_text().splitlines()[0] + "\n", status={}
+    )
+    (manifest.directory / "tasks/0000/bindcraft" / missing).unlink()
+
+    details = collected(manifest).run.count_details
+
+    assert details["n_scored"] is None
+    assert details["n_rejected_before_scoring"] is None
 
 
 # --- what the run's own verdict means ---------------------------------------
@@ -277,6 +346,8 @@ def test_a_missing_rejected_table_never_implies_that_designs_passed(
 
     assert bundle.run.status == RunStatus.PARTIAL
     assert bundle.run.n_passed is None
+    assert bundle.run.count_details["n_scored"] is None
+    assert bundle.run.count_details["n_rejected_before_scoring"] is None
     assert not filter_decisions
 
 
@@ -302,7 +373,38 @@ def test_a_truncated_table_costs_only_its_broken_row(freebindcraft_configs, tmp_
     lines = table.read_text().splitlines()
     table.write_text("\n".join([*lines, lines[-1].split(",", 3)[0] + ",,,"]) + "\n")
 
-    assert collected(manifest).run.count_details["tasks"]["0000"]["n_invalid"] == 1
+    details = collected(manifest).run.count_details
+    assert details["tasks"]["0000"]["n_invalid"] == 1
+    assert details["n_scored"] is None
+    assert details["n_rejected_before_scoring"] is None
+
+
+@pytest.mark.parametrize("name", [UNSCORED, REJECTED])
+def test_rejected_row_without_sequence_needs_scored_evidence_for_final_totals(run, name):
+    path = (run.directory / run.tasks[0].designs).parent / "rejected_mpnn_full_stats.csv"
+    with path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        fields = reader.fieldnames
+        rows = list(reader)
+    for row in rows:
+        if row["Design"] == name:
+            row["Sequence"] = ""
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    result = collected(run)
+    details = result.run.count_details
+    if name == UNSCORED:
+        assert details["tasks"]["0000"]["n_rejected_invalid"] == 1
+        assert details["n_scored"] is None
+        assert details["n_rejected_before_scoring"] is None
+        assert result.run.n_produced == 8
+    else:
+        assert details["tasks"]["0000"]["n_rejected_invalid"] == 0
+        assert details["n_scored"] == 7
+        assert details["n_rejected_before_scoring"] == 2
 
 
 def test_two_tasks_do_not_collect_as_duplicates_of_each_other(
@@ -357,6 +459,8 @@ def test_a_task_whose_every_trajectory_died_is_a_failed_run(
     assert bundle.run.n_produced == 0
     assert bundle.run.n_passed is None
     assert bundle.run.status == RunStatus.FAILED
+    assert bundle.run.count_details["n_scored"] is None
+    assert bundle.run.count_details["n_rejected_before_scoring"] is None
 
 
 def test_a_task_whose_every_sequence_failed_the_base_filters_is_complete(
@@ -373,6 +477,8 @@ def test_a_task_whose_every_sequence_failed_the_base_filters_is_complete(
     assert bundle.run.status == RunStatus.SUCCEEDED
     assert bundle.run.n_produced == 7
     assert bundle.run.n_passed == 0
+    assert bundle.run.count_details["n_scored"] == 0
+    assert bundle.run.count_details["n_rejected_before_scoring"] == 7
     assert all(
         record.passed is False for record in bundle.decisions if record.kind == DecisionKind.FILTER
     )

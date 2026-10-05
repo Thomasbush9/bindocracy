@@ -39,4 +39,17 @@ default filters and advanced settings are embedded at
   `SINGULARITYENV_OPENMM_PLATFORM_ORDER=CUDA,OpenCL`.
 - Relative paths in the target JSON resolve from the launch directory.
 
+Through the harness, preflight warns when configured filters use unavailable
+PyRosetta measurements. `inert_filters` and `pyrosetta: false` remain in run
+provenance; placeholder constants are not emitted as measured metrics. A passing
+placeholder-backed check does not establish that the requested measurement ran.
+
+Read produced, scored, early-rejected, and passing counts separately. Collection
+adds `n_scored` and `n_rejected_before_scoring` to run-level `count_details`;
+scored means reaching the scoring table, not measuring every possible metric.
+Incomplete output evidence leaves those totals unknown (`null`), with observed
+per-task counts retained. Successful execution can legitimately have zero passing
+candidates, and produced counts include early-rejected sequences. Neither result
+alone diagnoses a generator crash or establishes scientific quality.
+
 AF2/ColabDesign and MPNN assets are embedded; normal jobs are offline.

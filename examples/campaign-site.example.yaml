@@ -1,6 +1,10 @@
 # Copy and replace these site-specific placeholders; there are no account defaults.
-# Planning is CPU-only. This explicitly requests a CPU controller; a GPU-backed
-# controller is only used if you deliberately change gpus and partition below.
+# Planning and controller work are CPU-only computations, not a promise that
+# your account/partition accepts CPU-only allocations. Verify site eligibility.
+# For a GPU-required partition, set its account/partition and controller.gpus: 1;
+# the reserved controller GPU counts toward max_total_gpus even while idle.
+# To retain eight one-GPU workers with that controller, use max_total_gpus: 9.
+# A ready static check does not establish account quotas or scheduler admission.
 controller:
   account: YOUR_ACCOUNT
   partition: YOUR_CPU_PARTITION

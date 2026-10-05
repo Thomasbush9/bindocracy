@@ -1,6 +1,6 @@
 """What must be true before PXDesign touches a GPU.
 
-Three checks earn their place because what they prevent is silent:
+The spec and target identifiers must be safe before allocation:
 
 * The spec carries its own **target path**, so it can drift away from the
   campaign target while everything else checks out, and the run then designs
@@ -13,6 +13,9 @@ Three checks earn their place because what they prevent is silent:
 * A spec without **task_name** falls back to the YAML's filename stem, which
   means the results directory is named after whatever the file happened to be
   called -- and the harness archives that file under its source basename.
+* Selected polymer atoms need canonical mmCIF **label_seq_id** identifiers.
+  PXDesign parses these before cropping; an author residue number is not a
+  substitute, and missing polymer labels can fail later in Protenix.
 """
 
 from __future__ import annotations
@@ -96,6 +99,7 @@ def preflight_pxdesign(general: GeneralConfig, pxdesign: PXDesignConfig) -> PXDe
     msa_dirs = _msa_directories(spec, pxdesign.spec.template)
     _require_matching_hotspots(general, spec, pxdesign.spec.template)
 
+    _require_cif_identifiers(target_file, _chains(spec))
     target_sequence = read_single_fasta(general.target.sequence_fasta)
     input_files = {"spec_target": target_file}
     for chain, directory in msa_dirs.items():
@@ -191,6 +195,96 @@ def _chains(spec: dict) -> dict[str, dict]:
         str(name): chain if isinstance(chain, dict) else {}
         for name, chain in chains.items()
     }
+
+
+def _require_cif_identifiers(path: Path, chains: dict[str, dict]) -> None:
+    """Check raw labels without Biotite's author-field or missing-ID fallback.
+
+    PXDesign selects mmCIF chains by label_asym_id and parses identifiers before
+    applying residue crops. Check the entire selected chain, not just hotspots
+    or the crop. Entity metadata also identifies modified polymer HETATM rows;
+    ATOM is the fallback for CIFs without entity metadata. Nonpolymer missing
+    sequence labels are legal and must not be repaired or blanket-rejected.
+    """
+    from biotite import DeserializationError, InvalidFileError
+    from biotite.structure.io import pdbx
+
+    try:
+        document = pdbx.CIFFile.read(path)
+        block = document.block
+        site = block["atom_site"]
+        columns = {name: column.as_array(str) for name, column in site.items()}
+        required = ("label_asym_id", "label_entity_id", "label_seq_id", "group_PDB")
+        for name in required:
+            if name not in columns:
+                raise ConfigPreflightError(
+                    f"PXDesign target mmCIF {path} lacks _atom_site.{name} "
+                    f"for selected chains {', '.join(chains)}"
+                )
+        entity_types: dict[str, str] = {}
+        if "entity" in block:
+            entity = block["entity"]
+            entity_types = dict(zip(
+                entity["id"].as_array(str), entity["type"].as_array(str), strict=True,
+            ))
+        polymer_entities: set[str] = set()
+        for category in ("entity_poly", "entity_poly_seq"):
+            if category in block:
+                polymer_entities.update(block[category]["entity_id"].as_array(str))
+    except ConfigPreflightError:
+        raise
+    except (
+        OSError, UnicodeError, DeserializationError, InvalidFileError,
+        ValueError, KeyError, IndexError,
+    ) as error:
+        raise ConfigPreflightError(
+            f"PXDesign cannot read target mmCIF identifiers in {path}: {error}"
+        ) from error
+
+    seen: set[str] = set()
+    models = columns.get("pdbx_PDB_model_num")
+    for index, chain in enumerate(columns["label_asym_id"]):
+        # The upstream parser requests model=1, i.e. the first model.
+        if models is not None and models[index] != models[0]:
+            continue
+        if chain not in chains:
+            continue
+        seen.add(chain)
+        context = ", ".join(
+            f"{name}={columns[name][index]}"
+            for name in ("id", "label_comp_id", "auth_seq_id", "auth_asym_id")
+            if name in columns
+        )
+        entity_id = columns["label_entity_id"][index]
+        if not entity_id or entity_id in {".", "?"}:
+            raise ConfigPreflightError(
+                f"PXDesign target mmCIF {path}: chain {chain}, atom row {index + 1} "
+                f"({context}) has invalid _atom_site.label_entity_id={entity_id!r}"
+            )
+        entity_type = entity_types.get(entity_id)
+        polymer = (
+            entity_type == "polymer"
+            or entity_id in polymer_entities
+            or (entity_type is None and columns["group_PDB"][index] == "ATOM")
+        )
+        if not polymer:
+            continue
+        identifier = columns["label_seq_id"][index]
+        if not re.fullmatch(r"[0-9]+", identifier) or int(identifier) <= 0:
+            raise ConfigPreflightError(
+                f"PXDesign target mmCIF {path}: chain {chain}, polymer atom row "
+                f"{index + 1} ({context}) has invalid "
+                f"_atom_site.label_seq_id={identifier!r}; expected a positive integer. "
+                "PXDesign needs canonical label identifiers before cropping; "
+                "author numbering cannot substitute for missing labels."
+            )
+    for chain in chains:
+        if chain not in seen:
+            raise ConfigPreflightError(
+                f"PXDesign target mmCIF {path}: selected chain {chain} has no "
+                "_atom_site.label_asym_id rows in the first model"
+            )
+
 
 
 def _msa_directories(spec: dict, path: Path) -> dict[str, Path]:

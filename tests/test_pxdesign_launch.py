@@ -194,6 +194,179 @@ def test_a_missing_target_structure_is_refused(tmp_path: Path) -> None:
         load_configs(general, model)
 
 
+def test_a_missing_target_cif_file_is_refused(tmp_path: Path) -> None:
+    general, model = write_pxdesign_configs(tmp_path)
+    (tmp_path / "target.cif").unlink()
+
+    with pytest.raises(ConfigPreflightError, match="target structure does not exist"):
+        load_configs(general, model)
+
+
+def test_atom_rows_require_labels_even_without_entity_metadata(tmp_path: Path) -> None:
+    from biotite.structure.io import pdbx
+
+    general, model = write_pxdesign_configs(tmp_path)
+    cif = tmp_path / "target.cif"
+    document = pdbx.CIFFile.read(cif)
+    for category in ("entity", "entity_poly", "entity_poly_seq"):
+        del document.block[category]
+    document.block["atom_site"]["label_seq_id"] = ["."] * 6
+    document.write(cif)
+
+    with pytest.raises(ConfigPreflightError, match="_atom_site.label_seq_id"):
+        load_configs(general, model)
+
+
+@pytest.mark.parametrize("identifier", [".", "?", "invalid", "1.5", "0", "-1"])
+def test_selected_polymer_requires_label_sequence_ids(tmp_path: Path, identifier: str) -> None:
+    from biotite.structure.io import pdbx
+
+    general, model = write_pxdesign_configs(tmp_path)
+    cif = tmp_path / "target.cif"
+    document = pdbx.CIFFile.read(cif)
+    document.block["atom_site"]["label_seq_id"] = [identifier, "2", "3", "4", "5", "6"]
+    document.write(cif)
+    original = cif.read_bytes()
+
+    with pytest.raises(ConfigPreflightError) as raised:
+        load_configs(general, model)
+
+    message = str(raised.value)
+    assert "_atom_site.label_seq_id" in message
+    assert "chain A" in message
+    assert "auth_seq_id=1" in message
+    assert str(cif) in message
+    assert cif.read_bytes() == original
+
+
+def test_polymer_hetatm_rows_are_not_exempt_from_identifiers(tmp_path: Path) -> None:
+    from biotite.structure.io import pdbx
+
+    general, model = write_pxdesign_configs(tmp_path)
+    cif = tmp_path / "target.cif"
+    document = pdbx.CIFFile.read(cif)
+    document.block["atom_site"]["group_PDB"] = ["HETATM"] * 6
+    document.block["atom_site"]["label_seq_id"] = ["."] * 6
+    document.write(cif)
+
+    with pytest.raises(ConfigPreflightError, match="_atom_site.label_seq_id"):
+        load_configs(general, model)
+
+
+@pytest.mark.parametrize("crop", [["2-6"], "2-6"])
+def test_crop_does_not_hide_invalid_pre_crop_identifiers(tmp_path: Path, crop) -> None:
+    from biotite.structure.io import pdbx
+
+    general, model = write_pxdesign_configs(tmp_path)
+    template = tmp_path / "pxdesign_input.yaml"
+    spec = yaml.safe_load(template.read_text())
+    spec["target"]["chains"]["A"]["crop"] = crop
+    template.write_text(yaml.safe_dump(spec))
+    cif = tmp_path / "target.cif"
+    document = pdbx.CIFFile.read(cif)
+    document.block["atom_site"]["label_seq_id"] = [".", "2", "3", "4", "5", "6"]
+    document.write(cif)
+
+    with pytest.raises(ConfigPreflightError, match="_atom_site.label_seq_id"):
+        load_configs(general, model)
+
+
+@pytest.mark.parametrize("extra_kind", [
+    "unselected_polymer", "water", "ligand", "selected_ligand",
+])
+def test_unselected_and_nonpolymer_missing_labels_are_not_blanket_rejected(
+    tmp_path: Path, extra_kind: str,
+) -> None:
+    from biotite.structure.io import pdbx
+
+    general, model = write_pxdesign_configs(tmp_path)
+    cif = tmp_path / "target.cif"
+    document = pdbx.CIFFile.read(cif)
+    site = document.block["atom_site"]
+    extra = {name: column.as_array(str)[0] for name, column in site.items()}
+    extra.update(id="7", label_seq_id=".", auth_seq_id="101", label_asym_id="B")
+    if extra_kind != "unselected_polymer":
+        # Nonpolymers can share author chain A but have their own label chain.
+        extra.update(group_PDB="HETATM", label_entity_id="2")
+        extra["label_comp_id"] = "HOH" if extra_kind == "water" else "LIG"
+        document.block["entity"] = pdbx.CIFCategory({
+            "id": ["1", "2"],
+            "type": ["polymer", "water" if extra_kind == "water" else "non-polymer"],
+        })
+    document.block["struct_asym"] = pdbx.CIFCategory({
+        "id": ["A", "B"], "entity_id": ["1", extra["label_entity_id"]],
+    })
+    if extra_kind == "selected_ligand":
+        template = tmp_path / "pxdesign_input.yaml"
+        spec = yaml.safe_load(template.read_text())
+        spec["target"]["chains"]["B"] = dict(spec["target"]["chains"]["A"])
+        template.write_text(yaml.safe_dump(spec))
+    document.block["atom_site"] = pdbx.CIFCategory({
+        name: [*column.as_array(str), extra[name]] for name, column in site.items()
+    })
+    document.write(cif)
+    original = cif.read_bytes()
+
+    loaded = load_configs(general, model)
+
+    assert loaded.preflight.target_sequence == "ACDEFG"
+    assert cif.read_bytes() == original
+
+
+def test_selected_chains_use_label_not_author_identifiers(tmp_path: Path) -> None:
+    from biotite.structure.io import pdbx
+
+    general, model = write_pxdesign_configs(tmp_path)
+    cif = tmp_path / "target.cif"
+    document = pdbx.CIFFile.read(cif)
+    document.block["atom_site"]["label_asym_id"] = ["B"] * 6
+    document.write(cif)
+
+    with pytest.raises(ConfigPreflightError, match="chain A.*label_asym_id"):
+        load_configs(general, model)
+
+
+@pytest.mark.parametrize("field", ["label_seq_id", "label_asym_id", "label_entity_id"])
+def test_missing_cif_identifier_columns_fail_preflight(tmp_path: Path, field: str) -> None:
+    from biotite.structure.io import pdbx
+
+    general, model = write_pxdesign_configs(tmp_path)
+    cif = tmp_path / "target.cif"
+    document = pdbx.CIFFile.read(cif)
+    del document.block["atom_site"][field]
+    document.write(cif)
+
+    with pytest.raises(ConfigPreflightError, match=field):
+        load_configs(general, model)
+
+
+@pytest.mark.parametrize("content", [
+    "not a CIF document\n",
+    "data_target\n#\n",
+    "data_target\nloop_\n_atom_site.label_asym_id\n_atom_site.label_seq_id\nA 1 B\n",
+])
+def test_empty_or_malformed_cif_fails_preflight(tmp_path: Path, content: str) -> None:
+    general, model = write_pxdesign_configs(tmp_path)
+    cif = tmp_path / "target.cif"
+    cif.write_text(content)
+
+    with pytest.raises(ConfigPreflightError, match="mmCIF"):
+        load_configs(general, model)
+
+
+def test_valid_label_identifiers_do_not_require_author_numbering(tmp_path: Path) -> None:
+    from biotite.structure.io import pdbx
+
+    general, model = write_pxdesign_configs(tmp_path)
+    cif = tmp_path / "target.cif"
+    document = pdbx.CIFFile.read(cif)
+    document.block["atom_site"]["auth_seq_id"] = ["101", "102", "103", "104", "105", "106"]
+    document.block["atom_site"]["auth_asym_id"] = ["Z"] * 6
+    document.write(cif)
+
+    assert load_configs(general, model).preflight.target_sequence == "ACDEFG"
+
+
 # --- planning --------------------------------------------------------------
 
 

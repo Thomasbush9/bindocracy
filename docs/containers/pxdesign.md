@@ -35,6 +35,18 @@ binder_length: 80
 Validate the exact schema against the examples and `check-input` command in the
 installed repository.
 
+Harness preflight checks raw mmCIF identifiers on selected `label_asym_id` chains
+in the first model. Polymer atoms need positive-integer `label_seq_id` values;
+`.` or `?` is not a substitute for an author residue number. The check covers the
+selected chain before cropping, matching the consumer's parsing order. Legal
+nonpolymer rows may lack sequence labels. Diagnostics identify the chain, atom
+row, and field; no input is rewritten.
+
+This catches the reported identifier failure, not every upstream parsing,
+geometry, or runtime requirement. Preserve the original rich CIF and qualify it
+with the supported consumer; do not blindly copy `auth_seq_id` into `label_seq_id`
+or strip metadata to satisfy a different tool's conversion path.
+
 ## GPU check and production run
 
 ```bash

@@ -592,7 +592,40 @@ def write_pxdesign_configs(root: Path, *, spec: dict | None = None,
     cif = root / "target.cif"
     container = root / "pxdesign.sif"
     fasta.write_text(">target\nACDEFG\n")
-    cif.write_text("data_target\n#\n")
+    cif.write_text(
+        "data_target\n"
+        "_entity.id 1\n_entity.type polymer\n"
+        "_entity_poly.entity_id 1\n_entity_poly.type 'polypeptide(L)'\n"
+        "_entity_poly.pdbx_seq_one_letter_code ACDEFG\n"
+        "_entity_poly.pdbx_seq_one_letter_code_can ACDEFG\n"
+        "_struct_asym.id A\n_struct_asym.entity_id 1\n"
+        "loop_\n_entity_poly_seq.entity_id\n_entity_poly_seq.num\n"
+        "_entity_poly_seq.mon_id\n_entity_poly_seq.hetero\n"
+        + "".join(
+            f"1 {index} {residue} n\n"
+            for index, residue in enumerate(
+                ("ALA", "CYS", "ASP", "GLU", "PHE", "GLY"), start=1
+            )
+        )
+        + "#\nloop_\n_atom_site.group_PDB\n_atom_site.id\n"
+        "_atom_site.type_symbol\n_atom_site.label_atom_id\n"
+        "_atom_site.label_alt_id\n_atom_site.label_comp_id\n"
+        "_atom_site.label_asym_id\n_atom_site.label_entity_id\n"
+        "_atom_site.label_seq_id\n_atom_site.pdbx_PDB_ins_code\n"
+        "_atom_site.Cartn_x\n_atom_site.Cartn_y\n_atom_site.Cartn_z\n"
+        "_atom_site.occupancy\n_atom_site.B_iso_or_equiv\n"
+        "_atom_site.auth_seq_id\n_atom_site.auth_comp_id\n"
+        "_atom_site.auth_asym_id\n_atom_site.auth_atom_id\n"
+        "_atom_site.pdbx_PDB_model_num\n"
+        + "".join(
+            f"ATOM {index} C CA . {residue} A 1 {index} ? "
+            f"{float(index)} 0.0 0.0 1.0 0.0 {index} {residue} A CA 1\n"
+            for index, residue in enumerate(
+                ("ALA", "CYS", "ASP", "GLU", "PHE", "GLY"), start=1
+            )
+        )
+        + "#\n"
+    )
     container.write_bytes(b"fixture")
 
     if spec is None:

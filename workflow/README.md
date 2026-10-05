@@ -103,6 +103,29 @@ Lifecycle management currently targets one Slurm cluster with accessible
 accepted. The campaign CLI enforces the approval/lifecycle interface; direct
 Snakemake invocation below remains a lower-level interface.
 
+### Scheduler completion is not tool success
+
+Treat these as separate outcomes:
+
+| Evidence | What it establishes |
+|---|---|
+| `sacct` / campaign scheduler state | The wrapper allocation ended; `COMPLETED 0:0` is not a generator verdict |
+| `tasks/<task>/status.json` | Recorded tool status and `exit_code`; inspect `error` and the task log for failures |
+| `collected.json` | Parsed run/task outcomes, output counts, and tool-specific evaluation completeness |
+| Ingestion marker / stored run | Collection reached the database; failed and partial runs are intentionally retained |
+
+An ordinary tool exit such as `2` is recorded rather than raised by the generation
+rule, so Snakemake can still collect and ingest the failure or partial outputs.
+The enclosing Slurm job can therefore be `COMPLETED` while the tool is `failed`.
+Infrastructure failures that prevent launch or recording remain workflow errors.
+
+When monitoring, report all relevant states, for example:
+`scheduler=COMPLETED; tool=failed (exit_code=2); collection/ingestion=complete`.
+Do not change the wrapper to abort on every nonzero tool exit: that would skip the
+failure-harvesting path. After ingestion, use `bindocracy campaign report` for
+stored outcomes; before ingestion, inspect the task status and collection files.
+Neither scheduler completion nor successful execution implies passing candidates.
+
 ## Verification and opt-in deployment qualification
 
 GitHub Actions runs the committed `uv.lock` environment on Python 3.12 with

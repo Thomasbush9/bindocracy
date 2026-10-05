@@ -32,6 +32,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from bindocracy.adapters.base import CollectionError, OutputAdapter
 from bindocracy.adapters.common import (
     artifact,
@@ -114,6 +116,9 @@ NATIVE_ID = "_native_id"
 RANK = "_rank"
 
 _SEQUENCE = re.compile(r"[A-Z]+")
+_MISSING_INPUTS = re.compile(
+    r"Missing columns \[(?P<inputs>[^\]]*)\] for filter ['\"](?P<filter>[^'\"]+)['\"]"
+)
 
 
 class PXDesignOutputAdapter(OutputAdapter):
@@ -148,7 +153,8 @@ class PXDesignOutputAdapter(OutputAdapter):
             # finish, not that the preset never asked for it.
             missing = [name for name in EXPECTED_FILTERS[preset] if name not in columns]
             malformed = _shape_problems(rows, task)
-            complete = not missing and not malformed and bool(rows)
+            coverage_problems, skipped_checks = _filter_coverage(run_dir, task, preset)
+            complete = not missing and not malformed and not coverage_problems and bool(rows)
             evaluated = evaluated and complete
             task_passed = (
                 sum(1 for row in rows if _is_hit(row, preset)) if complete else 0
@@ -156,6 +162,9 @@ class PXDesignOutputAdapter(OutputAdapter):
             passed += task_passed
             per_task[f"{task.task_id:04d}"] = {
                 "status": status.status if status else "missing",
+                "evaluation_complete": complete,
+                "evaluation_problems": coverage_problems,
+                "skipped_checks": skipped_checks,
                 "n_produced": len(rows),
                 # Only meaningful when every expected verdict is present; a
                 # count taken from half the filters would read as a real zero.
@@ -291,6 +300,138 @@ def _shape_problems(rows: list[dict[str, Any]], task: TaskPlan) -> list[str]:
     if set(ranks) != expected and len(rows) == task.n_requested:
         problems.append(f"ranks are not 1..{task.n_requested}")
     return problems
+
+
+def _is_final_filter_table(path: Path) -> bool:
+    """Match the final-stage suffix, not an incidental task or ancestor name."""
+    return (
+        path.name == "sample_level_output.csv"
+        and len(path.parts) >= 3
+        and path.parts[-3] == "ptx_final_outputs"
+    )
+
+
+def _filter_coverage(
+    run_dir: Path, task: TaskPlan, preset: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Audit native evaluator evidence without recomputing scientific filters.
+
+    The final summary is a renamed, trimmed projection, not proof that every
+    configured check ran. PXDesignBench writes null success values and prints
+    missing-input warnings even for disabled evaluators. Its final PTX rerun
+    intentionally disables AF2, so warnings must also retain their stage.
+    """
+    task_dir = run_dir / task.directory
+    problems: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    config_path = task_dir / RESOLVED_CONFIG
+    binder: dict[str, Any] = {}
+    if config_path.is_file():
+        try:
+            config = yaml.safe_load(config_path.read_text())
+            binder = config.get("eval", {}).get("binder", {})
+            if not isinstance(binder, dict):
+                raise TypeError("eval.binder is not a mapping")
+        except (OSError, TypeError, ValueError, AttributeError, yaml.YAMLError) as error:
+            problems.append({
+                "source": str(config_path.relative_to(run_dir)),
+                "reason": f"cannot read resolved filter configuration: {error}",
+            })
+            binder = {}
+    filters = binder.get("filters", {})
+    if not isinstance(filters, dict):
+        problems.append({
+            "source": str(config_path.relative_to(run_dir)),
+            "reason": "eval.binder.filters is not a mapping",
+        })
+        filters = {}
+
+    # Use resolved evaluator flags when present, with the manifest preset as
+    # the legacy fallback. Merely listing mini in the default filters mapping
+    # does not enable it. Final-summary expectations remain preset-specific.
+    required = {"af2_easy", "af2_opt"}
+    if binder.get("eval_complex") is False:
+        required.clear()
+    if binder.get("eval_protenix", preset == "extended") is True:
+        required.update(("ptx", "ptx_basic"))
+    if binder.get("eval_protenix_mini") is True:
+        required.add("ptx_mini")
+
+    def is_required(name: str, final: bool) -> bool:
+        return name in ({"ptx", "ptx_basic"} if final else required)
+
+    # Unlike summary.csv these tables retain native filter-input names.
+    tables = sorted(task_dir.glob("global_run_*/*/seed_*/predictions/sample_level_output.csv"))
+    tables.extend(sorted(task_dir.glob("ptx_final_outputs/*/sample_level_output.csv")))
+    for table in tables:
+        final = _is_final_filter_table(table)
+        source = str(table.relative_to(run_dir))
+        with table.open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            columns = set(reader.fieldnames or ())
+            rows = list(reader)
+        for name, inputs in filters.items():
+            if not is_required(name, final):
+                continue
+            if not isinstance(inputs, dict):
+                problems.append({
+                    "source": source, "filter": name,
+                    "reason": "required filter inputs are not a mapping",
+                })
+                continue
+            missing_inputs = sorted(set(inputs) - columns)
+            if missing_inputs:
+                problems.append({
+                    "source": source, "filter": name,
+                    "reason": "missing required filter inputs",
+                    "missing_inputs": missing_inputs,
+                })
+            verdict = f"{name}_success"
+            if verdict not in columns or not rows or any(
+                str(row.get(verdict, "")).strip().lower()
+                not in {"0", "1", "0.0", "1.0", "true", "false"}
+                for row in rows
+            ):
+                problems.append({
+                    "source": source, "filter": name,
+                    "reason": "required native verdict missing or unevaluated",
+                })
+
+    # The harness captures both stdout and stderr at the manifest's log path.
+    # Batch warnings until the evaluator prints its output path: final PTX
+    # reruns otherwise look like broken AF2 evaluations in a healthy task.
+    log_path = run_dir / task.log
+    pending: list[dict[str, Any]] = []
+
+    def finish_warnings(final: bool) -> None:
+        for warning in pending:
+            warning["stage"] = "ptx_final" if final else "evaluation"
+            warning["required"] = is_required(warning["filter"], final)
+            skipped.append(warning)
+            if warning["required"]:
+                problems.append({**warning, "reason": "required filter inputs skipped"})
+        pending.clear()
+
+    if log_path.is_file():
+        with log_path.open(errors="replace") as handle:
+            for line in handle:
+                match = _MISSING_INPUTS.search(line)
+                if match:
+                    pending.append({
+                        "source": task.log,
+                        "filter": match["filter"],
+                        "missing_inputs": [
+                            name.strip().strip("'\"")
+                            for name in match["inputs"].split(",") if name.strip()
+                        ],
+                    })
+                marker = "Eval done! Results are saved in "
+                if marker in line:
+                    output = line.partition(marker)[2].rsplit(" and ", 1)[0].strip()
+                    finish_warnings(_is_final_filter_table(Path(output)))
+        finish_warnings(False)
+    return problems, skipped
+
 
 
 def task_name_of(task: TaskPlan) -> str:

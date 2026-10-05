@@ -257,6 +257,21 @@ so optimization never subtracts those counts. Actual design rows and their
 produced/partial/invalid statuses are reported separately. Empty and failed runs
 are retained. Database presence does not assert that the scheduler succeeded.
 
+For PXDesign, inspect `run.count_details.tasks[task_id]` in the collected bundle
+or stored run. `status` retains tool execution state; `evaluation_complete`,
+`evaluation_problems`, and stage-qualified `skipped_checks` describe evaluation
+coverage. A required check with missing inputs or an unevaluated native verdict
+makes collection partial and `n_passed` unknown, while preserving usable outputs.
+
+A missing-column warning alone does not prove missing **required** evaluation.
+The resolved configuration can list `ptx_mini` filters while disabling its
+evaluator; final PTX-only reruns also intentionally skip AF2 checks. Those skips
+remain visible with `required: false` and do not invalidate completed required
+checks. Collection uses resolved configuration, native evaluation tables, and
+the manifest's task log; it does not rename metrics or recompute thresholds.
+When those sources are absent, the existing preset/final-verdict checks remain
+the available evidence, not proof that every possible check ran.
+
 Metric summaries are keyed by exact run ID, metric name, and direction. Only
 finite `status=ok` values enter min/max/mean; null, failed/missing, and nonfinite
 rows remain visible in counts. The mean weights each finite measurement equally,

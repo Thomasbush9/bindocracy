@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from conftest import PXDESIGN_FIXTURE, write_pxdesign_configs, write_pxdesign_task
 
 from bindocracy.adapters.base import CollectionError
@@ -164,6 +165,184 @@ def test_an_extended_run_missing_protenix_is_not_a_preview_run(run) -> None:
     assert result.run.n_produced == 17
     names = {d.name for d in result.decisions if d.kind == DecisionKind.FILTER}
     assert names == {"pxdesign_af2ig_easy", "pxdesign_af2ig"}
+
+
+def write_filter_evidence(run, *, mini: bool, missing: bool = False) -> Path:
+    """Write the resolved flags and unprojected evaluator table, not model output."""
+    task = run.tasks[0]
+    task_dir = run.directory / task.directory
+    (task_dir / "config.yaml").write_text(json.dumps({
+        "eval": {"binder": {
+            "eval_protenix": True,
+            "eval_protenix_mini": mini,
+            "filters": {
+                "ptx": {"ptx_iptm_binder": [">", 0.85]},
+                "ptx_mini": {"ptx_mini_iptm_binder": [">", 0.85]},
+            },
+        }},
+    }))
+    task_name = Path(task.designs).parent.name
+    raw = task_dir / "global_run_0" / task_name / "seed_123" / "predictions"
+    raw.mkdir(parents=True)
+    table = raw / "sample_level_output.csv"
+    table.write_text(
+        "ptx_iptm_binder,ptx_success,ptx_mini_success\n0.9,1,\n"
+        if missing else
+        "ptx_iptm_binder,ptx_success,ptx_mini_iptm_binder,ptx_mini_success\n0.9,1,0.9,1\n"
+    )
+    return table
+
+
+def test_required_filter_inputs_missing_despite_final_verdicts(run) -> None:
+    write_pxdesign_task(run.directory, 0, status={})
+    raw = write_filter_evidence(run, mini=True, missing=True)
+    result = collected(run)
+
+    details = result.run.count_details["tasks"]["0000"]
+    assert details["missing_filters"] == []
+    assert details["status"] == "succeeded"
+    assert details["evaluation_complete"] is False
+    assert any(
+        problem["filter"] == "ptx_mini"
+        and problem["missing_inputs"] == ["ptx_mini_iptm_binder"]
+        and problem["source"] == str(raw.relative_to(run.directory))
+        for problem in details["evaluation_problems"]
+    )
+    assert result.run.status == RunStatus.PARTIAL
+    assert result.run.n_passed is None
+    assert details["n_passed"] is None
+    assert result.run.n_produced == 17
+    assert result.metrics and result.decisions
+
+
+def test_disabled_mini_warning_does_not_invalidate_required_filters(run) -> None:
+    write_pxdesign_task(run.directory, 0, status={})
+    raw = write_filter_evidence(run, mini=False, missing=True)
+    (run.directory / run.tasks[0].log).write_text(
+        "Missing columns ['ptx_mini_iptm_binder'] for filter 'ptx_mini'. "
+        "Available columns: ['ptx_iptm_binder']\n"
+        f"Eval done! Results are saved in {raw} and summary_output.json\n"
+    )
+    result = collected(run)
+
+    details = result.run.count_details["tasks"]["0000"]
+    assert details["evaluation_complete"] is True
+    assert details["evaluation_problems"] == []
+    assert details["skipped_checks"][0]["filter"] == "ptx_mini"
+    assert details["skipped_checks"][0]["required"] is False
+    assert result.run.status == RunStatus.SUCCEEDED
+    assert result.run.n_passed == 5
+
+
+def test_enabled_mini_complete_inputs_preserve_passing_count(run) -> None:
+    write_pxdesign_task(run.directory, 0, status={})
+    write_filter_evidence(run, mini=True)
+    result = collected(run)
+    assert result.run.count_details["tasks"]["0000"]["evaluation_complete"] is True
+    assert result.run.n_passed == 5
+
+
+def test_required_skip_in_manifest_log_without_raw_tables_is_incomplete(run) -> None:
+    write_pxdesign_task(run.directory, 0, status={})
+    # No probe-specific filename: collection must follow the manifest log path.
+    manifest_path = run.directory / "run.json"
+    document = json.loads(manifest_path.read_text())
+    document["tasks"][0]["log"] = "logs/renamed-worker.out"
+    manifest_path.write_text(json.dumps(document))
+    (run.directory / "logs/renamed-worker.out").write_text(
+        "Missing columns ['ptx_iptm_binder'] for filter 'ptx'. "
+        "Available columns: ['ptx_ptm_binder']\n"
+    )
+    result = collected(run)
+    details = result.run.count_details["tasks"]["0000"]
+    assert details["status"] == "succeeded"
+    assert details["skipped_checks"][0]["required"] is True
+    assert details["evaluation_complete"] is False
+    assert result.run.n_passed is None
+    assert result.run.n_produced == 17
+
+
+def test_final_protenix_only_stage_af2_skips_are_not_required(run) -> None:
+    write_pxdesign_task(run.directory, 0, status={})
+    write_filter_evidence(run, mini=False)
+    final = (
+        run.directory / run.tasks[0].directory
+        / "ptx_final_outputs" / Path(run.tasks[0].designs).parent.name
+    )
+    final.mkdir(parents=True)
+    (final / "sample_level_output.csv").write_text(
+        "ptx_iptm_binder,ptx_success,af2_easy_success\n0.9,1,\n"
+    )
+    (run.directory / run.tasks[0].log).write_text(
+        "Missing columns ['pLDDT'] for filter 'af2_easy'. Available columns: []\n"
+        "Missing columns ['pLDDT'] for filter 'af2_opt'. Available columns: []\n"
+        "Eval done! Results are saved in /archived/task/ptx_final_outputs/"
+        "fixture/sample_level_output.csv and summary_output.json\n"
+    )
+    result = collected(run)
+    details = result.run.count_details["tasks"]["0000"]
+    assert details["evaluation_complete"] is True
+    assert all(not skip["required"] for skip in details["skipped_checks"])
+    assert result.run.n_passed == 5
+
+
+def test_preview_task_named_like_final_stage_keeps_initial_filter_requirements(tmp_path):
+    general, model = write_pxdesign_configs(
+        tmp_path, sampling={"jobs": 1, "designs_per_job": 17, "preset": "preview"},
+    )
+    spec_path = tmp_path / "pxdesign_input.yaml"
+    spec = yaml.safe_load(spec_path.read_text())
+    spec["task_name"] = "ptx_final_outputs"
+    spec_path.write_text(yaml.safe_dump(spec))
+    manifest = plan(load_configs(general, model), tmp_path / "run")
+    write_pxdesign_task(
+        manifest.directory, 0,
+        summary=drop_protenix_columns().replace(",dio3_cut,", ",ptx_final_outputs,"),
+        status={}, task_name="ptx_final_outputs",
+    )
+    task_dir = manifest.directory / manifest.tasks[0].directory
+    (task_dir / "config.yaml").write_text(json.dumps({
+        "eval": {"binder": {
+            "eval_protenix": False,
+            "filters": {
+                "af2_easy": {"pLDDT": [">", 0.8]},
+                "af2_opt": {"unscaled_i_pAE": ["<", 7]},
+                "ptx": {"ptx_iptm_binder": [">", 0.85]},
+            },
+        }},
+    }))
+    raw = task_dir / "global_run_0/ptx_final_outputs/seed_0/predictions"
+    raw.mkdir(parents=True)
+    (raw / "sample_level_output.csv").write_text(
+        "pLDDT,unscaled_i_pAE,af2_easy_success,af2_opt_success\n0.9,2,1,1\n"
+    )
+
+    result = collected(manifest)
+
+    assert result.run.status == RunStatus.SUCCEEDED
+    assert result.run.n_passed == 16
+    assert result.run.count_details["tasks"]["0000"]["evaluation_problems"] == []
+
+
+@pytest.mark.parametrize("output_path", [
+    "/archive/ptx_final_outputs/tasks/0000/global_run_0/task/seed_0/predictions",
+    "/archive/tasks/0000/global_run_0/ptx_final_outputs/seed_0/predictions",
+])
+def test_initial_skip_is_required_despite_final_stage_name_elsewhere_in_path(run, output_path):
+    write_pxdesign_task(run.directory, 0, status={})
+    (run.directory / run.tasks[0].log).write_text(
+        "Missing columns ['pLDDT'] for filter 'af2_easy'. Available columns: []\n"
+        f"Eval done! Results are saved in {output_path}/sample_level_output.csv "
+        "and summary_output.json\n"
+    )
+
+    result = collected(run)
+    task = result.run.count_details["tasks"]["0000"]
+
+    assert task["skipped_checks"][0]["stage"] == "evaluation"
+    assert task["skipped_checks"][0]["required"] is True
+    assert result.run.n_passed is None
+    assert result.run.n_produced == 17
 
 
 def test_a_manifest_with_no_preset_cannot_be_collected(run) -> None:

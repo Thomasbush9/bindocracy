@@ -25,6 +25,6 @@ class Controller(ConfigModel):
 class Site(ConfigModel):
     controller: Controller
     max_workers: int = Field(gt=0, strict=True)
-    max_total_gpus: int = Field(gt=0, strict=True)
+    max_total_gpus: int = Field(ge=0, strict=True)
     nofile: int = Field(default=65536, ge=1024, strict=True)
     latency_wait: int = Field(default=60, ge=0, strict=True)

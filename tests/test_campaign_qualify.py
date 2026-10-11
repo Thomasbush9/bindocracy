@@ -167,7 +167,7 @@ def canary(tmp_path, monkeypatch):
                 "tasks": 1,
                 "resources": {
                     "gpu": 0,
-                    "gres": "gpu:0",
+                    "gres": "",
                     "cpus_per_task": 1,
                     "mem_mb": 1024,
                     "runtime": 1,

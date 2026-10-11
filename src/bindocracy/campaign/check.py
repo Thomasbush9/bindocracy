@@ -262,7 +262,7 @@ def check_campaign(
     if site_path is not None:
         try:
             site = load_yaml(site_path, Site)
-            if site.controller.gpus >= site.max_total_gpus:
+            if site.controller.gpus > site.max_total_gpus:
                 raise ValueError("controller GPU allocation leaves no worker GPU budget")
             checks.append(
                 _check("site", "ready", "Site configuration and controller budget are valid.")
@@ -333,9 +333,10 @@ def check_campaign(
                 resolved = plugin.resources(loaded)
                 gpu = loaded.model.resources.gpus
                 run["resources"] = {**resolved, "gpu": gpu}
-                if not isinstance(resolved.get("gres"), str) or resolved["gres"].split(":")[
-                    -1
-                ] != str(gpu):
+                gres = resolved.get("gres")
+                if not isinstance(gres, str) or (
+                    gres != "" if gpu == 0 else gres.split(":")[-1] != str(gpu)
+                ):
                     raise ValueError("resolved GPU request disagrees with resource configuration")
                 for key in ("cpus_per_task", "mem_mb", "runtime"):
                     if not isinstance(resolved.get(key), int) or resolved[key] <= 0:

@@ -253,7 +253,7 @@ def build_plan(index_path: str | Path, site_path: str | Path, output_dir: str | 
     site = load_yaml(site_path, Site)
     python, snakemake = _executables()
     run_root, database = index.run_root.resolve(), index.database.resolve()
-    if site.controller.gpus >= site.max_total_gpus:
+    if site.controller.gpus > site.max_total_gpus:
         raise PlanError("controller GPU allocation leaves no worker GPU budget")
     directory.mkdir(parents=True, exist_ok=True)
     # Exclusive ownership prevents concurrent planners from rewriting snapshots.
@@ -305,7 +305,10 @@ def build_plan(index_path: str | Path, site_path: str | Path, output_dir: str | 
             raise PlanError(f"{request.name}: plugin must plan positive task and request counts")
         resolved = plugin.resources(loaded)
         gpu = loaded.model.resources.gpus
-        if not isinstance(resolved.get("gres"), str) or resolved["gres"].split(":")[-1] != str(gpu):
+        gres = resolved.get("gres")
+        if not isinstance(gres, str) or (
+            (gpu == 0 and gres != "") or (gpu > 0 and gres.split(":")[-1] != str(gpu))
+        ):
             raise PlanError(
                 f"{request.name}: resolved GPU request disagrees with resource configuration"
             )

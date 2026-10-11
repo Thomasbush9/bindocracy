@@ -260,6 +260,19 @@ def test_frozen_plan_and_worker_refuse_changed_execution_closure(make_kit, mutat
     assert not manifest.path(manifest.tasks[0].status).exists()
 
 
+@pytest.mark.parametrize("gpus", [0, 1])
+def test_container_gpu_visibility_matches_requested_allocation(make_kit, tmp_path, gpus):
+    case = make_kit(container=True)
+    model = case.model.model_copy(update={
+        "resources": case.model.resources.model_copy(update={"gpus": gpus}),
+    })
+    case.config.write_text(yaml.safe_dump(model.model_dump(mode="json")))
+    manifest = plan(load_configs(case.general, case.config), tmp_path / "allocation-test")
+    launch = launch_spec(manifest, 0)
+    assert ("--nv" in launch.argv) is bool(gpus)
+    assert launch.resources["gres"] == (f"gpu:{gpus}" if gpus else "")
+
+
 def test_readiness_is_read_only_and_reports_actual_lock_evidence(make_kit, tmp_path, monkeypatch):
     case = make_kit()
 

@@ -54,8 +54,8 @@ def slurm_resources(cluster: ClusterConfig, resources: ResourceConfig) -> dict[s
         "slurm_account": cluster.account,
         "slurm_partition": cluster.default_partition,
         # The plugin owns --gres and rejects it in slurm_extra.
-        "gres": f"gpu:{resources.gpus}",
+        "gres": f"gpu:{resources.gpus}" if resources.gpus else "",
         "cpus_per_task": resources.cpus,
         "mem_mb": resources.memory_gb * 1024,
-        "runtime": resources.walltime_seconds // 60,
+        "runtime": max(1, (resources.walltime_seconds + 59) // 60),
     }

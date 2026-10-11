@@ -21,7 +21,7 @@ from typing import Any, Self
 from pydantic import Field, model_validator
 
 from bindocracy.adapters.scoring import MetricSpec, registered_keys
-from bindocracy.config.models import ConfigModel, ToolConfig
+from bindocracy.config.models import ConfigModel, CPUResourceConfig, ToolConfig
 from bindocracy.functions.models import MetricDeclaration
 from bindocracy.store.records import canonical_json, sha256_text
 from bindocracy.tools.optimize.contract import OptimizerInputKind
@@ -66,6 +66,7 @@ class OptimizeConfig(ToolConfig):
     """
 
     tool: str = "optimize"
+    resources: CPUResourceConfig
 
     # The candidate set to improve. Build it with `bindocracy designset build`,
     # usually from what a filter chose:

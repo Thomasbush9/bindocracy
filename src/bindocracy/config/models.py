@@ -92,6 +92,12 @@ class ResourceConfig(ConfigModel):
         return slurm_walltime_seconds(self.walltime)
 
 
+class CPUResourceConfig(ResourceConfig):
+    """Resources for tools that can execute entirely on CPUs."""
+
+    gpus: int = Field(ge=0)
+
+
 class ToolConfig(ConfigModel):
     """What every tool's model config must carry, whatever else it adds.
 

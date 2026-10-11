@@ -45,9 +45,9 @@ def _check_plan(plan, allow_gpu):
             raise QualificationError("GPU opt-in allows at most one GPU per allocation")
         if not 0 < plan["site"]["max_total_gpus"] <= 2:
             raise QualificationError("GPU opt-in requires a total GPU ceiling at most two")
-        if worker.get("gres") != f"gpu:{worker['gpu']}":
+        if worker.get("gres") != (f"gpu:{worker['gpu']}" if worker["gpu"] else ""):
             raise QualificationError("worker GPU directives disagree")
-    elif controller["gpus"] != 0 or worker["gpu"] != 0 or worker.get("gres") != "gpu:0":
+    elif controller["gpus"] != 0 or worker["gpu"] != 0 or worker.get("gres") != "":
         raise QualificationError("CPU-only qualification refuses GPUs without --allow-gpu")
     allowed = {
         "slurm_account",

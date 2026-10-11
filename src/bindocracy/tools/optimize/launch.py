@@ -57,7 +57,9 @@ def optimize_launch_spec(
 
     argv: list[str] = []
     if model.runtime.container is not None:
-        argv.extend(("singularity", "exec", "--cleanenv", "--nv"))
+        argv.extend(("singularity", "exec", "--cleanenv"))
+        if model.resources.gpus:
+            argv.append("--nv")
         if lock is not None:
             # Protect declared assets from accidental writes in a container;
             # this does not isolate arbitrary publisher code from the host.
@@ -175,7 +177,12 @@ def _environment(model: OptimizeConfig, task_dir: Path) -> dict[str, str]:
         environment["SINGULARITYENV_JAX_COMPILATION_CACHE_DIR"] = str(scratch / "jax")
     # known-issues.md 2.6: --cleanenv discards the variable SLURM uses to name
     # the allocated GPU, and the container then sees every device on the node.
-    devices = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if devices:
-        environment["SINGULARITYENV_CUDA_VISIBLE_DEVICES"] = devices
+    if model.resources.gpus == 0:
+        for variable in ("CUDA_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES"):
+            environment[variable] = ""
+            environment[f"SINGULARITYENV_{variable}"] = ""
+    else:
+        devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if devices is not None:
+            environment["SINGULARITYENV_CUDA_VISIBLE_DEVICES"] = devices
     return environment

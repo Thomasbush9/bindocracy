@@ -80,6 +80,11 @@ def preflight_boltzgen(general: GeneralConfig, boltzgen: BoltzGenConfig) -> Bolt
     if not isinstance(spec, dict):
         raise ConfigPreflightError(f"BoltzGen spec must be a mapping: {boltzgen.spec.template}")
 
+    for entity in spec.get("entities") or []:
+        reference = entity.get("file") if isinstance(entity, dict) else None
+        if isinstance(reference, dict) and "path" in reference:
+            reference["path"] = str((boltzgen.spec.template.parent / reference["path"]).resolve())
+
     spec_files = spec_file_paths(spec)
     missing = [path for path in spec_files if not path.is_file()]
     if missing:

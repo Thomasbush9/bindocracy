@@ -1,12 +1,14 @@
 """Build the command for one BoltzGen task.
 
-BoltzGen has no wrapper script and no driver -- the container's runscript takes
-the archived design spec directly.
+BoltzGen consumes the resolved specification frozen in the run configuration.
+The original specification is retained separately as provenance.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
+import yaml
 
 from bindocracy.config.models import GeneralConfig
 from bindocracy.runs.launch import LaunchSpec, slurm_resources, task_of
@@ -19,13 +21,16 @@ def boltzgen_launch_spec(
 ) -> LaunchSpec:
     """One BoltzGen task: `singularity run <sif> run <spec> --output <dir>`.
 
-    BoltzGen has no wrapper script and no driver -- the container's runscript
-    takes the archived design spec directly, so the spec is what gets bound in
-    and archived, exactly where Mosaic archives its driver.
+    The task-local spec is materialized from the frozen model, never reread from
+    the original template or resolved relative to the worker's working directory.
     """
     task = task_of(manifest, task_id)
     run_dir = manifest.directory
-    spec = run_dir / manifest.provenance["spec"].path
+    if model.spec.contents is None:
+        raise ValueError("BoltzGen launch requires a resolved specification")
+    spec = run_dir / task.directory / "spec.yaml"
+    spec.parent.mkdir(parents=True, exist_ok=True)
+    spec.write_text(yaml.safe_dump(model.spec.contents, sort_keys=False))
     sampling = model.sampling
 
     argv = [

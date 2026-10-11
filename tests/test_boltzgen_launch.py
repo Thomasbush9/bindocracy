@@ -24,15 +24,6 @@ def planned(boltzgen_configs, tmp_path: Path):
     return loaded, plan(loaded, tmp_path / "run")
 
 
-def test_the_spec_is_archived_and_bound_not_the_authored_one(planned) -> None:
-    loaded, manifest = planned
-
-    spec = Path(launch_spec(manifest, 0).argv[6])
-
-    assert list(manifest.provenance) == ["spec"]
-    assert spec == manifest.path("provenance/binder_spec.yaml")
-    assert spec != loaded.model.spec.template
-    assert spec.is_file()
 
 
 def test_argv_is_a_singularity_run_with_the_configured_counts(planned) -> None:
@@ -149,3 +140,24 @@ def test_boltzgen_declares_the_directories_it_needs(planned) -> None:
     assert spec.mkdirs
     assert str(spec.mkdirs[0]) == spec.env["TMPDIR"]
     assert str(spec.mkdirs[1]) == spec.env["SINGULARITYENV_BOLTZGEN_RUNTIME_CACHE"]
+
+
+def test_relative_spec_inputs_survive_other_cwd_and_authored_spec_changes(tmp_path, monkeypatch):
+    general, model = write_boltzgen_configs(tmp_path)
+    template = Path(yaml.safe_load(model.read_text())["spec"]["template"])
+    authored = yaml.safe_load(template.read_text())
+    target = Path(yaml.safe_load(general.read_text())["target"]["structure_cif"])
+    for entity in authored["entities"]:
+        if "file" in entity:
+            entity["file"]["path"] = target.name
+    template.write_text(yaml.safe_dump(authored))
+    expected = target.read_bytes()
+    elsewhere = tmp_path / "worker"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    manifest = plan(load_configs(general, model), tmp_path / "run")
+    template.write_text("not the planned specification")
+    consumed = yaml.safe_load(Path(launch_spec(manifest, 0).argv[6]).read_text())
+    references = [Path(entity["file"]["path"]) for entity in consumed["entities"] if "file" in entity]
+    assert references == [target]
+    assert references[0].read_bytes() == expected

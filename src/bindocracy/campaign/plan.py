@@ -20,6 +20,7 @@ from typing import Any
 
 import yaml
 
+from bindocracy.benchmark.identity import execution_identity
 from bindocracy.campaign.models import Site
 from bindocracy.config.load import load_yaml, read_tool_name
 from bindocracy.config.models import GeneralConfig
@@ -185,10 +186,17 @@ def _scope(tool_plan: ToolPlan) -> dict:
     return scope
 
 
-def _check_reuse(manifest: RunManifest, loaded: Any, tool_plan: ToolPlan, name: str) -> None:
+def _check_reuse(
+    manifest: RunManifest, loaded: Any, tool_plan: ToolPlan, name: str,
+    identity: dict[str, str] | None = None,
+) -> None:
     expected = loaded.to_record()
     if (
         manifest.name != name
+        or any(
+            getattr(manifest, key) != (identity or {}).get(key)
+            for key in ("attempt_id", "task_digest", "environment_digest")
+        )
         or manifest.tool != loaded.tool
         or manifest.kind != tool_plan.kind
         or manifest.general_config_id != expected.general_config_id
@@ -233,8 +241,22 @@ def build_plan(index_path: str | Path, site_path: str | Path, output_dir: str | 
     index_path, site_path = Path(index_path).resolve(), Path(site_path).resolve()
     directory = Path(output_dir).resolve()
     plan_path = directory / "plan.json"
+    index = load_workflow_index(index_path)
+    identity = execution_identity(workspace=index.workspace, attempt_id=index.attempt_id)
+    workspace_path = index.workspace or os.environ.get("BINDOCRACY_WORKSPACE")
+    workspace = None
+    if workspace_path:
+        from bindocracy.benchmark.workspace import load_workspace
+
+        workspace = load_workspace(workspace_path)
+        if index.database.resolve() != workspace.database.resolve():
+            raise PlanError("campaign database differs from benchmark workspace")
+        if not index.run_root.resolve().is_relative_to(workspace.root.resolve()):
+            raise PlanError("campaign run_root must be inside benchmark workspace")
     if plan_path.exists():
         existing = load_plan(plan_path)
+        if any(existing.get(key) != value for key, value in identity.items()):
+            raise PlanError("plan belongs to a different benchmark attempt")
         if existing["request"]["index"] != str(index_path) or existing["request"]["site"] != str(
             site_path
         ):
@@ -249,7 +271,6 @@ def build_plan(index_path: str | Path, site_path: str | Path, output_dir: str | 
         return existing
     if directory.exists() and any(directory.iterdir()):
         raise PlanError(f"plan directory must be empty: {directory}")
-    index = load_workflow_index(index_path)
     if index.campaign_plan is not None:
         raise PlanError("index is already frozen; use its existing campaign plan")
     site = load_yaml(site_path, Site)
@@ -257,6 +278,14 @@ def build_plan(index_path: str | Path, site_path: str | Path, output_dir: str | 
     run_root, database = index.run_root.resolve(), index.database.resolve()
     if site.controller.gpus > site.max_total_gpus:
         raise PlanError("controller GPU allocation leaves no worker GPU budget")
+    if workspace is not None:
+        budget = workspace.task.budget
+        if (
+            site.max_total_gpus > budget.max_gpus
+            or site.controller.cpus > budget.max_cpus
+            or site.controller.memory_gb > budget.max_memory_gb
+        ):
+            raise PlanError("site resources exceed benchmark task policy")
     directory.mkdir(parents=True, exist_ok=True)
     # Exclusive ownership prevents concurrent planners from rewriting snapshots.
     with (directory / ".planning").open("x"):
@@ -279,6 +308,8 @@ def build_plan(index_path: str | Path, site_path: str | Path, output_dir: str | 
     general_source = index.general_config.resolve()
     capture(general_source, authored / "general.yaml")
     general = load_yaml(authored / "general.yaml", GeneralConfig)
+    if workspace is not None and general.target != workspace.task.target:
+        raise PlanError("campaign target differs from benchmark task")
     general_snapshot = snapshots / "general.yaml"
     general_snapshot.write_text(yaml.safe_dump(_absolute_values(general.model_dump(mode="python"))))
     artifacts[str(general_snapshot)] = _hash(general_snapshot)
@@ -297,6 +328,8 @@ def build_plan(index_path: str | Path, site_path: str | Path, output_dir: str | 
         original = authored / f"model-{request.name}.yaml"
         capture(source, original)
         plugin = plugin_for(read_tool_name(original))
+        if workspace is not None and plugin.tool not in workspace.task.allowed_tools:
+            raise PlanError(f"tool {plugin.tool!r} is not permitted by benchmark task")
         model = load_yaml(original, plugin.config_type)
         snapshot = snapshots / f"model-{request.name}.yaml"
         snapshot.write_text(yaml.safe_dump(_absolute_values(model.model_dump(mode="python"))))
@@ -316,6 +349,11 @@ def build_plan(index_path: str | Path, site_path: str | Path, output_dir: str | 
             )
         if gpu + site.controller.gpus > site.max_total_gpus:
             raise PlanError(f"{request.name}: one worker plus controller exceeds max_total_gpus")
+        if workspace is not None and (
+            loaded.model.resources.cpus > workspace.task.budget.max_cpus
+            or loaded.model.resources.memory_gb > workspace.task.budget.max_memory_gb
+        ):
+            raise PlanError(f"{request.name}: worker resources exceed benchmark task policy")
         resolved = {**resolved, "gpu": gpu}
         scope = _scope(tool_plan)
         run_dir = run_root / request.name
@@ -326,7 +364,7 @@ def build_plan(index_path: str | Path, site_path: str | Path, output_dir: str | 
                 raise PlanError(
                     f"manifest points outside its requested run directory: {manifest_path}"
                 )
-            _check_reuse(manifest, loaded, tool_plan, request.name)
+            _check_reuse(manifest, loaded, tool_plan, request.name, identity)
         elif run_dir.exists() and any(run_dir.iterdir()):
             raise PlanError(f"run directory has data but no manifest: {run_dir}")
         if (run_dir / "campaign-binding.json").exists():
@@ -384,6 +422,8 @@ def build_plan(index_path: str | Path, site_path: str | Path, output_dir: str | 
                 "general_config": str(general_snapshot),
                 "runs": frozen_runs,
                 "campaign_plan": str(plan_path),
+                **({"workspace": str(workspace.root)} if workspace is not None else {}),
+                **({"attempt_id": identity["attempt_id"]} if identity else {}),
             },
             sort_keys=False,
         )
@@ -402,8 +442,8 @@ def build_plan(index_path: str | Path, site_path: str | Path, output_dir: str | 
             raise PlanError(
                 f"existing run {run_dir} is bound to a different campaign plan"
             ) from error
-        manifest = plan_run(loaded, tool_plan, run_dir, name=name)
-        _check_reuse(manifest, loaded, tool_plan, name)
+        manifest = plan_run(loaded, tool_plan, run_dir, name=name, identity=identity)
+        _check_reuse(manifest, loaded, tool_plan, name, identity)
         manifest_path = run_dir / "run.json"
         manifest_hash = _hash(manifest_path)
         # Unlike config-only reuse, this also binds an existing execution to
@@ -441,6 +481,8 @@ def build_plan(index_path: str | Path, site_path: str | Path, output_dir: str | 
     worker_budget = site.max_total_gpus - site.controller.gpus
     plan = {
         "schema_version": 2,
+        **identity,
+        **({"workspace": str(workspace.root)} if workspace is not None else {}),
         "plan_dir": str(directory),
         "workflow_index": str(frozen_index),
         "snakefile": str(frozen_workflow),
@@ -468,6 +510,14 @@ def build_plan(index_path: str | Path, site_path: str | Path, output_dir: str | 
             "largest_worker_mem_mb": max(run["resources"]["mem_mb"] for run in runs),
         },
     }
+    control_dir = os.environ.get("BINDOCRACY_ATTEMPT_DIR")
+    if control_dir:
+        if "attempt_id" not in identity:
+            raise PlanError("benchmark control directory requires an attempt identity")
+        plan["benchmark"] = {
+            "attempt_id": identity["attempt_id"],
+            "attempt_dir": str(Path(control_dir).resolve()),
+        }
     plan["digest"] = _identity(plan)
     # Verify the complete frozen closure before publishing its approval token.
     _verify(plan)

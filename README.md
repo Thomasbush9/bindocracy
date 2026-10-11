@@ -11,6 +11,11 @@ use the login node only to edit inputs, inspect help, and submit jobs.
 
 ## Start here
 
+- **[Autonomous-agent benchmark](docs/agent-benchmark.md)** — canonical organizer
+  and agent workflow, from environment capture and workspace initialization to
+  budgeted attempts, immutable submissions and held-out evaluation
+- **[Remaining benchmark work](docs/benchmark-next-steps.md)** — prioritized
+  deployment and verification gates, with acceptance criteria
 - **[What the alpha run says about building the harness](docs/harness-design.md)**
   — the actual conclusion: nine requirements the library has to absorb, each one
   traced to something that went wrong
@@ -65,7 +70,8 @@ uv run bindocracy --json filter metrics /path/to/campaign.duckdb \
 
 Discovery reflects registered plugins and their actual Pydantic schemas, not a
 claim that their containers or weights are installed. Shared schema kinds are
-`general`, `site`, `index`, `filter`, `rank`, `query`, `function`, `kit` and `kit-lock`.
+`general`, `site`, `index`, `filter`, `rank`, `query`, `function`, `kit`, `kit-lock`,
+`environment`, `task`, `workspace` and `attempt`.
 `config check --no-preflight` checks schemas only and does not claim resolved
 configuration identities. `designset preview` uses the same selection, exact
 filter-run resolution and limit-before-deduplication semantics as `build`,
@@ -92,10 +98,10 @@ without writing a design set; an empty preview is valid.
 
 ## Container guides
 
-Seven of these run through the harness today — Mosaic, BoltzGen, Genie 3,
-PXDesign, Protein-Hunter, Proteina-Complexa and FreeBindCraft. The rest are
-documented images you drive by hand; adding one is
-[one package and one line](docs/adding-a-tool.md).
+Use `bindocracy tools list` for the installed harness connectors. This table is
+a container catalog, not an exhaustive registry. A new core connector follows
+[the tool contract](docs/adding-a-tool.md); benchmark agents instead extend
+permitted scientific behavior through configurations and locked kits.
 
 | Tool | Image | Primary use | Harness |
 |---|---|---|---|

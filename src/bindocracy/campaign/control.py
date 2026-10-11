@@ -58,9 +58,10 @@ def _clean_environment():
 class Slurm:
     """Scheduler transport seam; tests inject a subprocess-compatible runner."""
 
-    def __init__(self, run=subprocess.run, sbatch=None):
+    def __init__(self, run=subprocess.run, sbatch=None, timeout=120):
         self.run = run
         self.sbatch = sbatch or shutil.which("sbatch") or "sbatch"
+        self.timeout = timeout
 
     def _call(self, argv, *, input=None):
         try:
@@ -71,7 +72,7 @@ class Slurm:
                 capture_output=True,
                 check=False,
                 env=_clean_environment(),
-                timeout=120,
+                timeout=self.timeout,
             )
         except (OSError, subprocess.SubprocessError) as error:
             raise CampaignError(f"scheduler outcome unknown: {error}") from error
@@ -118,8 +119,131 @@ class Slurm:
     def cancel(self, job_id):
         self._call(["scancel", job_id])
 
+    def accounting(self, job_id):
+        """Return terminal allocated-resource seconds, not sampled utilization."""
+        output = self._call([
+            "sacct", "--allocations", "--noheader", "--parsable2", "--jobs", str(job_id),
+            "--format=JobIDRaw,State,ElapsedRaw,AllocCPUS,AllocTRES%512",
+        ])
+        for line in output.splitlines():
+            fields = line.strip().split("|")
+            if len(fields) < 5 or fields[0] != str(job_id):
+                continue
+            state = fields[1].split()[0].rstrip("+")
+            if state not in _TERMINAL:
+                return None
+            tres = dict(item.split("=", 1) for item in fields[4].split(",") if "=" in item)
+            if not fields[2].isdigit() or not fields[3].isdigit() or not fields[4].strip():
+                return None
+            gpu = tres.get("gres/gpu")
+            if gpu is None:
+                gpu = sum(int(v) for k, v in tres.items() if k.startswith("gres/gpu:"))
+            return {"terminal": True, "elapsed_seconds": int(fields[2]),
+                    "cpus": int(fields[3]), "gpus": int(gpu)}
+        return None
+
+
+def _benchmark_proxy(operation, **arguments):
+    socket_path = os.environ.get("BINDOCRACY_BROKER")
+    if not socket_path:
+        return None
+    from bindocracy.benchmark.runner import _broker_request
+    return _broker_request(socket_path, operation, **arguments)
+
+
+def _benchmark_ledger(plan):
+    from bindocracy.benchmark.budget import BudgetError, ledger_for_plan
+    try:
+        return ledger_for_plan(plan)
+    except BudgetError as error:
+        raise CampaignError(str(error)) from error
+
+
+def _benchmark_check(plan):
+    ledger = _benchmark_ledger(plan)
+    if ledger is not None:
+        from bindocracy.benchmark.budget import BudgetError
+        try:
+            ledger.check()
+        except BudgetError as error:
+            raise CampaignError(str(error)) from error
+
+
+@contextlib.contextmanager
+def _benchmark_submission(plan, entry, args):
+    ledger = _benchmark_ledger(plan)
+    if ledger is None:
+        yield
+        return
+    from bindocracy.benchmark.budget import BudgetError
+    # Read exactly the allocation sent to sbatch. Reject multiplicative/alternate
+    # resource flags rather than under-reserving them.
+    allowed = {"--parsable", "--nodes", "--ntasks", "--cpus-per-task", "--gpus",
+               "--gres", "--mem", "--time", "--job-name", "--comment", "--export",
+               "--account", "--partition", "--constraint", "--output", "--error",
+               "--chdir", "--wrap", "--qos", "--nice", "--dependency", "--no-requeue",
+               "--open-mode", "--signal"}
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        name = arg.split("=", 1)[0]
+        if not arg.startswith("--"):
+            if entry["role"] == "controller" and index == len(args) - 1:
+                break
+            raise CampaignError("unsupported benchmark allocation argument")
+        if name not in allowed:
+            raise CampaignError(f"unsupported benchmark allocation option: {name}")
+        index += 1 if "=" in arg or name in {"--parsable", "--no-requeue"} else 2
+    # Prevent scheduler-default automatic requeue from spending a reservation twice.
+    args.insert(0, "--no-requeue")
+    def option(name, default=None):
+        present = any(a == name or a.startswith(name + "=") for a in args)
+        return _option(args, name) if present else default
+    try:
+        if int(option("--nodes", "1")) != 1 or int(option("--ntasks", "1")) != 1:
+            raise CampaignError("benchmark allocations require exactly one node and task")
+        gpus, gres = option("--gpus"), option("--gres")
+        if gpus is not None and gres is not None:
+            raise CampaignError("ambiguous GPU allocation")
+        if gres is not None:
+            if not re.fullmatch(r"gpu(?::[A-Za-z0-9_]+)?:[0-9]+", gres):
+                raise CampaignError("unsupported GPU resource allocation")
+            gpus = gres.rsplit(":", 1)[1]
+        memory = option("--mem")
+        if memory is None or not re.fullmatch(r"[1-9][0-9]*[MG]?", memory):
+            raise CampaignError("benchmark allocation requires explicit positive --mem")
+        memory_gb = float(memory[:-1]) if memory.endswith("G") else float(memory.rstrip("M")) / 1024
+        walltime = option("--time")
+        if walltime is None:
+            raise CampaignError("benchmark allocation requires explicit --time")
+        if walltime.isdigit():
+            seconds = int(walltime) * 60
+        else:
+            from bindocracy.config.models import slurm_walltime_seconds
+            seconds = slurm_walltime_seconds(walltime)
+        cpus = int(option("--cpus-per-task"))
+        with ledger.submission(entry["tag"], gpus=int(gpus or 0), cpus=cpus,
+                               walltime_seconds=seconds, memory_gb=memory_gb,
+                               tag=entry["tag"], role=entry["role"], plan=str(Path(plan["plan_dir"]) / "plan.json")) as reservation:
+            yield
+            reservation.update(scheduler_id=entry["id"], state=entry["state"])
+    except (BudgetError, ValueError, TypeError) as error:
+        raise CampaignError(str(error)) from error
+
+
+def _benchmark_failed_intent(plan, entry):
+    ledger = _benchmark_ledger(plan)
+    if ledger is not None and entry["tag"] not in ledger.snapshot()["reservations"]:
+        entry["state"] = "NOT_SUBMITTED"
+
 
 def _directory(plan):
+    ledger = _benchmark_ledger(plan)
+    if ledger is not None:
+        digest = plan["digest"].removeprefix("sha256:")
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise CampaignError("invalid benchmark frozen plan digest")
+        return ledger.directory / "campaigns" / digest
     return Path(plan["plan_dir"]) / "control"
 
 
@@ -184,6 +308,10 @@ def _intent(plan, attempt, role, **association):
         **association,
     }
     attempt["jobs"].append(entry)
+    if plan.get("attempt_id"):
+        import hashlib
+        identity = hashlib.sha256(plan["attempt_id"].encode()).hexdigest()[:16]
+        entry["tag"] = f"bd-bench:{identity}:{entry['tag'][3:]}"
     return entry
 
 
@@ -207,6 +335,13 @@ def _reconcile(plan, journal, scheduler):
                 job.update(id=match["id"], state=match["state"])
                 job["scheduler_confirmed"] = True
                 job.pop("error", None)
+                ledger = _benchmark_ledger(plan)
+                if ledger is not None:
+                    ledger.record_job(job["tag"], match["id"], tag=job["tag"], state=job["state"])
+                    if job["state"] in _TERMINAL and hasattr(scheduler, "accounting"):
+                        accounting = scheduler.accounting(match["id"])
+                        if accounting is not None:
+                            ledger.reconcile(job["tag"], scheduler_id=match["id"], tag=job["tag"], **accounting)
             elif job["state"] not in _TERMINAL:
                 job["state"] = "UNKNOWN"
     _save(plan, journal)
@@ -277,9 +412,14 @@ def _view(plan, journal):
     return {"digest": plan["digest"], "state": state, "attempts": attempts, "artifacts": artifacts}
 
 
-def status(plan_path, *, scheduler=None):
+def status(plan_path, *, scheduler=None, _expected_digest=None):
     """Reconcile exact scheduler tags and read artifacts; never write metrics."""
+    proxied = _benchmark_proxy("status", plan_path=str(Path(plan_path).resolve()))
+    if proxied is not None:
+        return proxied
     plan = load_plan(plan_path, verify=False)
+    if _expected_digest is not None and plan["digest"] != _expected_digest:
+        raise CampaignError("plan changed after broker validation")
     with _locked(plan):
         journal = _read(plan)
         _reconcile(plan, journal, scheduler or Slurm())
@@ -416,6 +556,7 @@ def _recover_interrupted(plan, journal, attempt):
 
 
 def _submit(plan, plan_path, journal, scheduler, *, recover=False):
+    _benchmark_check(plan)
     attempt = {
         "id": uuid4().hex,
         "created_at": datetime.now(UTC).isoformat(),
@@ -432,21 +573,31 @@ def _submit(plan, plan_path, journal, scheduler, *, recover=False):
     entry["state"] = "UNKNOWN"
     _save(plan, journal)
     try:
-        entry["id"] = scheduler.submit(_controller_args(plan, entry, script))
-        entry["state"] = "SUBMITTED"
+        args = _controller_args(plan, entry, script)
+        with _benchmark_submission(plan, entry, args):
+            entry["id"] = scheduler.submit(args)
+            entry["state"] = "SUBMITTED"
     except CampaignError as error:
         entry["error"] = str(error)
+        _benchmark_failed_intent(plan, entry)
         _save(plan, journal)
         raise
     _save(plan, journal)
     return _view(plan, journal)
 
 
-def submit(plan_path, approve, *, scheduler=None, require_fresh=False):
+def submit(plan_path, approve, *, scheduler=None, require_fresh=False, _expected_digest=None):
     """Launch once. Repeated submit reports the existing attempt, never duplicates."""
+    proxied = _benchmark_proxy("submit", plan_path=str(Path(plan_path).resolve()),
+                               approve=approve, require_fresh=require_fresh)
+    if proxied is not None:
+        return proxied
     plan_path = Path(plan_path).resolve()
     plan = _approved(plan_path, approve)
-    scheduler = scheduler or Slurm()
+    if _expected_digest is not None and plan["digest"] != _expected_digest:
+        raise CampaignError("plan changed after broker validation")
+    _benchmark_check(plan)
+    scheduler = scheduler or Slurm(timeout=10 if _benchmark_ledger(plan) is not None else 120)
     with _locked(plan):
         journal = _read(plan)
         if journal["attempts"]:
@@ -457,13 +608,18 @@ def submit(plan_path, approve, *, scheduler=None, require_fresh=False):
         return _submit(plan, plan_path, journal, scheduler)
 
 
-def cancel(plan_path, *, scheduler=None):
+def cancel(plan_path, *, scheduler=None, _expected_digest=None):
     """Close submission gate before stopping controllers and tagged workers.
 
     Repeat while state is cancelling/unknown: accounting may lag acceptance.
     Unknown outcomes remain unresolved rather than authorizing a second launch.
     """
+    proxied = _benchmark_proxy("cancel", plan_path=str(Path(plan_path).resolve()))
+    if proxied is not None:
+        return proxied
     plan = load_plan(plan_path, verify=False)
+    if _expected_digest is not None and plan["digest"] != _expected_digest:
+        raise CampaignError("plan changed after broker validation")
     scheduler = scheduler or Slurm()
     with _locked(plan):
         journal = _read(plan)
@@ -484,11 +640,17 @@ def cancel(plan_path, *, scheduler=None):
         return _view(plan, journal)
 
 
-def resume(plan_path, approve, *, scheduler=None):
+def resume(plan_path, approve, *, scheduler=None, _expected_digest=None):
     """Resume the same DAG only after every previous scheduler job is terminal."""
+    proxied = _benchmark_proxy("resume", plan_path=str(Path(plan_path).resolve()), approve=approve)
+    if proxied is not None:
+        return proxied
     plan_path = Path(plan_path).resolve()
     plan = _approved(plan_path, approve)
-    scheduler = scheduler or Slurm()
+    if _expected_digest is not None and plan["digest"] != _expected_digest:
+        raise CampaignError("plan changed after broker validation")
+    _benchmark_check(plan)
+    scheduler = scheduler or Slurm(timeout=10 if _benchmark_ledger(plan) is not None else 120)
     with _locked(plan):
         journal = _read(plan)
         _reconcile(plan, journal, scheduler)
@@ -506,6 +668,7 @@ def resume(plan_path, approve, *, scheduler=None):
 
 
 def _allowed(plan, journal, attempt_id):
+    _benchmark_check(plan)
     attempt = _attempt(journal, attempt_id)
     if journal["attempts"][-1]["id"] != attempt_id or attempt["cancel_requested"]:
         raise CampaignError("attempt is cancelled or superseded")
@@ -575,10 +738,14 @@ def worker_submit(plan_path, attempt_id, args, *, scheduler=None):
         wrapped = f"ulimit -n {int(plan['site']['nofile'])} && {verify} && ( {wrapped}\n)"
         args = _replace_option(_replace_option(args, "--comment", entry["tag"]), "--wrap", wrapped)
         try:
-            entry["id"] = (scheduler or Slurm(sbatch=attempt["sbatch"])).submit(args)
-            entry["state"] = "SUBMITTED"
+            transport = scheduler or Slurm(sbatch=attempt["sbatch"],
+                                          timeout=10 if _benchmark_ledger(plan) is not None else 120)
+            with _benchmark_submission(plan, entry, args):
+                entry["id"] = transport.submit(args)
+                entry["state"] = "SUBMITTED"
         except CampaignError as error:
             entry["error"] = str(error)
+            _benchmark_failed_intent(plan, entry)
             _save(plan, journal)
             raise
         _save(plan, journal)
@@ -623,6 +790,11 @@ def _run_controller(plan_path, attempt_id):
             controller.update(id=job_id, state="RUNNING")
             _save(plan, journal)
         env = _clean_environment()
+        if plan.get("benchmark"):
+            env.update(BINDOCRACY_ATTEMPT_ID=plan["benchmark"]["attempt_id"],
+                       BINDOCRACY_ATTEMPT_DIR=plan["benchmark"]["attempt_dir"],
+                       PYTHONDONTWRITEBYTECODE="1")
+            env.pop("BINDOCRACY_BROKER", None)
         env["PATH"] = str(directory / attempt_id / "bin") + os.pathsep + env.get("PATH", "")
         env["SNAKEMAKE_PROFILE"] = "none"
         workdir = directory / "work"

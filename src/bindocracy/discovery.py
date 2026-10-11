@@ -6,6 +6,12 @@ from typing import Annotated
 
 import typer
 
+from bindocracy.benchmark.models import (
+    AttemptRecord,
+    EnvironmentManifest,
+    TaskSpec,
+    WorkspaceManifest,
+)
 from bindocracy.campaign.models import Site
 from bindocracy.cli_output import emit, fail
 from bindocracy.config.load import load_yaml, read_tool_name
@@ -30,6 +36,10 @@ class SchemaKind(str, Enum):
     FUNCTION = "function"
     KIT = "kit"
     KIT_LOCK = "kit-lock"
+    ENVIRONMENT = "environment"
+    TASK = "task"
+    WORKSPACE = "workspace"
+    ATTEMPT = "attempt"
 
 
 _SCHEMAS = {
@@ -42,6 +52,10 @@ _SCHEMAS = {
     SchemaKind.FUNCTION: FunctionRunConfig,
     SchemaKind.KIT: KIT_MANIFEST_ADAPTER,
     SchemaKind.KIT_LOCK: KitLock,
+    SchemaKind.ENVIRONMENT: EnvironmentManifest,
+    SchemaKind.TASK: TaskSpec,
+    SchemaKind.WORKSPACE: WorkspaceManifest,
+    SchemaKind.ATTEMPT: AttemptRecord,
 }
 
 

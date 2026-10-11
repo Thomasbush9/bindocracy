@@ -121,6 +121,9 @@ class RunManifest(ManifestModel):
     container_digest: str | None
     code_revision: str | None
     workflow: dict[str, Any]
+    attempt_id: str | None = None
+    task_digest: str | None = None
+    environment_digest: str | None = None
     # The biological target, by content rather than by path. One database
     # follows one target, and this is what makes that checkable.
     target: TargetDigest | None = None
@@ -191,7 +194,14 @@ class RunManifest(ManifestModel):
             n_requested=self.designs_per_task * len(self.tasks),
             container_digest=self.container_digest,
             code_revision=self.code_revision,
-            workflow_metadata=self.workflow,
+            workflow_metadata={
+                **self.workflow,
+                **{
+                    key: getattr(self, key)
+                    for key in ("attempt_id", "task_digest", "environment_digest")
+                    if getattr(self, key) is not None
+                },
+            },
             resources=self.resources,
             output_uri=self.run_dir,
             created_at=self.created_at,
@@ -204,16 +214,27 @@ def plan_run(
     run_dir: str | Path,
     *,
     name: str | None = None,
+    identity: dict[str, str] | None = None,
 ) -> RunManifest:
     """Create the run directory and manifest, or reuse a matching existing one.
 
     Restart-safe: an existing manifest for the same config pair is returned
     unchanged, keeping its run ID and its archived copies of the inputs.
     """
+    if identity is None:
+        from bindocracy.benchmark.identity import execution_identity
+
+        identity = execution_identity()
     directory = Path(run_dir).resolve()
     manifest_path = directory / MANIFEST_NAME
     if manifest_path.is_file():
-        return _reuse(manifest_path, loaded)
+        existing = _reuse(manifest_path, loaded)
+        if any(
+            getattr(existing, key) != identity.get(key)
+            for key in ("attempt_id", "task_digest", "environment_digest")
+        ):
+            raise ManifestError("run directory belongs to a different benchmark attempt")
+        return existing
 
     config = loaded.to_record()
     directory.mkdir(parents=True, exist_ok=True)
@@ -247,6 +268,7 @@ def plan_run(
 
     manifest = RunManifest(
         run_id=new_id(),
+        **identity,
         name=name or loaded.model.name,
         tool=loaded.model.tool,
         kind=tool_plan.kind,

@@ -234,7 +234,7 @@ def qualify(
     _check_plan(plan, allow_gpu)
     if approve is not None and approve != plan["digest"]:
         raise QualificationError("--approve must exactly match the frozen plan digest")
-    directory = Path(plan["plan_dir"]) / "control"
+    directory = control._directory(plan)
     journal_path = directory / "journal.json"
     # This is only the early refusal; submit(require_fresh=True) repeats it atomically.
     if journal_path.exists() and json.loads(journal_path.read_text()).get("attempts"):

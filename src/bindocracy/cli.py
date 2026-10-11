@@ -14,6 +14,9 @@ import yaml
 from pydantic import ValidationError
 
 from bindocracy import __version__
+from bindocracy.benchmark.cli import app as benchmark_app
+from bindocracy.benchmark.submission_cli import app as submission_app
+from bindocracy.benchmark.workspace_cli import app as workspace_app
 from bindocracy.campaign.cli import app as campaign_app
 from bindocracy.cli_output import OutputGroup, emit, fail
 from bindocracy.config import (
@@ -68,6 +71,9 @@ app.add_typer(function_app, name="function")
 app.add_typer(campaign_app, name="campaign")
 app.add_typer(rank_app, name="rank")
 app.add_typer(kit_app, name="kit")
+app.add_typer(workspace_app, name="workspace")
+app.add_typer(benchmark_app, name="benchmark")
+app.add_typer(submission_app, name="submission")
 register_discovery(app, config_app)
 
 

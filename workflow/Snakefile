@@ -38,23 +38,26 @@ if INDEX.campaign_plan is not None:
         raise ValueError("workflow configuration differs from the approved campaign plan")
     FROZEN_RUNS = {run["name"]: run for run in frozen_plan["runs"]}
 
-# Validated at DAG time, so a bad config fails in a second rather than in the
-# queue. This is also where the task count comes from, which is why no
-# checkpoint is needed to know the shape of the fan-out.
-LOADED = {
+# A frozen plan already contains validated task/resource mappings and archived
+# scientific inputs. Re-running plugin preflight here would query a live source
+# database again and undo the frozen-input guarantee.
+LOADED = {} if FROZEN_RUNS is not None else {
     request.name: load_configs(INDEX.general_config, request.config)
     for request in INDEX.runs
 }
-TASKS = {
-    name: [
-        f"{task_id:04d}"
-        for task_id in range(
-            FROZEN_RUNS[name]["tasks"] if FROZEN_RUNS is not None
-            else plugin_for(loaded.tool).tool_plan(loaded).jobs
-        )
-    ]
-    for name, loaded in LOADED.items()
-}
+TASKS = (
+    {
+        name: [f"{task_id:04d}" for task_id in range(run["tasks"])]
+        for name, run in FROZEN_RUNS.items()
+    }
+    if FROZEN_RUNS is not None else {
+        name: [
+            f"{task_id:04d}"
+            for task_id in range(plugin_for(loaded.tool).tool_plan(loaded).jobs)
+        ]
+        for name, loaded in LOADED.items()
+    }
+)
 RESOURCES = (
     {name: run["resources"] for name, run in FROZEN_RUNS.items()}
     if FROZEN_RUNS is not None else {
@@ -92,7 +95,7 @@ localrules: all, prepare_run, collect, ingest, generation_complete
 
 rule all:
     input:
-        expand(str(RUN_ROOT / "{run}" / "generation.done"), run=list(LOADED)),
+        expand(str(RUN_ROOT / "{run}" / "generation.done"), run=list(TASKS)),
 
 
 rule prepare_run:
@@ -104,6 +107,8 @@ rule prepare_run:
     log:
         RUN_ROOT / "{run}" / "logs" / "prepare.log",
     run:
+        if FROZEN_RUNS is not None:
+            raise ValueError("frozen manifests are already prepared and cannot be regenerated")
         prepare_step(LOADED[wildcards.run], RUN_ROOT / wildcards.run, wildcards.run, log[0])
 
 

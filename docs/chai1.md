@@ -202,7 +202,8 @@ reach by rebuilding `mosaic.sif`.
 ## Running it
 
 ```bash
-bindocracy config load --general general.yaml --model configs/chai1.yaml
+bindocracy config load campaign.duckdb --general general.yaml --model configs/chai1.yaml
 ```
 
-then the ordinary Snakemake path. See `examples/chai1.example.yaml`.
+Then use the ordinary [campaign plan/approval lifecycle](../workflow/README.md).
+See `examples/chai1.example.yaml`. The database positional argument is required.

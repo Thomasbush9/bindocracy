@@ -34,6 +34,9 @@ Start from an ordinary execution index and a site policy copied from
 Worker resources remain in each tool's config; controller resources and campaign
 concurrency limits live in the site policy. A GPU-backed controller must be
 requested explicitly, and its GPUs count toward `max_total_gpus`.
+CPU-capable `function` and `optimize` configs accept `gpus: 0`; their Slurm
+resources omit a GPU GRES request (`gres: ""`). CPU-only sites can set
+`max_total_gpus: 0`. GPU-required kits cannot use zero-GPU allocations.
 
 ```bash
 # No scheduler submission or database writes. Creates frozen configs and run manifests.
@@ -58,9 +61,10 @@ output counts. Source runs are not automatically treated as selection cohorts;
 the original selection query remains in the plan.
 
 Planning copies the common Snakefile verbatim and adds `campaign_plan` to its
-frozen index. The common workflow verifies that index, uses the frozen task and
-resource mappings, and keeps the usual prepare → generate → collect → ingest
-stages. `scripts/check_index.py` also accepts the frozen index.
+frozen index. The common workflow verifies that index and uses the already
+prepared manifests, tasks and resources without rerunning mutable DB preflight.
+Execution still follows generate → collect → ingest; authored, unfrozen workflows
+also run preparation. `scripts/check_index.py` accepts both forms.
 
 ### Identity and recovery
 
@@ -69,13 +73,13 @@ stages. `scripts/check_index.py` also accepts the frozen index.
   Python source prevent execution. Small inputs/scripts use SHA-256; large
   container/checkpoint assets use recorded filesystem identities, not full binary
   hashes. Preserve those assets separately.
-- **Locked kits retain their cache.** Resolve reviewed kits with `kit resolve`
-  and use the generated optimizer configuration. The plan records the full kit
-  lock and references every bundled file; verification also detects added files
-  and dependency drift. Execution preserves the complete cached directory for
-  sibling imports and data. Keep the cache and site assets available: they are
-  not all copied into each run. Kit approval and campaign-plan approval are
-  separate; neither is a sandbox or runtime qualification.
+- **Locked kit closure.** `kit resolve` emits ordinary optimizer or function
+  configurations. Optimizers retain the complete verified cache for execution;
+  managed functions also archive the complete bundle into run provenance.
+  Sibling imports/data and external dependency identities are verified. Keep
+  external site assets available: they are not all copied into each run. Kit
+  approval and campaign-plan approval are separate; neither is a sandbox or
+  runtime qualification.
 - **One plan owns each run directory.** Plans cannot be relocated or rebound.
   A different execution, source revision, or resource policy needs a new plan
   directory and new run names. An incomplete planning attempt retains its
@@ -85,6 +89,9 @@ stages. `scripts/check_index.py` also accepts the frozen index.
 - **Durable jobs.** `control/journal.json` records submission intents, controller
   and worker IDs, run/task associations, and recovery archives. Attempt-specific
   controller scripts and Slurm logs live under `control/<attempt>/`.
+  Within benchmark attempts, journals and trusted launch scripts instead live
+  under the protected organizer attempt directory, keyed by the full plan digest.
+  See [the benchmark guide](../docs/agent-benchmark.md).
 - **Isolated cancellation.** Cancellation closes the submission gate first, then
   cancels only allocations confirmed by their exact scheduler tags. Delayed
   accounting can leave an unknown/cancelling state: repeat `status`/`cancel`.
@@ -102,6 +109,12 @@ Lifecycle management currently targets one Slurm cluster with accessible
 `squeue` and `sacct` comments. Federated submission IDs and job arrays are not
 accepted. The campaign CLI enforces the approval/lifecycle interface; direct
 Snakemake invocation below remains a lower-level interface.
+
+Database readers and writers coordinate through a persistent sidecar file lock
+held for the DuckDB connection lifetime. This serializes ingestion across
+independent campaign controllers as well as within a workflow's `db_writer=1`
+resource. Keep the sidecar beside the database; do not remove it while connections
+are active.
 
 ### Scheduler completion is not tool success
 
@@ -151,12 +164,10 @@ running, and do not operate the same plan from another terminal during qualifica
    execution closure and digest. Do not edit `plan.json` or manifests afterward.
 2. The default policy is CPU-only: zero controller and worker GPUs, controller
    at most 2 CPUs/4 GiB/10 minutes, worker at most 2 CPUs/4096 MiB/5 minutes, and
-   site `max_workers: 1`. The current bundled scientific connectors require GPUs;
-   a CPU canary therefore needs a genuine CPU-capable external connector using the
-   existing `BINDOCRACY_PLUGINS` interface and a resource model accepting zero GPUs.
-   Its resolved resources must satisfy normal campaign planning, including
-   `gres: gpu:0`. Confirm that representation is supported by the local executor
-   and Slurm. The test-only toy connector is not a production canary.
+   site `max_workers: 1`. Use the bundled `function` connector or a genuine
+   CPU-only optimizer kit on supplied inputs. Resolved CPU resources have
+   `gres: ""`, not a `gpu:0` request. A sequence-only software canary exercises
+   transport, not scientific model quality or GPU compatibility.
 3. For an existing supported GPU connector instead, **separately opt in** with
    `--allow-gpu`. The policy still permits only one run/task and one concurrent
    worker. Each allocation may request at most one GPU and the site's total GPU
@@ -168,8 +179,7 @@ running, and do not operate the same plan from another terminal during qualifica
 
 No path above installs a fake scientific tool or silently reduces an existing
 plan's resources. A configuration that cannot meet the canary limits is refused.
-The current site schema requires a positive `max_total_gpus` even for a CPU-only
-plan; it is a ceiling, not a GPU allocation.
+CPU-only plans can set the site's `max_total_gpus` ceiling to zero.
 
 ### Inspecting, approving, and interpreting results
 

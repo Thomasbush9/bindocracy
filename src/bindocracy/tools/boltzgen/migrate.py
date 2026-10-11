@@ -19,8 +19,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-import duckdb
-
+from bindocracy.store.locking import locked_connection
 from bindocracy.store.records import DecisionKind, stable_id
 from bindocracy.tools.boltzgen.adapter import FILTER_NAME, RANK_NAME, rank_scope
 
@@ -55,8 +54,7 @@ def task_of_native_id(native_id: str) -> int:
 
 def backfill_boltzgen_decisions(database: str | Path, *, dry_run: bool = False) -> Backfill:
     """Rewrite historical BoltzGen rows into filter and rank decisions."""
-    con = duckdb.connect(str(database), read_only=dry_run)
-    try:
+    with locked_connection(database, read_only=dry_run) as con:
         rows = con.execute("""
             SELECT d.design_id, d.run_id, d.native_id, d.status,
                    CAST(d.metadata AS VARCHAR)
@@ -125,8 +123,6 @@ def backfill_boltzgen_decisions(database: str | Path, *, dry_run: bool = False) 
             if not dry_run:
                 con.execute("ROLLBACK")
             raise
-    finally:
-        con.close()
 
     return Backfill(
         designs=len(rows), filters=filters, ranks=ranks,

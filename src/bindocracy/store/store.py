@@ -8,10 +8,10 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
 
-import duckdb
 from pydantic import BaseModel
 
 from bindocracy.store import schema
+from bindocracy.store.locking import locked_connection
 from bindocracy.store.records import CollectedRun, ConfigRecord
 
 _COLUMNS: dict[str, tuple[str, ...]] = {
@@ -137,9 +137,14 @@ class CampaignStore:
 
     def __init__(self, path: str | Path, *, read_only: bool = False) -> None:
         self.path = Path(path)
-        self.connection = duckdb.connect(str(self.path), read_only=read_only)
-        if not read_only:
-            schema.apply(self.connection)
+        self._connection_context = locked_connection(self.path, read_only=read_only)
+        self.connection = self._connection_context.__enter__()
+        try:
+            if not read_only:
+                schema.apply(self.connection)
+        except BaseException:
+            self._connection_context.__exit__(None, None, None)
+            raise
 
     @classmethod
     def create(cls, path: str | Path, *, exist_ok: bool = False) -> Self:
@@ -151,7 +156,7 @@ class CampaignStore:
         return cls(database_path)
 
     def close(self) -> None:
-        self.connection.close()
+        self._connection_context.__exit__(None, None, None)
 
     def __enter__(self) -> Self:
         return self

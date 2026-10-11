@@ -19,6 +19,7 @@ from pathlib import Path
 import duckdb
 
 from bindocracy.runs.designset import DesignSet, build_design_set, write_design_set
+from bindocracy.store.locking import locked_connection
 from bindocracy.store.query import DesignQuery, DesignRow, select_designs
 
 
@@ -38,11 +39,8 @@ def read_only(database: str | Path) -> Iterator[duckdb.DuckDBPyConnection]:
     path = Path(database)
     if not path.is_file():
         raise SelectionError(f"no campaign database at {path}")
-    connection = duckdb.connect(str(path), read_only=True)
-    try:
+    with locked_connection(path, read_only=True) as connection:
         yield connection
-    finally:
-        connection.close()
 
 
 def known_run_names(

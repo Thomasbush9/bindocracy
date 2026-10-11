@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import duckdb
 import yaml
+
+from bindocracy.store.locking import locked_connection
 
 
 class ConfigNotFoundError(KeyError):
@@ -15,8 +16,7 @@ class ConfigNotFoundError(KeyError):
 
 def config_yaml_from_db(database: str | Path, config_id: str) -> str:
     """Return YAML for a general_config_id or model_config_id."""
-    con = duckdb.connect(str(database), read_only=True)
-    try:
+    with locked_connection(database, read_only=True) as con:
         row = con.execute(
             "SELECT CAST(model_config_json AS VARCHAR) FROM configs "
             "WHERE model_config_id = ?",
@@ -28,8 +28,6 @@ def config_yaml_from_db(database: str | Path, config_id: str) -> str:
                 "WHERE general_config_id = ? LIMIT 1",
                 [config_id],
             ).fetchone()
-    finally:
-        con.close()
 
     if row is None:
         raise ConfigNotFoundError(config_id)

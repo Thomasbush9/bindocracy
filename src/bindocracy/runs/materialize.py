@@ -11,7 +11,6 @@ import json
 import re
 import tempfile
 import warnings
-from contextlib import suppress
 from enum import StrEnum
 from pathlib import Path
 
@@ -21,6 +20,7 @@ from bindocracy.config.preflight import (
     read_single_fasta,
     require_alignment_of,
 )
+from bindocracy.publication import publish_directory
 from bindocracy.tools.chai1.preflight import expected_pqt_basename
 from bindocracy.tools.pxdesign.preflight import MSA_FILES
 
@@ -381,26 +381,6 @@ def _structure(
         raise ConfigPreflightError("conversion would lose atom identity or numeric precision")
 
 
-def _publish(stage: Path, destination: Path) -> None:
-    # Reserve exclusively before POSIX rename, which otherwise replaces existing
-    # empty directories. Lustre does not necessarily support RENAME_NOREPLACE.
-    # Readers see an empty reservation or the complete tree, never partial files.
-    try:
-        destination.mkdir(mode=0o700)
-    except FileExistsError as exc:
-        raise ConfigPreflightError(
-            f"refusing to overwrite existing output directory: {destination}"
-        ) from exc
-    reserved = destination.stat()
-    try:
-        stage.rename(destination)
-    except BaseException:
-        # Preserve the original failure and any intervening files/replacement.
-        with suppress(OSError):
-            current = destination.lstat()
-            if (current.st_dev, current.st_ino) == (reserved.st_dev, reserved.st_ino):
-                destination.rmdir()
-        raise
 
 
 def materialize_target(
@@ -556,7 +536,12 @@ def materialize_target(
                         f"existing materialization differs or was tampered with: {name}"
                     )
         else:
-            _publish(stage, destination)
+            try:
+                publish_directory(stage, destination)
+            except FileExistsError as error:
+                raise ConfigPreflightError(
+                    f"refusing to overwrite existing output directory: {destination}"
+                ) from error
     return {
         "output_dir": str(destination),
         "manifest": str(destination / MANIFEST),

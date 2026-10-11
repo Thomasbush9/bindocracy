@@ -168,7 +168,7 @@ def test_materialization_supports_filesystems_without_rename_noreplace(
 def test_concurrent_empty_directory_is_not_overwritten(target, tmp_path, monkeypatch):
     from bindocracy.runs import materialize
 
-    publish = materialize._publish
+    publish = materialize.publish_directory
     reserved = []
 
     def another_publisher(stage, destination):
@@ -176,7 +176,7 @@ def test_concurrent_empty_directory_is_not_overwritten(target, tmp_path, monkeyp
         reserved.append(destination.stat().st_ino)
         publish(stage, destination)
 
-    monkeypatch.setattr(materialize, "_publish", another_publisher)
+    monkeypatch.setattr(materialize, "publish_directory", another_publisher)
     directory = tmp_path / "materialized"
     with pytest.raises(ConfigPreflightError):
         materialize_target(target, output_dir=directory, formats=["pxdesign"])

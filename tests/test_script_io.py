@@ -5,6 +5,7 @@ compute a sequence property or append a residue to exercise transport.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -99,6 +100,7 @@ def score_config(tmp_path, manifest, script_text=SCORE_SCRIPT):
     config.write_text(yaml.safe_dump({
         "schema_version": 1, "name": "sequence-count", "tool": "function",
         "design_set": str(manifest),
+        "resources": {"gpus": 0, "cpus": 1, "memory_gb": 1, "walltime": "00:01:00"},
         "function": {"name": "counts", "script": str(script), "inputs": ["sequence"],
                      "metrics": {"lysines": {"direction": "none"}}},
     }))
@@ -106,8 +108,32 @@ def score_config(tmp_path, manifest, script_text=SCORE_SCRIPT):
 
 
 def score(database, general, config, output):
-    return CLI.invoke(app, ["function", "run", str(database), "--general", str(general),
-                           "--config", str(config), "--output-dir", str(output)])
+    site = output.parent / "cpu-site.yaml"
+    site.write_text(yaml.safe_dump({
+        "controller": {"account": "unused", "partition": "unused", "cpus": 1,
+                       "memory_gb": 1, "walltime": "00:05:00", "gpus": 0},
+        "max_workers": 1, "max_total_gpus": 0,
+    }))
+    result = CLI.invoke(app, ["function", "plan", str(database), "--general", str(general),
+                             "--config", str(config), "--site", str(site),
+                             "--output-dir", str(output)])
+    if result.exit_code:
+        return result
+    # Exercise the ordinary tool seam locally: this test explicitly allocates
+    # a bounded CPU process and never invokes a scheduler or GPU.
+    resolved = output / "function.yaml"
+    loaded = load_configs(general, resolved)
+    planned = plan(loaded, output / "cpu-run")
+    for task in planned.tasks:
+        spec = launch_spec(planned, task.task_id)
+        assert spec.resources["gres"] == ""
+        process = subprocess.run(spec.argv, env={**os.environ, **spec.env},
+                                 capture_output=True, text=True, timeout=30, check=False)
+        assert process.returncode == 0, process.stdout + process.stderr
+    collected = collect_run(planned.directory / "run.json")
+    bundle = write_collected(collected, planned.directory / "collected.json")
+    assert ingest_bundle(database, bundle)
+    return result
 
 
 def stored_counts(database):
@@ -207,7 +233,9 @@ def test_invalid_scores_do_not_enter_database(io_campaign, tmp_path, bad_result)
     manifest = freeze(database, tmp_path / "sets")
     script = SCORE_SCRIPT.replace('{"lysines": candidate["sequence"].count("K")}', bad_result)
     result = score(database, general, score_config(tmp_path, manifest, script), tmp_path / "scored")
-    assert result.exit_code != 0
+    assert result.exit_code == 0, result.output
+    payload = json.loads((tmp_path / "scored/cpu-run/tasks/0000/result.json").read_text())
+    assert payload["error"] or payload["summary"]["failures"]
     assert stored_counts(database) == {}
 
 

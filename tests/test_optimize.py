@@ -378,20 +378,24 @@ def test_an_empty_shard_succeeds(optimize_loaded, tmp_path) -> None:
     assert (save / "children.jsonl").read_text() == ""
 
 
-def test_a_script_that_writes_nothing_is_a_failure(optimize_loaded, tmp_path) -> None:
-    """A run that succeeds and produces nothing is reported as failed rather
-    than as an optimization that improved nothing."""
+@pytest.mark.parametrize("create_output", [True, False])
+def test_explicit_empty_output_is_valid_but_missing_file_fails(
+    optimize_loaded, tmp_path, create_output
+) -> None:
+    """Zero children is scientific output; absent transport is a contract failure."""
     silent = tmp_path / "silent.py"
     silent.write_text(
         "import argparse, pathlib\n"
         "p = argparse.ArgumentParser()\n"
-        "for f in ('--inputs', '--outputs', '--context'): p.add_argument(f)\n"
+        "for f in ('--inputs', '--outputs', '--context', '--children'): p.add_argument(f)\n"
         "a = p.parse_args()\n"
-        "pathlib.Path(a.outputs).write_text('')\n"
+        + ("pathlib.Path(a.outputs).write_text('')\n" if create_output else "")
     )
     result = _run_driver(optimize_loaded, tmp_path / "t", script=silent)
-    assert result.returncode == 1
-    assert json.loads((tmp_path / "t" / "status.json").read_text())["status"] == "failed"
+    assert result.returncode == (0 if create_output else 1)
+    assert json.loads((tmp_path / "t" / "status.json").read_text())["status"] == (
+        "succeeded" if create_output else "failed"
+    )
 
 
 def test_a_crashing_script_records_its_exit_code(optimize_loaded, tmp_path) -> None:

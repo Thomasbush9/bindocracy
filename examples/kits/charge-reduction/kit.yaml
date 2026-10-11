@@ -1,0 +1,18 @@
+kit_schema: 1
+name: charge-reduction
+version: 1.0.0
+kind: optimizer
+summary: CPU sequence-only charge reduction by one deterministic mutation.
+entrypoint: optimizer.py
+python: '>=3.12'
+requires: []
+inputs: [sequence]
+loss_models: []
+capabilities: {changes_length: false, max_children: 1}
+metrics:
+  charge_penalty: {direction: min}
+cost:
+  gpu: none
+  compile_seconds: 0
+  per_parent_seconds: 0
+  note: Unmeasured example; qualify on real supplied inputs before use.

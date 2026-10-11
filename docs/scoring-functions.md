@@ -40,6 +40,7 @@ schema_version: 1
 name: sasa-pass
 tool: function
 design_set: /abs/sets/<digest>.json
+resources: {gpus: 0, cpus: 2, memory_gb: 4, walltime: "00:15:00"}
 structures_from: boltz2-evaluation-run   # required only for structure input
 function:
   name: sasa
@@ -52,14 +53,15 @@ function:
     n_hbonds:    {direction: max}
 ```
 
-Freeze the database selection, then run and ingest:
+Freeze the database selection, then create a resource-managed plan:
 
 ```bash
 bindocracy designset build campaign.duckdb --out-dir sets/ \
   --tool mosaic --min-length 60 --max-length 100 \
   --created-after 2026-09-01T00:00:00Z --created-before 2026-10-01T00:00:00Z
-bindocracy function run campaign.duckdb \
-  --general general.yaml --config function.yaml --output-dir runs/sasa-pass
+bindocracy function plan campaign.duckdb \
+  --general general.yaml --config function.yaml --site site.yaml \
+  --output-dir plans/sasa-pass
 ```
 
 Creation windows refer to **design creation time**, including the lower bound
@@ -68,14 +70,15 @@ For loss-based selection, use `filter apply` with an explicit metric, aggregatio
 threshold and evaluator run, then freeze with `--passed-filter` and `--filter-run`.
 Missing measurements do not pass. The same frozen set can feed an optimizer.
 
-The command verifies the frozen members against the named database, archives
-the inputs and script, executes the function, writes `collected.json`, then
-ingests atomically. It requires a **new output directory** and does not overwrite
-an earlier attempt. Structure inputs resolve from the specified evaluator run's
-complex prediction at replicate 0; absent or ambiguous poses are refused before
-execution. Recorded hashes and sizes are checked before launch. The function
-reads a run-local snapshot whose copied bytes are checked again, not the mutable
-source path. The script never opens the database.
+Planning verifies the frozen members against the named database and archives
+the inputs and script. The command writes an ordinary campaign plan under
+`plans/sasa-pass/plan`; inspect it and use the ordinary `campaign submit`
+approval route to execute it. Collection and serialized ingestion follow the
+same workflow as other tools. There is no synchronous `function run` bypass.
+Structure inputs resolve from the specified evaluator run's complex prediction
+at replicate 0; absent or ambiguous poses are refused before execution.
+Recorded hashes and sizes are checked during planning. Workers read checked
+run-local snapshots, not mutable source paths, selections, or database values.
 
 `runs.workflow_metadata.source_artifacts`, keyed by design ID, records the
 source artifact/run identity, original URI/path, recorded hash/size, consumed
@@ -84,10 +87,44 @@ hash/size and snapshot path. Each derived metric carries the same provenance in
 previously recorded hash; `unhashed` means no prior hash existed. Unhashed inputs
 still receive a consumed digest, without claiming historical verification.
 
-This command is synchronous: it does not submit Slurm jobs or configure GPU
-access and model-weight mounts. GPU-backed custom scripts still need an
-appropriate allocated-job/container launcher. The shared I/O helper itself
-requires only Python's standard library.
+Every function requires an explicit `resources` block. `gpus: 0` is a real CPU
+allocation: no `gpu:0` GRES request is emitted. CPU-only sites can set
+`max_total_gpus: 0` with a zero-GPU controller. GPU functions use the same
+managed workflow with a positive GPU request; containers receive `--nv` only
+when GPUs are requested. Ordinary GPU-only tool resource requirements remain
+unchanged. The host worker needs bindocracy installed; scientific containers
+need only the script's dependencies and Python's standard library for transport.
+
+### Frozen metric inputs and scoring kits
+
+Add exact prior measurements to the top-level function config:
+
+```yaml
+database: /abs/campaign.duckdb
+metric_inputs:
+  prior_confidence: {run_id: "exact-evaluator-run-id", metric: "boltz2_iptm", replicate: 0}
+missing_metrics: error
+```
+
+Only requested aliases are handed to the script, as
+`candidate["metrics"]["prior_confidence"]`. A run name is not an ID: metric
+requests require the exact stored run ID, metric name and replicate. No latest
+measurement selection, replica pooling or implicit reduction occurs.
+`missing_metrics: error` refuses absent/failed measurements before execution;
+`skip` excludes affected candidates and records their aliases and exact source
+errors. Skips make the result partial or failed, never silently successful.
+Source metric IDs, run/config IDs, config hashes, values, statuses, timestamps
+and failure details are retained in `workflow_metadata.metric_sources` and in
+derived metric `details.source_metrics`.
+
+A `function.kit_lock` uses the approved, verified scoring kit contract.
+Planning archives the complete kit inventory, preserving sibling modules and
+data assets; workers execute that snapshot even if the original source is
+edited later. External dependencies remain content-verified and are bound
+read-only into containers. Lock verification is provenance, not an OS sandbox.
+Use the kit resolve/smoke commands before expensive runs. Nonzero exits and
+timeouts preserve logs and valid completed measurements as partial results;
+invalid protocol output is recorded as a failed run without ingesting it.
 
 The script is invoked as:
 
@@ -221,6 +258,7 @@ schema_version: 1
 name: epitope-pilot
 tool: function
 design_set: /abs/sets/<digest>.json
+resources: {gpus: 0, cpus: 2, memory_gb: 4, walltime: "00:15:00"}
 builtin: epitope
 structures_from: score-boltz2-pilot   # required; epitope reads a pose
 ```
@@ -229,16 +267,16 @@ structures_from: score-boltz2-pilot   # required; epitope reads a pose
 command is the same either way:
 
 ```bash
-bindocracy function run campaign.duckdb \
-  --general general.yaml --config epitope-pilot.yaml \
-  --output-dir runs/epitope-pilot
+bindocracy function plan campaign.duckdb \
+  --general general.yaml --config epitope-pilot.yaml --site site.yaml \
+  --output-dir plans/epitope-pilot
 ```
 
 **The epitope function takes its hotspots from the general config**, resolved
 to 1-based positions in the target's FASTA by the same checked mapping the
 optimizer plans with — so the epitope a design was built against and the
 epitope it is measured against are the same residues by construction. The
-resolved list is recorded in the run's `function_args`. A campaign naming no
+resolved list is recorded in the run's `function.args`. A campaign naming no
 `target.hotspots` is refused rather than run: coverage and offset would be
 stored as absent and the run would answer nothing.
 

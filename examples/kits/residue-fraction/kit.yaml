@@ -1,0 +1,16 @@
+kit_schema: 1
+name: residue-fraction
+version: 1.0.0
+kind: scoring_function
+summary: CPU weighted residue fraction with bundled helper and data.
+entrypoint: score.py
+python: '>=3.12'
+requires: []
+inputs: [sequence]
+metrics:
+  residue_fraction: {direction: max}
+cost:
+  gpu: none
+  compile_seconds: 0
+  per_parent_seconds: 0
+  note: Unmeasured example; qualify on real supplied inputs before use.

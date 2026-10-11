@@ -13,6 +13,7 @@ from bindocracy.tools.bindcraft2 import BindCraft2Plugin
 from bindocracy.tools.boltzgen import BoltzGenPlugin
 from bindocracy.tools.chai1 import Chai1Plugin
 from bindocracy.tools.freebindcraft import FreeBindCraftPlugin
+from bindocracy.tools.function import FunctionPlugin
 from bindocracy.tools.genie3 import Genie3Plugin
 from bindocracy.tools.mosaic import MosaicPlugin
 from bindocracy.tools.of3_upstream import OF3UpstreamPlugin
@@ -47,6 +48,7 @@ register(Chai1Plugin)
 register(AF3Plugin)
 register(OF3UpstreamPlugin)
 register(OptimizePlugin)
+register(FunctionPlugin)
 
 # A tool does not have to live in this repository. Anything named in
 # BINDOCRACY_PLUGINS (comma-separated importable modules) is imported here and
@@ -62,6 +64,7 @@ __all__ = [
     "BoltzGenPlugin",
     "Chai1Plugin",
     "FreeBindCraftPlugin",
+    "FunctionPlugin",
     "Genie3Plugin",
     "MosaicPlugin",
     "OF3UpstreamPlugin",

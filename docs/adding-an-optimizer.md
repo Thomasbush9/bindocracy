@@ -19,15 +19,30 @@ mosaic-af2-refine/
 `-- optimizer.py    the entrypoint
 ```
 
-Four worked kits ship under `examples/kits/`; inspect their declarations before reuse.
+Worked scientific kits and the small `charge-reduction` and `residue-fraction`
+CPU examples ship under `examples/kits/`. The latter demonstrates the
+`scoring_function` kind: it has metrics and inputs, but no optimizer-only
+`loss_models` or `capabilities`. Both kinds share inventory, stores, caches,
+dependency bindings and immutable execution locks.
 
 ---
 
 ## 1. Write the entrypoint
 
-Start from `tests/fixtures/optimize/point_mutate.py`. It is the shortest thing
-that exercises every part of the contract and it is covered by the test suite,
-so it is the one example that cannot silently rot.
+For a runnable starting point, create a new kit directory:
+
+```bash
+uv run bindocracy --json kit init /path/to/new-optimizer --kind optimizer
+uv run bindocracy --json kit init /path/to/new-scorer --kind scoring_function
+```
+
+Existing paths, including empty directories, are refused. The optimizer replaces
+one K/R with Q and declares its sequence-only charge penalty; parents with no
+K/R produce an explicit refusal. The scorer computes a weighted residue
+fraction using a sibling Python module and bundled JSON data. These are small
+executable examples, not scientifically qualified objectives or fake GPU models.
+
+`tests/fixtures/optimize/point_mutate.py` is another complete contract example.
 
 ```python
 from bindocracy_io import RejectCandidate, run_optimization
@@ -231,10 +246,95 @@ Keep that cache and the bound site assets: a run directory alone is not a
 self-contained copy of every dependency. Independent raw-script configurations
 remain supported without a kit.
 
-Contract validation with `scripts/validate_optimizer.py` executes code. Run it
-only after review; a successful contract fixture proves row handling, not
-runtime compatibility or scientific quality. Containers and read-only mounts
-are not a sandbox.
+### Executing a bounded smoke, not a static check
+
+Use a real target in `general.yaml` and a small frozen design set in the resolved
+config. Set explicit CPU resources (`gpus: 0`), and for an optimizer set
+`sharding: {jobs: 1}`. The default smoke permits at most two inputs and 60
+seconds; larger sets are refused, not silently sampled. The explicit input
+ceiling is 16 and timeout ceiling is 600 seconds. Local requests are limited to
+two CPUs/4 GiB; campaign requests to one GPU/eight CPUs/64 GiB. Recorded worker
+walltime is reduced to the smoke timeout (at most five local/ten scheduled
+minutes); these requested limits do not replace external local resource isolation.
+
+```bash
+uv run bindocracy --json kit smoke /path/to/resolved/optimize.yaml \
+  --general /path/to/general.yaml --output-dir /path/to/new-smoke \
+  --local-cpu --max-inputs 2 --timeout-seconds 60
+```
+
+`function.yaml` uses the same command. This explicitly executes trusted code
+through the ordinary plugin plan and launch path, in the resolved runtime,
+then checks the production output contract. It preserves the run manifest,
+bounded effective config, driver/script logs, outputs and `smoke-report.json`.
+Timeout kills the process group. Malformed output and runtime failures fail the
+smoke. Explicit optimizer refusals or a valid empty output file may pass with
+`scientific_output: zero_output`; a missing output file is not an empty result.
+Passing a transport smoke does not demonstrate scientific value or general
+runtime/deployment qualification.
+
+GPU code is never silently launched on the host/login node. Prepare a canary
+using a site configuration and ordinary campaign machinery:
+
+```bash
+uv run bindocracy --json kit smoke /path/to/resolved/optimize.yaml \
+  --general /path/to/general.yaml --output-dir /path/to/new-gpu-smoke \
+  --plan-only --site /path/to/site.yaml --database /path/to/campaign.duckdb \
+  --max-inputs 2 --timeout-seconds 60
+# Inspect the returned plan and digest before the separate execution decision:
+uv run bindocracy --json campaign qualify /path/to/new-gpu-smoke/plan/plan.json \
+  --approve sha256:REVIEWED_PLAN_DIGEST --allow-gpu
+```
+
+Plan-only reports `status: planned`, `executed: false` and
+`runtime_qualified: false`: it has **not** passed a smoke. Qualification also
+checks its own canary ceilings (one run/task/worker, at most two requested
+records, bounded CPUs/memory/walltime); supply a site and resource config within
+those limits. Submission remains the ordinary campaign controller's operation,
+including benchmark accounting when applicable. `kit smoke` itself never
+submits scheduler jobs.
+
+The older `scripts/validate_optimizer.py` also executes code and is useful for
+standalone contract fixtures. It is not a replacement for exercising the
+resolved container/dependencies. Containers and read-only mounts are not a
+sandbox.
+
+### Scoring-kit requests and autonomous authorship
+
+Scoring-kit resolution emits an ordinary `function.yaml`. Its request contains
+campaign choices, for example:
+
+```yaml
+name: residue_fraction
+tool: function
+design_set: /absolute/path/to/design-set.json
+database: /absolute/path/to/campaign.duckdb
+resources: {gpus: 0, cpus: 1, memory_gb: 1, walltime: "00:01:00"}
+function: {timeout_seconds: 60}
+```
+
+The optional `function` mapping may set only `name`, `prefix` and
+`timeout_seconds`; script, inputs, metrics, arguments, runtime and lock come
+from the kit. Run-level `metric_inputs`, `missing_metrics`, `database` and
+`structures_from` remain ordinary function configuration choices. The frozen
+bundle, including sibling imports and data, is retained by the function runtime.
+Optimizer-only fields are rejected in scoring manifests rather than defaulted.
+Scoring function names use lowercase letters, digits and underscores. The
+default is the request's run name; supply `function.name` explicitly when the
+run name uses other characters. A raw scoring `dev_source` without a verified
+kit lock is refused. Optimizer kits declaring `cost.gpu: required` reject
+`resources.gpus: 0`; CPU optimizer launches hide inherited accelerator visibility.
+
+Autonomous agents can author and approve their own local bundle revisions when
+the externally provisioned task policy allows that extension. A digest records
+the chosen bytes; it does **not** mean an organizer reviewed them, authenticate
+their publisher, or sandbox arbitrary Python. Production benchmarks still need
+organizer-owned harness/evaluator/control paths, separate credentials and
+externally enforced resource/isolation policy. Benchmark local CPU smoke uses
+the runner's already reserved one-CPU agent allocation; without it, use the
+approved campaign route. GPU work always takes the campaign route. Ordinary
+nonbenchmark raw optimizers remain supported; benchmark policy may restrict
+which routes and extensions are allowed.
 
 ---
 

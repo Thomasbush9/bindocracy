@@ -17,6 +17,8 @@ _OWNED = frozenset({"script", "args", "inputs", "loss_models", "metrics", "drive
 
 
 def _owned_fields(lock: KitLock) -> dict[str, Any]:
+    if lock.manifest.kind != "optimizer":
+        raise KitError("optimizer configuration requires an optimizer kit")
     return {
         "script": lock.kit_root / lock.manifest.entrypoint,
         "args": tuple(lock.args),
@@ -32,6 +34,8 @@ def _validate_effective(lock: KitLock, model: OptimizeConfig) -> None:
 
     if model.tool != "optimize":
         raise KitError("optimizer kit configuration must use tool='optimize'")
+    if lock.manifest.cost.gpu == "required" and model.resources.gpus == 0:
+        raise KitError("GPU-required optimizer kit cannot use a zero-GPU allocation")
     for field, expected in _owned_fields(lock).items():
         if getattr(model, field) != expected:
             raise KitError(f"kit-owned configuration field {field!r} differs from its lock")

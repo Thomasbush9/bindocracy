@@ -34,7 +34,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -52,6 +52,7 @@ class FunctionInput:
     # disagree about where the binder sits by a median 22.7 A, and one
     # unprefixed column would hide it.
     source_model: str | None = None
+    metrics: dict[str, float | None] = field(default_factory=dict)
 
     def as_row(self, wants: Iterable[str]) -> dict:
         """Only what the function asked for.
@@ -74,6 +75,8 @@ class FunctionInput:
             row["target_sequence"] = self.target_sequence
         if "structure" in wanted and self.structure is not None:
             row["structure"] = str(self.structure)
+        if self.metrics:
+            row["metrics"] = dict(self.metrics)
         return row
 
 

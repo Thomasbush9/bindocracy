@@ -15,6 +15,7 @@ against what it promised.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -57,6 +58,8 @@ class FunctionResult:
     seconds: float = 0.0
     failures: dict[str, int] = field(default_factory=dict)
     incomplete: dict[int, tuple[str, ...]] = field(default_factory=dict)
+    process_error: str | None = None
+    output_present: bool = False
 
     @property
     def summary(self) -> dict:
@@ -70,12 +73,15 @@ class FunctionResult:
             "seconds": round(self.seconds, 2),
             "failures": dict(self.failures),
             "n_incomplete": len(self.incomplete),
+            "process_error": self.process_error,
+            "output_present": self.output_present,
         }
 
 
 def command_for(
     function: ScoringFunction, inputs: Path, outputs: Path,
-    *, bind_paths: tuple[Path, ...] = (),
+    *, bind_paths: tuple[Path, ...] = (), gpus: int = 0,
+    dependency_bindings: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     """The argv for one custom function.
 
@@ -86,12 +92,15 @@ def command_for(
     if function.container is not None:
         # The image's own interpreter, by the name it has inside.
         bindings = tuple(
-            part for path in dict.fromkeys((inputs.parent.resolve(), *bind_paths))
+            part for path in dict.fromkeys((inputs.parent.resolve(), function.script.parent.resolve(), *bind_paths))
             for part in ("--bind", str(path))
         )
+        dependency_args = tuple(part for binding in dependency_bindings for part in ("--bind", binding))
+        dev_args = ("--bind", f"{function.dev_source}:/opt/mosaic/src/mosaic:ro") if function.dev_source else ()
         prefix = (
-            "singularity", "exec", "--cleanenv", *bindings,
-            str(function.container), "python",
+            "singularity", "exec", "--cleanenv", *(("--nv",) if gpus else ()),
+            *bindings, *dependency_args, *dev_args,
+            str(function.container), function.container_python,
         )
     else:
         # `sys.executable`, not "python": there is no bare `python` on this
@@ -112,6 +121,10 @@ def preflight_custom(function: ScoringFunction) -> str:
     which path they were read from. `runs.workflow_metadata` keeps it, so a
     script edited between two runs cannot make them look comparable.
     """
+    if getattr(function, "kit_lock", None) is not None:
+        from bindocracy.kits.scoring import validate_function_lock
+
+        validate_function_lock(function)
     script = Path(function.script)
     if not script.is_file():
         raise FunctionError(
@@ -133,6 +146,10 @@ def run_custom(
     work_dir: Path,
     measured_at: datetime,
     replicate: int = 0,
+    prepared: bool = False,
+    retain_partial: bool = False,
+    gpus: int = 0,
+    dependency_bindings: tuple[str, ...] = (),
 ) -> FunctionResult:
     """Run one custom function over one set of designs.
 
@@ -148,16 +165,19 @@ def run_custom(
 
     work_dir = work_dir.resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
-    # Execute the archived bytes, not the original path that may change while
-    # a run is starting. The stdlib-only helper travels into any container.
-    archived_script = work_dir / Path(function.script).name
-    if Path(function.script).resolve() != archived_script:
-        shutil.copyfile(function.script, archived_script)
-    archived_helper = work_dir / IO_HELPER.name
-    shutil.copyfile(IO_HELPER, archived_helper)
-    digest = sha256_file(archived_script)
-    helper_digest = sha256_file(archived_helper)
-    archived_function = function.model_copy(update={"script": archived_script})
+    # Prepared workers consume the plan's immutable archive, never live sources.
+    archived_function, helper_path = (
+        (function, function.script.parent / IO_HELPER.name)
+        if prepared else archive_function(function, work_dir)
+    )
+    digest = sha256_file(archived_function.script)
+    helper_digest = sha256_file(helper_path)
+    if not prepared and getattr(function, "kit_lock", None) is not None:
+        from bindocracy.kits.scoring import validate_function_lock
+
+        dependency_bindings = (*dependency_bindings, *kit_bindings(
+            validate_function_lock(function), work_dir / "kit",
+        ))
 
     input_path = work_dir / INPUT_FILE
     output_path = work_dir / OUTPUT_FILE
@@ -168,6 +188,7 @@ def run_custom(
 
     started = time.time()
     failures: dict[str, int] = {}
+    process_error = None
     if skipped:
         # A function asking for a structure cannot score a design that has
         # none. Counted rather than silently dropped.
@@ -182,22 +203,44 @@ def run_custom(
                         row.structure.resolve().parent for row in wanted
                         if row.structure is not None
                     ),
+                    gpus=gpus, dependency_bindings=dependency_bindings,
                 ),
                 capture_output=True, text=True, check=False,
                 timeout=function.timeout_seconds,
+                cwd=archived_function.script.parent,
+                env={
+                    **os.environ, "PYTHONDONTWRITEBYTECODE": "1",
+                    "SINGULARITYENV_PYTHONDONTWRITEBYTECODE": "1",
+                    **({"SINGULARITYENV_CUDA_VISIBLE_DEVICES": os.environ["CUDA_VISIBLE_DEVICES"]}
+                       if gpus and "CUDA_VISIBLE_DEVICES" in os.environ else {}),
+                    **({"CUDA_VISIBLE_DEVICES": "", "ROCR_VISIBLE_DEVICES": "",
+                        "SINGULARITYENV_CUDA_VISIBLE_DEVICES": "",
+                        "SINGULARITYENV_ROCR_VISIBLE_DEVICES": ""} if not gpus else {}),
+                },
             )
         except subprocess.TimeoutExpired as exc:
-            raise FunctionError(
-                f"custom function {function.name!r} exceeded "
-                f"{function.timeout_seconds}s"
-            ) from exc
-        if completed.returncode != 0:
-            raise FunctionError(
-                f"custom function {function.name!r} exited {completed.returncode}: "
-                f"{completed.stderr.strip()[-400:]}"
-            )
-        (work_dir / "stdout.log").write_text(completed.stdout)
-        (work_dir / "stderr.log").write_text(completed.stderr)
+            (work_dir / "stdout.log").write_text(_output_text(exc.stdout))
+            (work_dir / "stderr.log").write_text(_output_text(exc.stderr))
+            if not retain_partial:
+                raise FunctionError(
+                    f"custom function {function.name!r} exceeded {function.timeout_seconds}s"
+                ) from exc
+            failures["timeout"] = 1
+            process_error = f"custom function {function.name!r} exceeded {function.timeout_seconds}s"
+        else:
+            (work_dir / "stdout.log").write_text(completed.stdout)
+            (work_dir / "stderr.log").write_text(completed.stderr)
+            if completed.returncode != 0:
+                if not retain_partial:
+                    raise FunctionError(
+                        f"custom function {function.name!r} exited {completed.returncode}: "
+                        f"{completed.stderr.strip()[-400:]}"
+                    )
+                failures[f"exit_{completed.returncode}"] = 1
+                process_error = (
+                    f"custom function {function.name!r} exited {completed.returncode}: "
+                    f"{completed.stderr.strip()[-400:]}"
+                )
 
     by_index = {row.index: row for row in wanted}
     specs = function.specs
@@ -265,6 +308,8 @@ def run_custom(
         seconds=time.time() - started,
         failures=failures,
         incomplete=incomplete,
+        process_error=process_error,
+        output_present=output_path.is_file(),
     )
 
 
@@ -291,6 +336,58 @@ def _has_required_inputs(row: FunctionInput, function: ScoringFunction) -> bool:
 def write_summary(path: Path, results: list[FunctionResult]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps([r.summary for r in results], indent=2) + "\n")
+
+
+def _output_text(value) -> str:
+    return value.decode(errors="replace") if isinstance(value, bytes) else value or ""
+
+
+def archive_function(function: ScoringFunction, work_dir: Path):
+    """Copy the complete verified kit, preserving sibling imports and assets."""
+    lock = None
+    if getattr(function, "kit_lock", None) is not None:
+        from bindocracy.kits.scoring import validate_function_lock
+
+        lock = validate_function_lock(function)
+    if lock is None:
+        script = work_dir / function.script.name
+        if script != function.script.resolve():
+            shutil.copyfile(function.script, script)
+    else:
+        root = work_dir / "kit"
+        root.mkdir(parents=True, exist_ok=False)
+        for relative, expected in lock.files.items():
+            source = lock.kit_root / relative
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+            if sha256_file(destination) != expected:
+                raise FunctionError(f"kit file changed while staging: {relative}")
+        script = root / lock.manifest.entrypoint
+    helper = script.parent / IO_HELPER.name
+    if helper.is_file() and sha256_file(helper) != sha256_file(IO_HELPER):
+        raise FunctionError("kit supplies a conflicting bindocracy_io.py")
+    if helper.resolve() != IO_HELPER.resolve():
+        shutil.copyfile(IO_HELPER, helper)
+    return function.model_copy(update={"script": script, "kit_lock": None}), helper
+
+
+def kit_bindings(lock, root: Path) -> tuple[str, ...]:
+    """Read-only container mounts for the bundle and its verified dependencies."""
+    pairs = {(str(root), str(root))}
+    for dependency in lock.dependencies.values():
+        source = dependency["path"]
+        if dependency["kind"] == "harness_module":
+            paths = [str(Path(source) / name) for name in dependency["identity"]["files"]]
+        else:
+            paths = [source]
+        pairs.update((path, path) for path in paths)
+        if dependency.get("target"):
+            pairs.add((source, dependency["target"]))
+    for source, target in pairs:
+        if any(character in source + target for character in (":", ",", "\n")):
+            raise FunctionError(f"dependency path cannot be bound read-only: {source!r}")
+    return tuple(f"{source}:{target}:ro" for source, target in sorted(pairs))
 
 
 __all__ = [

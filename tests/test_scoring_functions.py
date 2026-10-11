@@ -16,7 +16,7 @@ from bindocracy.functions.contract import (
     read_outputs,
     write_inputs,
 )
-from bindocracy.functions.models import CustomFunction, FunctionsConfig
+from bindocracy.functions.models import CustomFunction, FunctionsConfig, MetricDeclaration
 from bindocracy.functions.run import FunctionRunConfig, FunctionRunError, run_function
 from bindocracy.functions.runner import (
     FunctionError,
@@ -43,6 +43,7 @@ from bindocracy.tools.scorer.preflight import preflight_scorer
 
 WHEN = datetime(2026, 9, 11, tzinfo=UTC)
 EXAMPLE = Path(__file__).resolve().parent / "fixtures" / "functions" / "net_charge.py"
+CPU_RESOURCES = {"gpus": 0, "cpus": 1, "memory_gb": 1, "walltime": "00:01:00"}
 
 
 def charge_function(**over) -> CustomFunction:
@@ -446,6 +447,7 @@ def test_a_builtin_function_can_be_named_and_a_custom_one_supplied(tmp_path):
     from bindocracy.functions.run import FunctionRunConfig
 
     named = FunctionRunConfig.model_validate({
+        "resources": CPU_RESOURCES,
         "name": "epitope-pilot", "design_set": str(tmp_path / "set.json"),
         "builtin": "epitope", "structures_from": "score-boltz2-pilot",
     })
@@ -455,10 +457,12 @@ def test_a_builtin_function_can_be_named_and_a_custom_one_supplied(tmp_path):
     # Exactly one, and one is required.
     with pytest.raises(ValueError, match="exactly one"):
         FunctionRunConfig.model_validate({
+            "resources": CPU_RESOURCES,
             "name": "neither", "design_set": str(tmp_path / "set.json"),
         })
     with pytest.raises(ValueError, match="exactly one"):
         FunctionRunConfig.model_validate({
+            "resources": CPU_RESOURCES,
             "name": "both", "design_set": str(tmp_path / "set.json"),
             "builtin": "sequence",
             "function": {"name": "charge", "script": str(tmp_path / "s.py"),
@@ -490,6 +494,7 @@ def test_the_epitope_function_is_given_the_campaign_hotspots(tmp_path):
     }
     general = GeneralConfig.model_validate(payload)
     config = FunctionRunConfig.model_validate({
+        "resources": CPU_RESOURCES,
         "name": "epi", "design_set": str(tmp_path / "set.json"),
         "builtin": "epitope", "structures_from": "score-boltz2",
     })
@@ -601,6 +606,7 @@ def function_campaign(tmp_path):
         "        output.write(json.dumps(result) + '\\n')\n"
     )
     config = FunctionRunConfig(
+        resources=CPU_RESOURCES, database=database,
         name="derived", design_set=manifest, structures_from="source",
         function=CustomFunction(
             name="inspect", script=script, inputs=("structure",), prefix="source_model",
@@ -763,3 +769,223 @@ def test_scoring_consumes_snapshot_even_if_original_changes_after_preflight(
     assert evidence["sha256"] == artifacts[0].sha256 == expected.sha256
     assert digest_of(evidence["consumed_path"]).sha256 == expected.sha256
     assert digest_of(source).sha256 != expected.sha256
+
+
+def _managed_plan(tmp_path, general, config):
+    import yaml
+
+    from bindocracy.tools import load_configs, plan
+
+    general_path = tmp_path / "managed-general.yaml"
+    model_path = tmp_path / "managed-function.yaml"
+    general_path.write_text(yaml.safe_dump(general.model_dump(mode="json")))
+    model_path.write_text(yaml.safe_dump(config.model_dump(mode="json")))
+    return plan(load_configs(general_path, model_path), tmp_path / "managed")
+
+
+def _managed_execute(manifest):
+    import os
+    import subprocess
+
+    from bindocracy.tools import collect_run, launch_spec
+
+    spec = launch_spec(manifest, 0)
+    completed = subprocess.run(spec.argv, env={**os.environ, **spec.env},
+                               capture_output=True, text=True, timeout=30, check=False)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    return collect_run(manifest.directory / "run.json")
+
+
+def test_managed_function_freezes_metrics_sources_and_structures(function_campaign, tmp_path):
+    from bindocracy.functions.run import MetricInput
+    from bindocracy.store.records import MetricRecord
+
+    database, general, config, artifacts = function_campaign
+    with CampaignStore(database) as store:
+        for index in range(4):
+            store.connection.execute(
+                "INSERT INTO metrics (metric_id,run_id,design_id,name,value,replicate,status,direction,measured_at) "
+                "VALUES (?, 'source', ?, 'prior', ?, 2, 'ok', 'max', ?)",
+                [f"m{index}", f"d{index}", index + 10, WHEN],
+            )
+            store.connection.execute(
+                "INSERT INTO metrics (metric_id,run_id,design_id,name,value,replicate,status,direction,measured_at) "
+                "VALUES (?, 'source', ?, 'prior', 999, 0, 'ok', 'max', ?)",
+                [f"other{index}", f"d{index}", WHEN],
+            )
+    script = config.function.script
+    script.write_text(
+        "from pathlib import Path\nfrom bindocracy_io import run_scoring\n"
+        "def score(row,args):\n"
+        "    return {'derived_value': row['metrics']['prior'] + len(Path(row['structure']).read_bytes())}\n"
+        "run_scoring(score)\n"
+    )
+    config = config.model_copy(update={
+        "metric_inputs": {"prior": MetricInput(run_id="source", metric="prior", replicate=2)},
+        "function": config.function.model_copy(update={
+            "metrics": {"derived_value": MetricDeclaration(direction="max")},
+        }),
+    })
+    manifest = _managed_plan(tmp_path, general, config)
+    with CampaignStore(database) as store:
+        store.connection.execute("UPDATE metrics SET value = 12345 WHERE replicate = 2")
+    script.write_text("raise RuntimeError('changed source must not execute')\n")
+    general.target.sequence_fasta.write_text(">changed\nKKKK\n")
+    config.design_set.write_text("not a design set any more\n")
+    for artifact in artifacts:
+        (tmp_path / "source" / artifact.uri).write_text("changed source structure\n")
+    collected = _managed_execute(manifest)
+    assert collected.run.status == RunStatus.SUCCEEDED
+    assert {row.design_id: row.value for row in collected.metrics} == {
+        f"d{i}": 29 + i for i in range(4)
+    }
+    for row in collected.metrics:
+        evidence = row.details["source_metrics"]["prior"]
+        assert evidence["metric_id"] == f"m{row.design_id[1:]}"
+        assert evidence["replicate"] == 2 and evidence["run_id"] == "source"
+        assert evidence["model_config_hash"].startswith("sha256:")
+        assert row.details["source_artifact"]["sha256"] == digest_of(
+            row.details["source_artifact"]["consumed_path"]
+        ).sha256
+    assert all(isinstance(row, MetricRecord) for row in collected.metrics)
+    with CampaignStore(database) as store:
+        store.ingest(collected, configs=[manifest.config])
+
+
+def test_missing_metric_policy_records_failed_evidence_without_pooling(function_campaign, tmp_path):
+    from bindocracy.functions.run import MetricInput
+    from bindocracy.tools.function import FunctionPlugin
+
+    database, general, config, _ = function_campaign
+    with CampaignStore(database) as store:
+        store.connection.execute(
+            "INSERT INTO metrics (metric_id,run_id,design_id,name,value,replicate,status,direction,details,measured_at) "
+            "VALUES ('failed-m','source','d0','prior',NULL,2,'failed','max',?,?)",
+            [json.dumps({"failure_reason": "model failed exactly"}), WHEN],
+        )
+    request = config.model_copy(update={
+        "metric_inputs": {"prior": MetricInput(run_id="source", metric="prior", replicate=2)},
+    })
+    with pytest.raises(FunctionRunError, match="model failed exactly"):
+        FunctionPlugin().preflight(general, request)
+    request = request.model_copy(update={"missing_metrics": "skip"})
+    manifest = _managed_plan(tmp_path, general, request)
+    assert manifest.workflow["metric_sources"]["d0"]["prior"]["metric_id"] == "failed-m"
+    collected = _managed_execute(manifest)
+    assert collected.run.status == RunStatus.FAILED and not collected.metrics
+    assert collected.run.n_attempted == 0
+    assert len(collected.run.count_details["tasks"]["0"]["skipped_metrics"]) == 4
+
+
+def test_function_cpu_resources_preserve_gpu_tool_requirements(function_campaign, tmp_path):
+    from bindocracy.config.models import ResourceConfig
+    from bindocracy.tools import launch_spec
+
+    _, general, config, _ = function_campaign
+    with pytest.raises(ValueError):
+        ResourceConfig.model_validate(CPU_RESOURCES)
+    manifest = _managed_plan(tmp_path, general, config)
+    assert launch_spec(manifest, 0).resources["gres"] == ""
+    gpu = manifest.model_copy(update={
+        "resources": {**manifest.resources, "gpus": 2},
+        "config": manifest.config.model_copy(update={
+            "model_config_json": {**manifest.config.model_config_json,
+                                  "resources": {**CPU_RESOURCES, "gpus": 2}},
+        }),
+    })
+    assert launch_spec(gpu, 0).resources["gres"] == "gpu:2"
+    with pytest.raises(FunctionRunError, match="managed"):
+        run_function(database=config.database, general=general,
+                     config=config.model_copy(update={"resources": config.resources.model_copy(update={"gpus": 1})}),
+                     output_dir=tmp_path / "unsafe")
+
+
+def test_worker_retains_partial_metrics_and_process_errors(function_campaign, tmp_path):
+    _, general, config, _ = function_campaign
+    config.function.script.write_text(
+        "import argparse,json,sys\nfrom pathlib import Path\n"
+        "p=argparse.ArgumentParser();p.add_argument('--inputs');p.add_argument('--outputs');a=p.parse_args()\n"
+        "Path(a.outputs).write_text(json.dumps({'index':0,'metrics':{'byte_count':3,'other_value':7}})+'\\n')\n"
+        "print('real error detail',file=sys.stderr)\nraise SystemExit(9)\n"
+    )
+    manifest = _managed_plan(tmp_path, general, config)
+    collected = _managed_execute(manifest)
+    assert collected.run.status == RunStatus.PARTIAL and collected.run.n_produced == 1
+    assert collected.run.count_details["tasks"]["0"]["failures"]["exit_9"] == 1
+    assert "exited 9" in collected.run.count_details["tasks"]["0"]["process_error"]
+    assert collected.run.count_details["tasks"]["0"]["output_present"]
+    assert "real error detail" in (manifest.directory / "tasks/0000/function/stderr.log").read_text()
+
+
+def test_managed_scoring_kit_executes_complete_frozen_bundle(function_campaign, tmp_path):
+    import yaml
+
+    from bindocracy.kits.bundle import inspect_kit
+    from bindocracy.kits.resolve import resolve_kit, write_lock
+    from bindocracy.kits.scoring import function_config
+
+    database, general, config, _ = function_campaign
+    root = tmp_path / "kit"
+    root.mkdir()
+    (root / "kit.yaml").write_text(yaml.safe_dump({
+        "kit_schema": 1, "name": "bundle_score", "version": "1.0.0",
+        "kind": "scoring_function", "summary": "Scorer with sibling code and assets",
+        "entrypoint": "entry.py", "python": ">=3.10", "requires": [],
+        "inputs": ["sequence"], "metrics": {"asset_value": {"direction": "max"}},
+        "cost": {"gpu": "none", "compile_seconds": 0, "per_parent_seconds": 0},
+    }))
+    (root / "support.py").write_text("VALUE = 7\n")
+    (root / "asset.txt").write_text("5")
+    (root / "entry.py").write_text(
+        "from pathlib import Path\nfrom support import VALUE\nfrom bindocracy_io import run_scoring\n"
+        "def score(row,args):\n"
+        "    return {'asset_value':VALUE+int(Path(__file__).with_name('asset.txt').read_text())}\n"
+        "run_scoring(score)\n"
+    )
+    lock = resolve_kit(root, approved_digest=inspect_kit(root).digest)
+    lock_path = write_lock(lock, tmp_path / "kit.lock.json")
+    request = function_config(lock, {
+        "name": "bundle_score", "design_set": str(config.design_set), "database": str(database),
+        "resources": CPU_RESOURCES,
+    }, lock_path)
+    manifest = _managed_plan(tmp_path, general, request)
+    (root / "support.py").write_text("VALUE = 900\n")
+    (root / "asset.txt").write_text("1000")
+    collected = _managed_execute(manifest)
+    assert collected.run.status == RunStatus.SUCCEEDED
+    assert {row.value for row in collected.metrics} == {12}
+    assert {"kit:entry.py", "kit:support.py", "kit:asset.txt", "kit:kit.yaml"} <= set(manifest.provenance)
+    assert not list((manifest.directory / "provenance/kit").rglob("__pycache__"))
+
+
+def test_managed_adapter_records_unstarted_and_invalid_protocol(function_campaign, tmp_path):
+    from bindocracy.tools import collect_run
+
+    _, general, config, _ = function_campaign
+    config.function.script.write_text(
+        "import argparse\nfrom pathlib import Path\n"
+        "p=argparse.ArgumentParser();p.add_argument('--inputs');p.add_argument('--outputs');a=p.parse_args()\n"
+        "Path(a.outputs).write_text('{bad complete row}\\n')\n"
+    )
+    manifest = _managed_plan(tmp_path, general, config)
+    missing = collect_run(manifest.directory / "run.json")
+    assert missing.run.status == RunStatus.FAILED
+    assert missing.run.count_details["errors"]["0"] == "missing worker result"
+    collected = _managed_execute(manifest)
+    assert collected.run.status == RunStatus.FAILED
+    assert not collected.metrics
+    assert "invalid JSON" in collected.run.count_details["errors"]["0"]
+
+
+def test_scientific_refusal_named_like_exit_is_not_process_failure(tmp_path):
+    script = tmp_path / "refusal.py"
+    script.write_text(
+        "from bindocracy_io import RejectCandidate,run_scoring\n"
+        "def score(row,args):\n    raise RejectCandidate('exit_9: scientific refusal')\n"
+        "run_scoring(score)\n"
+    )
+    result = run_custom(charge_function(script=script), designs(1),
+                        run_id="refusal", work_dir=tmp_path / "work", measured_at=WHEN,
+                        retain_partial=True)
+    assert result.failures == {"exit_9": 1}
+    assert result.process_error is None and result.output_present

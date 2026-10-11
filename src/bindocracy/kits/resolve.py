@@ -26,7 +26,14 @@ from bindocracy.kits.models import KitError, KitManifest, safe_relative
 from bindocracy.store.records import canonical_json
 
 _HARNESS_ROOT = Path(__file__).resolve().parents[3]
-_HARNESS_FILES = ("drivers/bindocracy_io.py", "drivers/optimize/run_optimizer.py")
+_HARNESS_FILES = {
+    "optimizer": ("drivers/bindocracy_io.py", "drivers/optimize/run_optimizer.py"),
+    "scoring_function": (
+        "drivers/bindocracy_io.py",
+        "src/bindocracy/functions/runner.py",
+        "src/bindocracy/functions/contract.py",
+    ),
+}
 _OVERLAY_TARGET = "/opt/mosaic/src/mosaic"
 _MAX_ENTRIES = 100_000
 _MAX_SOURCE_BYTES = 512 * 1024 * 1024
@@ -137,7 +144,7 @@ def _identity(path: Path, kind: str, files: tuple[str, ...] = ()) -> dict[str, A
     if kind == "harness_module":
         inventory = {}
         total_bytes = 0
-        for relative in sorted({*_HARNESS_FILES, *files}):
+        for relative in sorted(set(files)):
             safe_relative(relative)
             file_path = _local_path(path / relative)
             total_bytes += file_path.stat().st_size
@@ -282,7 +289,7 @@ def _resolve(
     dependencies: dict[str, dict[str, Any]] = {}
     runtime: dict[str, Any] = {}
     checks = [_check("kit.bundle", "Complete kit file inventory is content hashed")]
-    harness_files = set(_HARNESS_FILES)
+    harness_files = set(_HARNESS_FILES[manifest.kind])
     for requirement in manifest.requires:
         name = requirement.name
         if requirement.kind == "harness_module":
@@ -413,6 +420,29 @@ def verify_lock(lock: KitLock, *, require_approval: bool = True) -> None:
             raise KitError("Kit dependency identity or resolved execution contract changed since resolution")
     except (OSError, ValidationError, TypeError, KeyError) as error:
         raise KitError(f"Cannot verify kit lock: {error}") from error
+
+
+def verify_dependencies(lock: KitLock) -> None:
+    """Recheck external assets for an independently verified frozen bundle.
+
+    This does not verify source kit files. Callers must verify every archived
+    bundle member against ``lock.files`` before using this execution seam.
+    """
+    try:
+        if _digest(lock.model_dump(mode="json", exclude={"digest"})) != lock.digest:
+            raise KitError("Kit lock digest does not match its canonical contents")
+        if lock.approved_digest != lock.bundle_digest:
+            raise KitError("Kit execution requires explicit matching source approval")
+        for name, dependency in lock.dependencies.items():
+            recorded = dependency["identity"]
+            current = _identity(
+                Path(dependency["path"]), dependency["kind"],
+                tuple(recorded.get("files", {})),
+            )
+            if current != recorded:
+                raise KitError(f"Kit dependency identity changed since resolution: {name}")
+    except (OSError, TypeError, KeyError) as error:
+        raise KitError(f"Cannot verify kit dependencies: {error}") from error
 
 
 def load_lock(path: Path, *, verify: bool = True, require_approval: bool = True) -> KitLock:

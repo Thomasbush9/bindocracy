@@ -85,6 +85,8 @@ class ScoringFunction(ConfigModel):
     # Run inside this image. Absent means the harness's own interpreter, which
     # is right for a function whose dependencies are already installed.
     container: Path | None = None
+    container_python: str = Field(default="python", min_length=1)
+    dev_source: Path | None = None
     # Extra arguments appended after the contract's own, for a script that
     # takes options.
     args: tuple[str, ...] = ()
@@ -131,6 +133,7 @@ class CustomFunction(ScoringFunction):
     """
 
     metrics: dict[str, MetricDeclaration] = Field(min_length=1)
+    kit_lock: Path | None = None
 
     @model_validator(mode="after")
     def metrics_do_not_shadow_builtins(self) -> Self:
@@ -142,6 +145,8 @@ class CustomFunction(ScoringFunction):
         upstream one are. A custom function silently redefining `iptm` would be
         the same mistake with none of the visibility.
         """
+        if self.dev_source is not None and self.kit_lock is None:
+            raise ValueError("dev_source requires a verified scoring kit lock")
         clashes = sorted(set(self.metrics) & set(registered_keys()))
         if clashes:
             raise ValueError(

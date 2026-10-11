@@ -212,6 +212,8 @@ def _check_reuse(manifest: RunManifest, loaded: Any, tool_plan: ToolPlan, name: 
         or any(manifest.inputs[key] != digest_of(path) for key, path in tool_plan.inputs.items())
         or any(
             manifest.provenance[key].sha256 != _hash(path)
+            or manifest.provenance[key].path
+            != f"provenance/{tool_plan.archive_paths.get(key, path.name)}"
             for key, path in tool_plan.archives.items()
         )
     ):

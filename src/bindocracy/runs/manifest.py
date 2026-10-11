@@ -67,6 +67,9 @@ class ToolPlan:
     # about it -- the fan-out, the launch command and the adapter are already
     # the plugin's business and none of them care which kind it is.
     kind: RunKind = RunKind.GENERATE
+    # Optional relative destinations below provenance/, preserving multi-file
+    # extensions and preventing collisions between structure basenames.
+    archive_paths: dict[str, str] = field(default_factory=dict)
 
 
 class ManifestError(RuntimeError):
@@ -238,7 +241,7 @@ def plan_run(
     # below and stored in the database, so copying their YAML would be a third
     # copy that nothing reads, and would make a file on a shared filesystem
     # load-bearing again.
-    provenance = _archive_all(tool_plan.archives, directory)
+    provenance = _archive_all(tool_plan.archives, directory, tool_plan.archive_paths)
 
     inputs = {label: digest_of(path) for label, path in tool_plan.inputs.items()}
 
@@ -299,29 +302,46 @@ def _reuse(manifest_path: Path, loaded: LoadedConfigs) -> RunManifest:
     return manifest
 
 
-def _archive_all(sources: dict[str, Path], directory: Path) -> dict[str, ArchivedFile]:
-    """Archive every consumed input, refusing to let one overwrite another.
-
-    Filenames come from the sources, and two inputs can share one. Silently
-    copying the second over the first would leave a run executing a file it did
-    not record.
-    """
-    claimed: dict[str, str] = {}
-    archived: dict[str, ArchivedFile] = {}
+def _archive_all(
+    sources: dict[str, Path], directory: Path, archive_paths: dict[str, str] | None = None,
+) -> dict[str, ArchivedFile]:
+    """Freeze files with validated, collision-free relative destinations."""
+    overrides = archive_paths or {}
+    if set(overrides) - set(sources):
+        raise ManifestError("archive_paths names an unknown input")
+    claimed: dict[Path, str] = {}
+    destinations: dict[str, str] = {}
     for label, source in sources.items():
-        if source.name in claimed:
-            raise ManifestError(
-                f"cannot archive {label} and {claimed[source.name]}: both are named "
-                f"{source.name!r} and would overwrite each other in provenance/"
-            )
-        claimed[source.name] = label
-        archived[label] = _archive(source, directory, source.name)
-    return archived
+        name = overrides.get(label, source.name)
+        relative = Path(name)
+        if (
+            not name or relative.is_absolute() or "\\" in name
+            or any(part in {"", ".", ".."} for part in name.split("/"))
+        ):
+            raise ManifestError(f"unsafe archive destination: {name!r}")
+        for previous, owner in claimed.items():
+            if (
+                relative == previous or relative in previous.parents
+                or previous in relative.parents
+            ):
+                raise ManifestError(
+                    f"cannot archive {label} and {owner}: destinations would overwrite "
+                    "each other in provenance/"
+                )
+        claimed[relative] = label
+        destinations[label] = name
+    return {
+        label: _archive(source, directory, destinations[label])
+        for label, source in sources.items()
+    }
 
 
 def _archive(source: Path, directory: Path, filename: str) -> ArchivedFile:
     """Copy one input into provenance/ and record where it came from."""
     destination = directory / "provenance" / filename
+    if not destination.resolve().is_relative_to((directory / "provenance").resolve()):
+        raise ManifestError(f"archive destination escapes provenance: {filename}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
     return ArchivedFile(
         path=f"provenance/{filename}",

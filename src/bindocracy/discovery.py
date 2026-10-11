@@ -12,7 +12,7 @@ from bindocracy.config.load import load_yaml, read_tool_name
 from bindocracy.config.models import GeneralConfig
 from bindocracy.filters.config import FilterConfig
 from bindocracy.functions.run import FunctionRunConfig
-from bindocracy.kits.models import KitManifest
+from bindocracy.kits.models import KIT_MANIFEST_ADAPTER
 from bindocracy.kits.resolve import KitLock
 from bindocracy.ranking.models import RankingPolicy
 from bindocracy.runs.index import WorkflowIndex
@@ -40,7 +40,7 @@ _SCHEMAS = {
     SchemaKind.RANK: RankingPolicy,
     SchemaKind.QUERY: DesignQuery,
     SchemaKind.FUNCTION: FunctionRunConfig,
-    SchemaKind.KIT: KitManifest,
+    SchemaKind.KIT: KIT_MANIFEST_ADAPTER,
     SchemaKind.KIT_LOCK: KitLock,
 }
 
@@ -95,7 +95,11 @@ def config_schema(
         )
     except KeyError as error:
         fail(error, code="unknown_tool")
-    emit(model.model_json_schema())
+    emit(
+        model.json_schema()
+        if model is KIT_MANIFEST_ADAPTER
+        else model.model_json_schema()
+    )
 
 
 def check_config(

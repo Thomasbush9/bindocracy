@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 from bindocracy.kits.bundle import cache_kit, inspect_kit
-from bindocracy.kits.models import KitError, KitManifest
+from bindocracy.kits.models import KIT_MANIFEST_ADAPTER, KitError
 from bindocracy.kits.resolve import load_lock, resolve_kit, verify_lock, write_lock
 from bindocracy.kits.store import _HTTPSRedirects, fetch_kit, list_releases, publish_kit
 from bindocracy.store.records import canonical_json
@@ -239,9 +239,9 @@ def test_manifest_duplicate_keys_are_not_silently_overwritten(kit):
 def test_legacy_manifests_are_validated_without_importing_scientific_code():
     examples = Path(__file__).resolve().parents[1] / "examples" / "kits"
     for name in ("surface-tuner", "rfd-refine", "mosaic-af2-refine", "tomasz-optimization"):
-        manifest = KitManifest.model_validate(yaml.safe_load((examples / name / "kit.yaml").read_text()))
-        assert KitManifest.model_validate_json(manifest.model_dump_json()) == manifest
-        assert KitManifest.model_validate(manifest.model_dump(mode="json", by_alias=True)) == manifest
+        manifest = KIT_MANIFEST_ADAPTER.validate_python(yaml.safe_load((examples / name / "kit.yaml").read_text()))
+        assert KIT_MANIFEST_ADAPTER.validate_json(manifest.model_dump_json()) == manifest
+        assert KIT_MANIFEST_ADAPTER.validate_python(manifest.model_dump(mode="json", by_alias=True)) == manifest
 
 
 def test_catalog_duplicate_release_reference_is_refused(kit, tmp_path):

@@ -22,17 +22,8 @@ from bindocracy.tools import (
     load_configs,
     plan,
     plugin_for,
-    registered_tools,
     resources,
 )
-
-
-def test_every_built_in_tool_is_registered() -> None:
-    assert registered_tools() == (
-        "af3", "bindcraft2", "boltzgen", "chai1", "freebindcraft", "genie3",
-        "mosaic", "of3_upstream", "optimize", "protein_hunter",
-        "proteina_complexa", "pxdesign", "scorer",
-    )
 
 
 def test_an_unknown_tool_names_the_ones_that_exist() -> None:

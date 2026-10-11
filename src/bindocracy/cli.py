@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+import yaml
 from pydantic import ValidationError
 
 from bindocracy import __version__
@@ -27,7 +28,7 @@ from bindocracy.discovery import register as register_discovery
 from bindocracy.filters.config import FilterConfig
 from bindocracy.filters.config import summarise as summarise_filter
 from bindocracy.filters.run import FilterRunError, run_filter
-from bindocracy.functions.run import FunctionRunConfig, FunctionRunError, run_function
+from bindocracy.functions.run import FunctionRunConfig
 from bindocracy.kits.cli import app as kit_app
 from bindocracy.ranking.cli import app as rank_app
 from bindocracy.runs import ingest_bundle, ingest_collected, write_collected
@@ -352,54 +353,41 @@ def filter_apply(
     )
 
 
-@function_app.command("run")
-def function_run(
-    database: Annotated[Path, typer.Argument(help="Campaign database to read and write.")],
+@function_app.command("plan")
+def function_plan(
+    database: Annotated[Path, typer.Argument(help="Campaign database supplying frozen inputs.")],
     general: Annotated[Path, typer.Option("--general", help="General campaign YAML.")],
     config: Annotated[Path, typer.Option("--config", help="Function run YAML; tool: function.")],
+    site: Annotated[Path, typer.Option("--site", help="Controller and worker resource policy.")],
     output_dir: Annotated[
-        Path,
-        typer.Option(
-            "--output-dir",
-            help="New directory for archived inputs, script, and staging bundle.",
-        ),
+        Path, typer.Option("--output-dir", help="New directory for request and frozen campaign plan."),
     ],
 ) -> None:
-    """Score frozen candidates, stage the measurements, and atomically ingest them."""
+    """Freeze a scoring campaign; execute it with campaign submit after approval."""
+    from bindocracy.campaign.plan import _absolute_values, build_plan
+
     try:
-        general_config = load_yaml(general, GeneralConfig)
         function_config = load_yaml(config, FunctionRunConfig)
-        collected, config_record = run_function(
-            database=database,
-            general=general_config,
-            config=function_config,
-            output_dir=output_dir,
-            general_source=general,
-        )
-        bundle = write_collected(collected, output_dir / "collected.json")
-        target = TargetDigest.model_validate(collected.run.workflow_metadata["target"])
-        with CampaignStore(database) as store:
-            inserted = store.ingest(
-                collected,
-                configs=[config_record],
-                digest=collected.content_hash(),
-                target=(target.name, target.sequence_sha256),
-            )
-    except (
-        ConfigLoadError,
-        FunctionRunError,
-        ValidationError,
-        OSError,
-        IngestConflictError,
-        TargetMismatchError,
-    ) as error:
+        if function_config.database is not None and function_config.database.resolve() != database.resolve():
+            raise ValueError("function database differs from requested campaign database")
+        function_config = function_config.model_copy(update={"database": database.resolve()})
+        output = output_dir.resolve()
+        output.mkdir(parents=True, exist_ok=False)
+        resolved = output / "function.yaml"
+        resolved.write_text(yaml.safe_dump(
+            _absolute_values(function_config.model_dump(mode="python")), sort_keys=False,
+        ))
+        index = output / "workflow.yaml"
+        index.write_text(yaml.safe_dump({
+            "database": str(database.resolve()),
+            "run_root": str(output / "runs"),
+            "general_config": str(general.resolve()),
+            "runs": [{"name": function_config.name, "config": str(resolved)}],
+        }, sort_keys=False))
+        plan = build_plan(index, site, output / "plan")
+    except (ValueError, RuntimeError, OSError, yaml.YAMLError) as error:
         fail(error)
-    emit(
-        {"run": collected.run, "bundle": bundle, "inserted": inserted},
-        text=f"run: {collected.run.run_id} [{collected.run.status}]\n"
-        f"scored: {collected.run.n_produced}/{collected.run.n_requested}\n"
-        f"bundle: {bundle}\n" + ("ingested" if inserted else "already ingested; nothing to do"),
-    )
+    emit(plan, text=f"Plan: {plan['plan_dir']}/plan.json\nApprove digest: {plan['digest']}")
 
 
 @app.callback()

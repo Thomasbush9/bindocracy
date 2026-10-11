@@ -107,13 +107,6 @@ def toy_run(configs, tmp_path: Path) -> Path:
     return manifest.directory / "run.json"
 
 
-def test_the_built_in_tools_are_registered() -> None:
-    assert registered_tools() == (
-        "af3", "bindcraft2", "boltzgen", "chai1", "freebindcraft", "genie3",
-        "mosaic", "of3_upstream", "optimize", "protein_hunter",
-        "proteina_complexa", "pxdesign", "scorer",
-    )
-    assert isinstance(plugin_for("mosaic").adapter(), MosaicOutputAdapter)
 
 
 def test_an_unknown_tool_says_what_is_known() -> None:

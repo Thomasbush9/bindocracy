@@ -91,7 +91,7 @@ def main() -> int:
         "".join(json.dumps(row, sort_keys=True) + "\n" for row in children)
     )
 
-    status = "succeeded" if completed and counts["n_lines"] else "failed"
+    status = "succeeded" if completed and raw_path.is_file() else "failed"
     details = {
         "n_parents": len(shard),
         "shard": args.shard,
@@ -110,11 +110,10 @@ def main() -> int:
     if not completed:
         print(f"[optimize] script did not complete: {error}", file=sys.stderr, flush=True)
         return 1
-    if not counts["n_lines"]:
+    if not raw_path.is_file():
         print(
-            "[optimize] script exited 0 but wrote no rows. A run that succeeds and "
-            "produces nothing is reported as failed rather than as an optimization "
-            "that improved nothing.",
+            "[optimize] script exited 0 but wrote no output file. An explicit "
+            "empty output file is valid; a missing file violates the contract.",
             file=sys.stderr,
             flush=True,
         )

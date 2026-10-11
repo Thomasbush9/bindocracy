@@ -21,7 +21,7 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
-from bindocracy.kits.models import KitError, KitManifest, safe_relative
+from bindocracy.kits.models import KIT_MANIFEST_ADAPTER, KitError, KitManifest, safe_relative
 from bindocracy.store.records import canonical_json
 
 MAX_BYTES = 100 * 1024 * 1024
@@ -69,7 +69,7 @@ def _parse_manifest(payload: bytes) -> KitManifest:
         raise KitError("kit.yaml exceeds the 1 MiB manifest limit")
     try:
         value = yaml.load(payload, Loader=_ManifestLoader)
-        return KitManifest.model_validate(value)
+        return KIT_MANIFEST_ADAPTER.validate_python(value)
     except (yaml.YAMLError, ValidationError, UnicodeError, RecursionError) as exc:
         raise KitError(f"Invalid kit.yaml: {exc}") from exc
 

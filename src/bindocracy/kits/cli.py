@@ -11,9 +11,10 @@ from bindocracy.kits.bundle import KitRelease, cache_kit, inspect_kit
 from bindocracy.kits.models import KitError
 from bindocracy.kits.optimizer import optimizer_config
 from bindocracy.kits.resolve import resolve_kit, write_lock
+from bindocracy.kits.scoring import function_config
 from bindocracy.kits.store import fetch_kit, list_releases, publish_kit
 
-app = typer.Typer(help="Inspect, distribute and resolve pinned kits; never execute their code.")
+app = typer.Typer(help="Inspect, resolve and author pinned kits; smoke executes only by explicit request.")
 
 
 def _mapping(path: Path | None) -> dict:
@@ -131,7 +132,7 @@ def resolve_command(
         Path | None, typer.Option("--parameters", help="Declared parameter overrides as YAML.")
     ] = None,
 ) -> None:
-    """Freeze an approved kit into kit-lock.json and an ordinary optimize.yaml.
+    """Freeze an approved kit into kit-lock.json and an ordinary tool config.
 
     Parameters and dependency evidence are frozen but runtime probes remain
     unknown. Job submission still requires the separate campaign-plan approval.
@@ -151,10 +152,11 @@ def resolve_command(
             release.root, bindings=bindings, parameters=overrides, approved_digest=approve,
         )
         lock_path = destination / "kit-lock.json"
-        model = optimizer_config(lock, request, lock_path)
+        adapter = optimizer_config if lock.manifest.kind == "optimizer" else function_config
+        model = adapter(lock, request, lock_path)
         destination.mkdir(parents=True, exist_ok=False)
         write_lock(lock, lock_path)
-        model_path = destination / "optimize.yaml"
+        model_path = destination / ("optimize.yaml" if lock.manifest.kind == "optimizer" else "function.yaml")
         with model_path.open("x") as handle:
             yaml.safe_dump(model.model_dump(mode="json"), handle, sort_keys=False)
     except (ValueError, OSError, yaml.YAMLError) as error:
@@ -168,3 +170,49 @@ def resolve_command(
         "runtime_qualified": False,
         "campaign_approval_required": True,
     })
+
+
+@app.command("init")
+def init_command(
+    destination: Annotated[Path, typer.Argument(help="New kit directory; existing paths are refused.")],
+    kind: Annotated[str, typer.Option("--kind", help="optimizer or scoring_function.")],
+    name: Annotated[str | None, typer.Option("--name", help="Portable kit name.")] = None,
+) -> None:
+    """Write a runnable CPU example, including its full code/data bundle."""
+    from bindocracy.kits.authoring import initialize_kit
+
+    try:
+        release = initialize_kit(destination, kind=kind, name=name)
+    except (ValueError, OSError) as error:
+        fail(error, code="kit_error")
+    emit(_release(release))
+
+
+@app.command("smoke")
+def smoke_command(
+    config: Annotated[Path, typer.Argument(help="Resolved optimize.yaml or function.yaml.")],
+    general: Annotated[Path, typer.Option("--general", help="Real target/campaign configuration.")],
+    output_dir: Annotated[Path, typer.Option("--output-dir", help="New directory preserving logs/results.")],
+    local_cpu: Annotated[bool, typer.Option("--local-cpu", help="Explicitly execute trusted CPU code locally.")] = False,
+    plan_only: Annotated[bool, typer.Option("--plan-only", help="Prepare a campaign plan; do not execute.")] = False,
+    site: Annotated[Path | None, typer.Option("--site", help="Site config for campaign plan mode.")] = None,
+    database: Annotated[Path | None, typer.Option("--database", help="Campaign database for plan mode.")] = None,
+    max_inputs: Annotated[int, typer.Option("--max-inputs", min=1, max=16)] = 2,
+    timeout_seconds: Annotated[int, typer.Option("--timeout-seconds", min=1, max=600)] = 60,
+) -> None:
+    """Exercise production contracts on bounded real inputs, never implicit host GPUs.
+
+    GPU smoke uses --plan-only, then separately reviewed campaign qualification.
+    A static kit check, a prepared plan and an executed passing smoke are distinct.
+    """
+    from bindocracy.kits.smoke import smoke_kit
+
+    try:
+        report = smoke_kit(
+            config, general, output_dir, local_cpu=local_cpu, plan_only=plan_only,
+            site=site, database=database, max_inputs=max_inputs,
+            timeout_seconds=timeout_seconds,
+        )
+    except (ValueError, RuntimeError, OSError, yaml.YAMLError) as error:
+        fail(error, code="kit_smoke_error")
+    emit(report)

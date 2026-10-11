@@ -8,7 +8,7 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
-from bindocracy.config.models import ConfigModel, GeneralConfig
+from bindocracy.config.models import ConfigModel, CPUResourceConfig, GeneralConfig, ToolConfig
 from bindocracy.config.preflight import (
     ConfigPreflightError,
     read_single_fasta,
@@ -50,7 +50,15 @@ class FunctionRunError(RuntimeError):
 BuiltinName = Literal["epitope", "sequence"]
 
 
-class FunctionRunConfig(ConfigModel):
+class MetricInput(ConfigModel):
+    """An exact source measurement; never implicitly aggregate replicates."""
+
+    run_id: str = Field(min_length=1)
+    metric: str = Field(min_length=1)
+    replicate: int = Field(default=0, ge=0, strict=True)
+
+
+class FunctionRunConfig(ToolConfig):
     """One function run: a script, or the name of one this repository ships.
 
     Exactly one of `builtin` and `function`. They are separate fields rather
@@ -73,6 +81,10 @@ class FunctionRunConfig(ConfigModel):
     name: str = Field(min_length=1)
     tool: Literal["function"] = "function"
     design_set: Path
+    resources: CPUResourceConfig
+    database: Path | None = None
+    metric_inputs: dict[str, MetricInput] = Field(default_factory=dict)
+    missing_metrics: Literal["error", "skip"] = "error"
     # A function this repository ships: `epitope` or `sequence`.
     builtin: BuiltinName | None = None
     # A user-supplied script. See docs/scoring-functions.md tier 3.
@@ -204,6 +216,8 @@ def run_function(
     A new output directory is mandatory. A failed attempt remains on disk for
     diagnosis; neither it nor a completed run may be silently overwritten.
     """
+    if config.resources.gpus:
+        raise FunctionRunError("GPU functions require managed campaign execution")
     output = Path(output_dir).resolve()
     if output.exists():
         raise FunctionRunError(f"output directory already exists; refusing to overwrite: {output}")
@@ -241,6 +255,9 @@ def run_function(
                 if row.sequence != entry.sequence or row.length != entry.length:
                     raise FunctionRunError(f"frozen sequence identity differs for design {entry.design_id}")
             structures, source_run = _structures(connection, config, function, design_set)
+            from bindocracy.functions.freeze import resolve_metrics
+
+            metric_values, metric_sources, skipped_metrics = resolve_metrics(connection, config, entries)
     except (DesignSetError, SelectionError, ConfigPreflightError, OSError, FunctionError) as error:
         raise FunctionRunError(str(error)) from error
 
@@ -285,8 +302,9 @@ def run_function(
             target_sequence=target_sequence,
             structure=structures[entry.design_id][0] if structures else None,
             source_model=structures[entry.design_id][1] if structures else None,
+            metrics=metric_values[entry.design_id],
         )
-        for entry in entries
+        for entry in entries if entry.design_id not in skipped_metrics
     ]
     (output / "config.json").write_text(record.model_dump_json(indent=2) + "\n")
     (output / "design_set.json").write_text(design_set.model_dump_json(indent=2) + "\n")
@@ -300,6 +318,12 @@ def run_function(
         )
     except FunctionError as error:
         raise FunctionRunError(str(error)) from error
+    if metric_sources:
+        result.records = tuple(
+            metric.model_copy(update={"details": {
+                **(metric.details or {}), "source_metrics": metric_sources[metric.design_id],
+            }}) for metric in result.records
+        )
     if structures:
         result.records = tuple(
             metric.model_copy(update={
@@ -335,6 +359,8 @@ def run_function(
             "helper_sha256": result.helper_sha256,
             "target": target.model_dump(mode="json"),
             "structures_from": source_run,
+            "metric_sources": metric_sources,
+            "skipped_metrics": skipped_metrics,
             "source_artifacts": {
                 design_id: structure[2] for design_id, structure in structures.items()
             },

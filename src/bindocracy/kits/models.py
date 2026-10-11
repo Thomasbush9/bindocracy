@@ -16,6 +16,7 @@ from pydantic import (
     StrictFloat,
     StrictInt,
     StrictStr,
+    TypeAdapter,
     field_validator,
     model_validator,
 )
@@ -171,18 +172,15 @@ class Parameter(ConfigModel):
         return self
 
 
-class KitManifest(ConfigModel):
+class _KitManifest(ConfigModel):
     kit_schema: Literal[1]
     name: StrictStr
     version: StrictStr
-    kind: Literal["optimizer"]
     summary: Nonempty
     entrypoint: StrictStr
     python: Nonempty
     requires: list[Requirement]
     inputs: list[FunctionInputKind] = Field(min_length=1)
-    loss_models: list[Nonempty]
-    capabilities: Capabilities
     metrics: dict[Nonempty, MetricDeclaration]
     cost: Cost
     args: dict[StrictStr, Scalar] = Field(default_factory=dict)
@@ -228,9 +226,8 @@ class KitManifest(ConfigModel):
         names = [requirement.name for requirement in self.requires]
         if len(names) != len(set(names)):
             raise ValueError("Duplicate dependency name")
-        for field in (self.inputs, self.loss_models):
-            if len(field) != len(set(field)):
-                raise ValueError("Duplicate input or loss model")
+        if len(self.inputs) != len(set(self.inputs)):
+            raise ValueError("Duplicate input")
         for key in self.args.keys() | self.parameters.keys():
             if not _ARGUMENT.fullmatch(key):
                 raise ValueError(f"Invalid argument name: {key!r}")
@@ -250,3 +247,28 @@ class KitManifest(ConfigModel):
             if flag[2:] in self.args or flag[2:] in self.parameters:
                 raise ValueError("Dependency arguments cannot collide with parameters")
         return self
+
+
+class OptimizerKitManifest(_KitManifest):
+    kind: Literal["optimizer"]
+    inputs: list[Literal["sequence", "structure", "metrics", "provenance"]] = Field(min_length=1)
+    loss_models: list[Nonempty]
+    capabilities: Capabilities
+
+    @field_validator("loss_models")
+    @classmethod
+    def unique_loss_models(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("Duplicate loss model")
+        return value
+
+
+class ScoringKitManifest(_KitManifest):
+    kind: Literal["scoring_function"]
+    metrics: dict[Nonempty, MetricDeclaration] = Field(min_length=1)
+
+
+KitManifest = Annotated[
+    OptimizerKitManifest | ScoringKitManifest, Field(discriminator="kind")
+]
+KIT_MANIFEST_ADAPTER = TypeAdapter(KitManifest)

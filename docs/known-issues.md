@@ -525,6 +525,39 @@ walltime near what the work should actually take — a 1-design Genie 3 run need
 about five minutes, so a two-hour ceiling turned a hung node into two hours of
 lost allocation instead of five minutes.
 
+### 2.12 Completed Slurm workers can leave the controller waiting forever
+
+Observed with Snakemake 9.26.0 and executor plugin 2.8.0 on 2026-10-16:
+workers 53351522/53351523 completed, but their controllers never scheduled
+collection or ingestion. Accounting by the workflow's job name returned the
+completed worker correctly; this was not an accounting delay.
+
+The plugin's threaded submission callback uses `call_soon_threadsafe` on the
+main event loop captured during submission. Snakemake then blocks in its
+synchronous scheduler, leaving the registration callback queued on a stopped
+loop. The status thread has no registered worker to check. A direct callback
+probe reproduced zero registrations with one pending callback. The same
+implementation is present in plugin 2.6.0 and 2.7.0.
+
+`pyproject.toml` and `uv.lock` pin plugin **2.5.0**, which submits and registers
+synchronously, rather than patching the installed package. Real Slurm smoke
+workflows (controllers 53371656 and 53372175, the latter using the complete
+locked environment) verified that the worker's output was observed and its
+dependent local rule completed. The campaign/workflow regression suites passed
+88 tests. Run `uv sync --frozen` to install the locked compatible dependencies.
+Cancel a stuck campaign through
+`bindocracy campaign cancel PLAN`; do not submit overlapping controllers.
+Scheduler completion still does not prove scientific success: inspect failed
+child records and enforce the campaign's acceptance gate.
+
+The generate rule passes **only `gpu`**, not both `gpu` and `gres`: plugin 2.5.0
+rejects simultaneous declarations. This single integer serves Snakemake's
+global GPU budget and translates to Slurm `--gpus=N`; the controller accepts
+and accounts for that form. The corrected real Pocket/Y84 gradient smokes
+completed collection and ingestion with four children per arm, all 24 requested
+gradient records validated, and database parent lineage checked. A further
+34 workflow/index/plan tests passed after removing the duplicate resource.
+
 ---
 
 ## 3. Counting traps — "40 designs" means something different in each tool

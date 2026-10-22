@@ -12,7 +12,9 @@ dependencies = [
     # automatically -- that is the piece that runs inside the job step, and
     # you should not depend on it directly.
     "snakemake>=9.26",
-    "snakemake-executor-plugin-slurm>=2.8",
+    # 2.6–2.8 enqueue submission callbacks on Snakemake's stopped main event
+    # loop, leaving completed Slurm workers unregistered. Use synchronous 2.5.
+    "snakemake-executor-plugin-slurm==2.5.0",
 
     # --- data ------------------------------------------------------------
     "duckdb>=1.5",

@@ -151,3 +151,84 @@ plus `winners` and `offspring` in JSON, CSV, and FASTA. The original common scor
 remain in `inputs/baseline-{candidates,predictions}.json` for paired downstream
 comparison. `reports/monitor-status.json`, `control/submission.json`, and
 `control/collector.json` retain live status and the Slurm job identities.
+
+## Gated local selection across distinct inputs
+
+[`scripts/mosaic_gated_campaign.py`](../../scripts/mosaic_gated_campaign.py)
+freezes and launches the remaining inputs through
+[`drivers/mosaic/campaign_gated.py`](../../drivers/mosaic/campaign_gated.py).
+Each group starts with four **different original designs**, one trajectory per
+input, and keeps that population size. Pocket and Y84 never share a group.
+Two-input tails retain two logical members; computational padding to four is
+excluded from selection, ancestry, metrics and exported designs.
+
+Every 25 cumulative steps, the highest-loss member is eligible for replacement.
+For losses evaluated at the optimizer's extrapolated pre-update state, the gate
+uses `(worst - median(other three)) / max(abs(median(other three)), 1e-6)`.
+Replacement occurs only when this exceeds the frozen arm/checkpoint threshold.
+The parent is sampled uniformly from the other three members. The supplied
+`evolution.perturb` operator commits its updated sequence state to argmax and
+mixes in independent Dirichlet noise with a weight drawn from 0.10–0.20.
+Only the replacement's momentum is reset; its cysteine constraints and ancestry
+follow its sampled parent. Survivors retain their optimizer state at these gates.
+
+Production retains three cycles of 90 soft plus 30 sharp steps, scales 1/2,
+stepsizes 0.05/0.025 and momentum 0.7/0.5. All active members re-soften between
+cycles using the same perturbation operator, without additional cycle-boundary
+culling. Final candidates are the actual surviving endpoints, independently
+evaluated and internally refold-ranked; no killed lineage is resurrected from
+the older per-input best-state archive. Original-slot identity is retained
+separately from the currently surviving original lineage.
+
+[`scripts/mosaic_gate_calibration.py`](../../scripts/mosaic_gate_calibration.py)
+derives thresholds from the original R32/R35 quartets, with even seeds used for
+fitting and odd seeds held out. The median candidate gap targets roughly 12.5%
+member replacement historically. These are empirical proxies: the historical
+objective also used OF3 and ESMC, unlike the current Boltz2 objective. Live rates
+are measured, never forced to a quota. Critic joins use explicit trajectory IDs,
+not the position in loss-sorted result arrays.
+
+```bash
+python scripts/mosaic_gate_calibration.py \
+  --out "$CALIBRATION" --report "$CALIBRATION_REPORT"
+python scripts/mosaic_gated_campaign.py --phase "$NEW_PHASE" prepare \
+  --previous "$RETAINED_PHASE" --calibration "$CALIBRATION" --repo "$BINDOCRACY_REPO"
+python "$NEW_PHASE/provenance/mosaic_gated_campaign.py" \
+  --phase "$NEW_PHASE" submit-canaries
+# After both GPU jobs finish successfully:
+python "$NEW_PHASE/provenance/mosaic_gated_campaign.py" --phase "$NEW_PHASE" qualify
+python "$NEW_PHASE/provenance/mosaic_gated_campaign.py" --phase "$NEW_PHASE" submit
+python "$NEW_PHASE/provenance/mosaic_gated_campaign.py" --phase "$NEW_PHASE" monitor
+```
+
+The controller excludes the retained comparison cohort and freezes calibration,
+its complete audit, original baseline scores, inputs, model source and drivers.
+Input order interleaves deterministically shuffled generator/decile strata.
+Each allocation processes up to four groups with the model kept loaded.
+One array spans both targets. Its throttle is `16 - active retained jobs`,
+increasing as those allocations finish; old queued tasks must remain held.
+Canaries must release their GPUs before production starts. Collection and
+monitoring use no GPU and must run persistently for incremental exports and
+automatic throttle updates. A native failure or one-hour log stall cancels the
+new array, preserving completed artifacts.
+
+Each `results/<arm>/<batch_id>/` contains:
+
+- `input.json`, `loss_metadata.json`: identities, seeds, objective and calibration.
+- `steps.jsonl`, `trajectory-*.npz`: every loss/component and its actual evaluated
+  state, gradient, pre-update optimizer history and post-update state.
+- `gates.jsonl`: accepted **and rejected** opportunities, gaps, thresholds,
+  sampled parents, noise, RNG states and pre/post ancestry.
+- `cycles.jsonl`, `cycle-restart-*.npz`: between-cycle re-softening.
+- `checkpoint-*.npz`, `resume.json`: committed optimizer, lineage and RNG state
+  at gates and stage endpoints. Interrupted batches resume from that checkpoint.
+- `ranked_members.json`, `final.npz`, `result.json`: incremental internal refolds,
+  actual surviving endpoints, complete ancestry and artifact hashes.
+
+`reports/candidates.{json,csv}` is refreshed as each completed group passes
+numerical/ancestry validation; it need not wait for an allocation or the whole
+campaign to finish. `reports/progress.json` includes completed input slots,
+current GPU allocations and observed replacement rates. `control/submission.json`
+contains job IDs. `reports/final-report.json` is written only after all inputs
+complete. Smoke outputs are separate under `smoke/results/` and are never counted
+as full-budget production results.

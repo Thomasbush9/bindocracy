@@ -384,6 +384,56 @@ is the only way to tell "converged" from "wandered" after the fact. Report
 `start_loss` beside `loss` for the same reason: a final loss of 0.31 means
 nothing without knowing it began at 0.33.
 
+For `examples/kits/tomasz-optimization`, `--recipe-config` loads the full
+historical objective instead of rebuilding it from the wrapper's defaults.
+Freeze both the design-script directory and the collaborator Mosaic source;
+pin the ESM-C checkpoint locally. Historical R32/R35 settings are three
+90-soft/30-sharp cycles, cycle noise 0.15, one sharp replicate, zero sharp
+noise, no hard sharpening, and `--no-init-noise-random`. The historical recipe
+forbids cysteine and uses Boltz2, differentiable `mosaic.models.of3` /
+`jopenfold3`, and ESM-C; this is not the independent upstream OF3 scorer.
+
+Enable `--record-components` to capture every existing optimization and
+cycle-ranking evaluation, without additional model calls or culling.
+`components.jsonl` separates signed term returns, model/term weights,
+weighted contributions, and raw auxiliary diagnostics. Parent identity,
+cycle, stage, step, and random keys accompany each record. The recorder
+rejects nonfinite/sentinel values and totals that do not reconcile with the
+weighted components. Successful child trajectory artifacts link the traces,
+source hashes, effective configuration, invocation, and source cycle outputs;
+failed subprocess traces remain in the chunk work directory.
+
+`--gradient-interval N` additionally records first/last and interval-spaced
+stage steps plus every cycle-ranking evaluation. `--gradient-trajectories`
+selects the first trajectories recorded from each chunk; it does not reduce
+the differentiated batch. `gradients.jsonl` contains centered, pre-clipping
+raw/weighted component norms, norm shares, signed projection shares, pairwise
+cosines, and cancellation. Projection shares are not percentage attributions;
+cosines involving a zero norm are null. Nonfinite raw gradients fail even for
+zero-weight terms. The actual-total pullback supplies the optimizer gradient;
+the weighted component sum is an independent reconstruction check, never a
+replacement gradient. The centering check is not an independent total-gradient
+comparison.
+
+Gradient mode uses one first-order VJP of the same forward evaluation,
+deterministic GPU kernels, `JAX_DEFAULT_MATMUL_PRECISION=highest`, and sequential
+batch-row/component evaluation. The objective, weights, random keys, selection,
+and update formulas/schedule remain unchanged; compiled numerics and resulting
+trajectories need not match the original evaluator bitwise. This policy is
+recorded in `trace_manifest.json`. An H100 four-parent, soft/sharp/ranking smoke
+produced 12 finite gradient records with maximum reconstruction error
+`2.65e-6`, at most 2.66% of the unchanged `1e-5 + 1e-4 * max(abs(total_gradient))`
+tolerance. Deterministic execution alone had failed this check; reduced
+matmul precision was insufficient. This short smoke does not qualify the
+full optimization schedule or establish balanced gradients.
+
+Do not interpret raw auxiliary values as loss contributions, or an improved
+total as improvement in every component. Inspect constant/clipped terms and
+soft/sharp transitions, then evaluate final sequences with held-out models.
+Recording adds host synchronization and output overhead; qualify the complete
+recipe on GPU before releasing a production cohort. CPU contract tests alone
+do not establish runtime compatibility.
+
 **Distinguish refusal from a bug.** Raise `RejectCandidate` for an expected
 per-parent refusal and continue. Unexpected exceptions should fail the process;
 catching every exception would make a broken optimizer look like a biological

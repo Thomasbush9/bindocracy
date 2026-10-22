@@ -11,13 +11,36 @@
 kit_schema: 1
 
 name: tomasz-optimization
-version: 0.2.0
+version: 0.6.0
 kind: optimizer
 summary: >-
   Refine an existing binder with the DIO3 campaign's soft-sharp cycling
   protocol, by invoking the campaign's own run_design.py with --init-fasta and
-  --init-noise-random and translating its designs_seed*.json into child rows.
-  Each parent gets N children from independently perturbed starts.
+  optional randomized initialization and translating its designs_seed*.json into
+  child rows. --recipe-config forwards the full historical objective unchanged;
+  --record-components captures every evaluation without extra model calls.
+  --gradient-interval (default 0, disabled) optionally differentiates the actual
+  evaluation at first/last and interval-spaced stage steps and every cycle-ranking
+  evaluation. --gradient-trajectories (default 1) selects the first
+  min(batch, requested) trajectories for recording. Diagnostics use deterministic
+  GPU operations, highest-precision matmuls, and sequential batch-row/component
+  evaluation to bound memory. Batch membership, random keys, objective weights
+  and update formulas/schedule are unchanged; floating-point trajectories need
+  not match the original compiled evaluator bitwise.
+  gradients.jsonl records centered pre-clipping raw/weighted gradient norms,
+  norm shares, signed projection shares, pairwise cosines and cancellation.
+  Nonfinite raw gradients fail even for zero-weight terms. Reconstruction must
+  satisfy max_abs_error <= 1e-5 + 1e-4 * max(abs(original centered gradient)).
+  Projection shares are not percentage attributions; zero-norm cosines are null.
+  Optional diagnostics imply component recording and preserve failed traces.
+  Historical R32/R35: recipe-config, no-init-noise-random=true, cycles=3,
+  cycle-noise=0.15, sharp-replicates=1, sharp-noise=0, hard-sharp=false.
+  These recipes use boltz2+genuine differentiable of3+ESMC and forbid cysteine.
+  Freeze design-scripts AND the collaborator mosaic source overlay before launch.
+  Pin ESM-C to a compatible local checkpoint snapshot; never a moving hub name.
+  Every child trajectory JSON links components.jsonl, optional gradients.jsonl,
+  full source hash/sampling manifest, resolved config, invocation, parent identities
+  and original source results. Failure trajectory records preserve the same links.
 
 entrypoint: optimizer.py
 python: ">=3.11"
@@ -94,16 +117,15 @@ inputs: [sequence]
 
 # This conservative declaration is reviewed with the bundle and inherited by
 # the locked config. Parameter overrides do not narrow its provenance claim.
-# The per-child lm_af2 and lm_boltz2 flags retain the more specific evidence.
+# The per-child lm_af2, lm_boltz2 and lm_of3 flags retain specific evidence.
 #
 # ESMFold2 is in neither and stays the held-out judge.
-loss_models: [af2, boltz2]
+loss_models: [af2, boltz2, of3]
 
 capabilities:
   changes_length: false
-  # Children per parent, each from its own Dirichlet-perturbed start. Two is the
-  # useful minimum; one child cannot distinguish a converged optimizer from a
-  # lucky one.
+  # Set replicates=1 for matched parent/child cohorts. This is not culling:
+  # every input parent completes the full source schedule independently.
   max_children: 8
 
 metrics:
@@ -158,6 +180,9 @@ metrics:
   lm_boltz2:
     direction: none
     description: 1 when boltz2 was in --models
+  lm_of3:
+    direction: none
+    description: 1 when genuine differentiable mosaic.models.of3 shaped the objective
 
 cost:
   gpu: required
@@ -184,7 +209,19 @@ cost:
     complex length is what overflowed an 80 GB H100 in the source campaign
     once the complex passed ~296 residues.
 
+parameters:
+  recipe-config: {type: string}
+  esmc-checkpoint: {type: string}
+  record-components: {type: boolean}
+  gradient-interval: {type: integer, minimum: 0}
+  gradient-trajectories: {type: integer, minimum: 1}
+  no-init-noise-random: {type: boolean}
+  sharp-replicates: {type: integer, minimum: 1}
+  sharp-noise: {type: number, minimum: 0, maximum: 1}
+
 args:
+  gradient-interval: 0
+  gradient-trajectories: 1
   models: boltz2
   replicates: 2
   max-batch: 4

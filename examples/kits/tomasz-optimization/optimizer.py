@@ -56,6 +56,7 @@ import argparse
 import json
 import math
 import random
+import shutil
 import os
 import subprocess
 import sys
@@ -180,12 +181,36 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--hard-sharp", action="store_true")
+    parser.add_argument("--recipe-config", type=Path,
+                        help="Forward a complete historical config; scientific defaults below "
+                             "are ignored. Only target, epitope, parent inputs, batch/seed and "
+                             "an explicit ESM checkpoint are injected.")
+    parser.add_argument("--record-components", action="store_true",
+                        help="Capture every existing evaluation and fail on nonfinite/sentinel components.")
+    parser.add_argument("--gradient-interval", type=int, default=0,
+                        help="0 disables gradient diagnostics; otherwise sample first/last and "
+                             "interval-spaced stage steps plus cycle ranking; implies component recording.")
+    parser.add_argument("--gradient-trajectories", type=int, default=1,
+                        help="Positive number of first trajectories sampled sequentially per chunk.")
+    parser.add_argument("--init-noise-random", action=argparse.BooleanOptionalAction,
+                        default=True, help="Historical R32/R35 require --no-init-noise-random.")
+    parser.add_argument("--sharp-replicates", type=int, default=1)
+    parser.add_argument("--sharp-noise", type=float, default=0.0)
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
 
 def main() -> int:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.gradient_interval < 0 or args.gradient_trajectories < 1:
+        parser.error("gradient interval must be nonnegative and trajectories positive")
+    if args.gradient_interval:
+        args.record_components = True
+    design_script = Path(args.design_script)
+    if design_script.is_dir():
+        design_script = design_script / "run_design.py"
+    args.design_script = str(design_script)
     context = json.loads(args.context.read_text())
     work = Path(context["work_dir"])
     structure_dir = Path(context["structure_dir"])
@@ -243,10 +268,18 @@ def main() -> int:
                     # say which parents were tried. Deliberately broad ONLY
                     # here, around a subprocess whose failure modes belong to
                     # the cluster rather than to this script.
+                    artifacts = publish_artifacts(work / f"chunk-{seed}", context, seed)
                     for parent in chunk:
+                        relative = f"trajectories/{parent['index']}-failed.json"
+                        failure = f"{type(error).__name__}: {error}"
+                        (structure_dir / relative).write_text(json.dumps({
+                            "seed": seed, "parent_index": parent["index"],
+                            "parent_sequence": parent["sequence"], "failed": failure,
+                            "artifacts": artifacts,
+                        }, indent=1))
                         sink.write(json.dumps({
-                            "parent_index": parent["index"],
-                            "failed": f"{type(error).__name__}: {error}",
+                            "parent_index": parent["index"], "failed": failure,
+                            "trajectory": relative,
                         }) + "\n")
                     sink.flush()
                     continue
@@ -328,6 +361,21 @@ def design_config(length, seeds_fasta, batch, seed, epitope, context, args):
     placement: clipping it doubled the distance to target and halved the
     usable count.
     """
+    if args.recipe_config:
+        cfg = json.loads(args.recipe_config.read_text())
+        cfg["target"].update(fasta=context["target_sequence"],
+                             msa=context.get("target_msa"),
+                             use_msa=bool(context.get("target_msa")))
+        cfg["binder"].update(length=length, init_fasta=str(seeds_fasta))
+        cfg["run"].update(batch=batch, seed=seed)
+        for term in cfg["losses"]:
+            if term["name"] in {"BinderTargetContact", "DistogramIPTMProxy"}:
+                term.setdefault("params", {})["epitope_idx"] = epitope
+        if args.esmc_checkpoint:
+            for model in cfg.get("sequence_models", []):
+                if model["name"] == "esmc":
+                    model.setdefault("params", {})["checkpoint"] = args.esmc_checkpoint
+        return cfg
     models = []
     for name in (m.strip() for m in args.models.split(",")):
         if not name:
@@ -405,6 +453,12 @@ def run_chunk(chunk, length, seed, replicates, context, work, args):
         for parent in chunk:
             for replicate in range(replicates):
                 handle.write(f">p{parent['index']}_r{replicate}\n{parent['sequence']}\n")
+    identities = [{"parent_index": parent["index"], "replicate": replicate,
+                   "parent_sequence": parent["sequence"],
+                   **{k: parent[k] for k in ("id", "name", "design_id") if k in parent}}
+                  for parent in chunk for replicate in range(replicates)]
+    identities_path = out / "identities.json"
+    identities_path.write_text(json.dumps(identities, indent=2))
 
     started = time.time()
     if args.dry_run:
@@ -425,20 +479,29 @@ def run_chunk(chunk, length, seed, replicates, context, work, args):
             "--out", str(out),
             "--seed", str(seed),
             # Read from argv directly, so they survive --config.
-            "--init-noise-random",
             "--soft-sharp-cycles", str(max(1, args.cycles)),
             "--cycle-noise", str(args.cycle_noise),
+            "--sharp-replicates", str(args.sharp_replicates),
+            "--sharp-noise", str(args.sharp_noise),
             "--dump-cycles",
         ]
+        if args.init_noise_random:
+            command.append("--init-noise-random")
         if args.hard_sharp:
             command.append("--hard-sharp")
+        if args.record_components or args.gradient_interval:
+            command = [sys.executable, str(Path(__file__).with_name("record_design.py")),
+                       args.design_script, str(identities_path),
+                       "--gradient-interval", str(args.gradient_interval),
+                       "--gradient-trajectories", str(args.gradient_trajectories),
+                       "--", *command[2:]]
+        (out / "invocation.json").write_text(json.dumps(command, indent=2))
 
         environment = {**os.environ, **cache_home(work, args.weights)}
         done = subprocess.run(
             command, capture_output=True, text=True, check=False, env=environment
         )
-        # The script's log is the only record of per-term aux, so it is kept
-        # beside the output whether or not the invocation succeeded.
+        # Preserve the complete subprocess log even when finite checks abort.
         (out / "run_design.log").write_text((done.stdout or "") + (done.stderr or ""))
         if done.returncode != 0:
             tail = (done.stderr or done.stdout or "").strip().splitlines()[-12:]
@@ -450,10 +513,34 @@ def run_chunk(chunk, length, seed, replicates, context, work, args):
         cycles = json.loads(cycles_path.read_text()) if cycles_path.exists() else None
 
     elapsed = time.time() - started
-    return _rows(chunk, replicates, seed, payload, cycles, elapsed, context, args)
+    artifacts = {}
+    if not args.dry_run:
+        artifacts = publish_artifacts(out, context, seed)
+        if (args.record_components or args.gradient_interval) and "components.jsonl" not in artifacts:
+            raise RuntimeError("Component trace missing after successful run_design")
+        if args.gradient_interval and "gradients.jsonl" not in artifacts:
+            raise RuntimeError("Gradient trace missing after successful run_design")
+    return _rows(chunk, replicates, seed, payload, cycles, elapsed, context, args, artifacts)
 
 
-def _rows(chunk, replicates, seed, payload, cycles, elapsed, context, args):
+def publish_artifacts(out, context, seed):
+    """Archive traces for successful AND rejected chunks, without discarding evidence."""
+    destination = Path(context["structure_dir"]) / "trajectories" / f"chunk-{seed}"
+    destination.mkdir(parents=True, exist_ok=True)
+    artifacts = {}
+    for name in ("components.jsonl", "gradients.jsonl", "trace_manifest.json",
+                 "instrumented_combination.py", "instrumented_batched_eval.py",
+                 "config.json", "identities.json",
+                 "invocation.json", "run_design.log", f"cycles_seed{seed}.json",
+                 f"designs_seed{seed}.json", "init.fasta"):
+        source = out / name
+        if source.exists():
+            shutil.copy2(source, destination / name)
+            artifacts[name] = str((destination / name).relative_to(context["structure_dir"]))
+    return artifacts
+
+
+def _rows(chunk, replicates, seed, payload, cycles, elapsed, context, args, artifacts=None):
     """`designs_seed*.json` -> child rows.
 
     ⚠ `results` is sorted by LOSS, not batch order, and the batch item is
@@ -463,26 +550,35 @@ def _rows(chunk, replicates, seed, payload, cycles, elapsed, context, args):
     """
     structure_dir = Path(context["structure_dir"])
     per_cycle = _cycle_losses(cycles)
-    models = [m.strip() for m in args.models.split(",") if m.strip()]
+    config = payload.get("config", {})
+    models = ([m["name"] for m in config["models"]] if "models" in config
+              else [m.strip() for m in args.models.split(",") if m.strip()])
     rows = []
+    expected = set(range(len(chunk) * replicates))
+    actual = [int(r["trajectory"]) for r in payload.get("results", [])]
+    if set(actual) != expected or len(actual) != len(expected):
+        raise ValueError("run_design results must contain every trajectory exactly once")
+    if cycles:
+        validate_selection(payload, cycles)
     for result in payload.get("results", []):
         b = int(result["trajectory"])
         which, replicate = divmod(b, replicates)
-        if which >= len(chunk):
-            continue
+        if b < 0 or which >= len(chunk):
+            raise ValueError(f"Unexpected trajectory {b}")
         parent = chunk[which]
         sequence = result["sequence"]
-        # `changes_length: false` is a claim the host enforces; skipping here
-        # names the trajectory instead of failing the shard.
+        # Fail explicitly: silent missing children would hide broken trajectories.
         if len(sequence) != len(parent["sequence"]):
-            continue
+            raise ValueError(f"Trajectory {b} changed sequence length")
         loss = float(result["loss"])
-        if not math.isfinite(loss):
-            continue
+        if not math.isfinite(loss) or abs(loss) >= 1_000_000:
+            raise FloatingPointError(f"Trajectory {b} has nonfinite/sentinel loss {loss}")
 
         relative = f"trajectories/{parent['index']}-{replicate}.json"
         (structure_dir / relative).write_text(json.dumps(
-            {"trajectory": b, "seed": seed, "cycles": per_cycle.get(b, [])}, indent=1
+            {"trajectory": b, "seed": seed, "parent_index": parent["index"],
+             "parent_sequence": parent["sequence"], "cycles": per_cycle.get(b, []),
+             "artifacts": artifacts or {}}, indent=1
         ))
 
         substitutions = sum(
@@ -500,6 +596,7 @@ def _rows(chunk, replicates, seed, payload, cycles, elapsed, context, args):
             # representable and a query can ask "did AF2 shape this design?"
             "lm_af2": 1.0 if "af2" in models else 0.0,
             "lm_boltz2": 1.0 if "boltz2" in models else 0.0,
+            "lm_of3": 1.0 if "of3" in models else 0.0,
         }
         history = per_cycle.get(b, [])
         if history:
@@ -518,6 +615,25 @@ def _rows(chunk, replicates, seed, payload, cycles, elapsed, context, args):
             "seconds": round(elapsed / max(1, len(chunk) * replicates), 2),
         })
     return rows
+
+
+def validate_selection(payload, cycles):
+    """Check source-selected results against its own cycle checkpoints, no refold."""
+    winners = {}
+    for cycle in cycles.get("cycles", []):
+        for design in cycle["designs"]:
+            trajectory = int(design["trajectory"])
+            loss = float(design["loss"])
+            if not math.isfinite(loss) or abs(loss) >= 1_000_000:
+                raise FloatingPointError(f"Invalid cycle loss for trajectory {trajectory}")
+            if trajectory not in winners or loss < float(winners[trajectory]["loss"]):
+                winners[trajectory] = design
+    for result in payload["results"]:
+        winner = winners.get(int(result["trajectory"]))
+        if (winner is None or winner["sequence"] != result["sequence"]
+                or not math.isclose(float(winner["loss"]), float(result["loss"]),
+                                    rel_tol=1e-7, abs_tol=1e-7)):
+            raise ValueError(f"Trajectory {result['trajectory']} is not the best across cycles")
 
 
 def _cycle_losses(cycles):

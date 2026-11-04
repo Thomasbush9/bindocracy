@@ -1,0 +1,12 @@
+{
+  "campaigns": [
+    {
+      "root": "/absolute/path/to/frozen-mosaic-campaign",
+      "name": "Mosaic optimization",
+      "future_stages": [
+        {"id": "esmfold", "name": "ESMFold", "planned": 4200},
+        {"id": "protenix", "name": "Protenix", "planned": 4200}
+      ]
+    }
+  ]
+}

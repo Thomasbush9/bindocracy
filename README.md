@@ -26,6 +26,8 @@ use the login node only to edit inputs, inspect help, and submit jobs.
 - **[Campaign workflow](workflow/README.md)** — frozen execution plans, explicit
   approval, controller/worker lifecycle, and the shared Snakemake rule graph
   that takes registered tools to DuckDB
+- **[Campaign Watch](#campaign-watch)** — lightweight local TUI over SSH for frozen
+  Mosaic campaigns; validated counts, conditional ETA and sampled GPU utilization
 - **[Stored ranking and cohort selection](docs/scoring-stage.md#11-stored-ranking-and-cohort-selection)**
   — reproducible global or per-generator head/tail selections and frozen handoffs
 - **[Adding a tool](docs/adding-a-tool.md)** — the five things a tool supplies,
@@ -42,6 +44,87 @@ use the login node only to edit inputs, inspect help, and submit jobs.
 - [Running containers on the cluster](docs/running-containers.md)
 - [Weights and offline-readiness report](docs/weights.md)
 - [Container catalog](docs/containers/README.md)
+
+## Campaign Watch
+
+The read-only dashboard lives in [`scripts/campaign_watch/`](scripts/campaign_watch/).
+The local client needs Python 3.12, OpenSSH and Textual, **not** Bindocracy's model
+or workflow dependencies. A separate CPU collector on the cluster publishes a
+small JSON snapshot; the client fetches only that file over SSH. Neither the client
+nor the collector submits, cancels or modifies scientific jobs.
+
+### Install and run locally
+
+From a local clone of this repository:
+
+```bash
+python3.12 -m venv ~/.venvs/bindocracy-watch
+~/.venvs/bindocracy-watch/bin/python -m pip install \
+  -r scripts/campaign_watch/requirements.txt
+
+HOST=your-existing-ssh-alias
+ssh -F scripts/campaign_watch/ssh_config "$HOST" true
+~/.venvs/bindocracy-watch/bin/python scripts/campaign_watch/tui.py \
+  --host "$HOST" --ssh-config scripts/campaign_watch/ssh_config \
+  --snapshot /n/netscratch/kempner_bsabatini_lab/Lab/tbush/campaign-watch-prototype/snapshot.json
+```
+
+The snapshot path above is the existing Chai1/confhard campaign monitor; use another
+absolute snapshot path for another deployment. Authenticate interactively once
+with `ssh`; subsequent fetches reuse the connection without password prompts.
+The supplied SSH configuration includes `~/.ssh/config` and preserves host-key
+checking. Omit `--host` and `--ssh-config` to inspect a local snapshot instead.
+
+Update with `git pull --ff-only`, rerun the requirements-install command, then
+restart the TUI. No tarball or `scp` is needed.
+
+Controls: `j/k` or arrows move through rows or scroll details; `l` opens stages,
+then details; `h` or Escape returns to campaigns. Tab switches panes, `r` refreshes,
+and `q` quits. `87% [8/95]` means mean GPU utilization across **8 sampled tasks
+out of 95 running tasks**, not all 95 GPUs. Details show range, memory, coverage,
+and observation age. These are Slurm accounting readings, not instantaneous device
+polls or statistically representative campaign-wide estimates. Missing, partial,
+stale and disconnected data remain distinguishable from a measured zero.
+
+### Collector deployment on the cluster
+
+**Do not launch a second writer for an existing snapshot.** The current monitor
+does not need restarting just to use the Git-managed client. For a new deployment,
+keep registrations, snapshots and logs outside Git, for example under
+`/n/netscratch/kempner_bsabatini_lab/Lab/tbush/campaign-watch`.
+Copy `scripts/campaign_watch/campaigns.example.json` there as `campaigns.json` and
+set the real campaign root and planned scoring counts.
+
+From the cluster's repository checkout, with that state directory already created:
+
+```bash
+STATE=/n/netscratch/kempner_bsabatini_lab/Lab/tbush/campaign-watch
+export CAMPAIGN_WATCH_PYTHON="$PWD/.venv/bin/python"
+sbatch --output="$STATE/collector-%j.log" scripts/campaign_watch/collect.sbatch \
+  "$PWD/scripts/campaign_watch" \
+  --config "$STATE/campaigns.json" --output "$STATE/snapshot.json" --interval 60
+```
+
+The launcher requests one CPU and 2 GiB on `kempner_priority`, for up to 24 hours,
+with no automatic resubmission. Override site-specific Slurm options at submission.
+Pass `--once` after the collector arguments for a one-snapshot qualification,
+using a **separate output path** from any running monitor. Python defaults to
+`python3` if `CAMPAIGN_WATCH_PYTHON` is unset; the collector itself uses only the
+standard library plus the trusted campaign validator.
+
+Current scope: frozen Mosaic batch-two campaigns with `campaign.json`, `tasks.json`,
+`parents.json`, `launch.json`, arm recipes, and the campaign's trusted `scripts/collect.py`
+validator resolved through `runtime_root`. Only register campaigns you trust:
+their validator is imported as Python code, not sandboxed. ESMFold and Protenix are
+explicit **not-submitted plans**, not live scoring adapters; generator adapters
+are not implemented. Counts are validated units within each stage, never summed
+across stages. ETA assumes continued concurrency and excludes queue wait.
+
+Collection is incremental and CPU-allocation-only, with bounded file/command sizes,
+atomic snapshot publication, and a 15-second scheduler-command deadline. GPU
+sampling queries at most eight spread-out running tasks per refresh; it never
+SSHes into GPU nodes. The client fetches at most 1 MiB every 30 seconds by default.
+Live state, logs, SSH credentials and debug captures are not part of the repository.
 
 ## Machine-readable CLI and readiness
 

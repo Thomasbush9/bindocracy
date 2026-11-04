@@ -1,0 +1,8 @@
+# Local-client prototype configuration. Preserve your existing aliases/keys.
+# Authenticate once: ssh -F ssh_config YOUR_EXISTING_ALIAS true
+# Then run tui.py --ssh-config ssh_config --host YOUR_EXISTING_ALIAS ...
+Host *
+    ControlMaster auto
+    ControlPersist 600
+    ControlPath ~/.ssh/campaign-watch-%C
+Include ~/.ssh/config

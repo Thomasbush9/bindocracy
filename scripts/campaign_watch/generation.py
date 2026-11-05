@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 import re
+import stat
 import statistics
 
 from collector import (ALLOCATED, PENDING, TERMINAL, MAX_TASKS, MANIFEST_LIMIT,
@@ -167,8 +168,21 @@ class GenerationCampaign:
                     ingested = self.read(directory / 'ingested.json', optional=True, limit=65536)
                     collected, collected_warning = None, None
                     try:
-                        collected = self.read(directory / 'collected.json', optional=True,
-                                              limit=1024 * 1024, collected=True)
+                        source_path = inside(self.root, directory / 'collected.json')
+                        compact = self.read(directory / 'collected-summary.json', optional=True,
+                                            limit=1024 * 1024)
+                        if compact is None:
+                            collected = self.read(source_path, optional=True,
+                                                  limit=1024 * 1024, collected=True)
+                        else:
+                            info = source_path.stat()
+                            expected = dict(name=source_path.name, size_bytes=info.st_size,
+                                            mtime_ns=info.st_mtime_ns, ctime_ns=info.st_ctime_ns,
+                                            inode=info.st_ino)
+                            if (compact.get('schema_version') != 1 or
+                                    not stat.S_ISREG(info.st_mode) or compact.get('source') != expected):
+                                raise ValueError('compact counts do not match the current collection file')
+                            collected = compact['collected']['run']
                         if collected and collected.get('run_id') != run_id:
                             raise ValueError('collected run identity mismatch')
                     except (ValueError, KeyError, OSError) as exc:

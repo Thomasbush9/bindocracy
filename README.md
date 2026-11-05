@@ -162,8 +162,12 @@ Generator counts are tool-reported, never labeled unique validated designs.
 Missing counts and coordinate readiness remain `?`, and overshoot is retained.
 BindCraft2/FreeBindCraft native requests are accepted-design stopping targets,
 not raw-candidate quotas; those two quantities are not compared for completion.
-The bounded collection-summary fallback is skipped above 1 MiB; unavailable
-counts remain unknown rather than triggering a scan of model outputs.
+Current generator collections publish compact `collected-summary.json` files.
+The monitor checks their run identity and source-file metadata before using them;
+it never reads large design/metric arrays. Historical runs use the bounded
+`collected.json` fallback only below 1 MiB. Missing or stale summaries leave counts
+unknown. Counts update when canonical collection publishes them, not continuously
+within native model steps; scheduler/GPU observations refresh independently.
 Per-component ETA requires at least five successful same-arm/tool elapsed samples
 and running workers, and is suppressed on failures, ambiguous retries or unknown
 scheduler evidence. It estimates remaining **planned-task execution** at current

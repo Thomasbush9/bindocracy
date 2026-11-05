@@ -99,6 +99,26 @@ class GenerationWatchTests(unittest.TestCase):
         self.assertEqual(cell['phase'], 'generated')
         self.assertNotIn('designs', campaign.cache[self.run_dir / 'collected.json'][1])
 
+    def test_large_collection_counts_require_current_compact_summary(self):
+        self.metadata(dict(status='succeeded', exit_code=0))
+        source = self.run_dir / 'collected.json'
+        self.dump(source, {'native_inventory': 'x' * (2 * 1024 * 1024)})
+        info = source.stat()
+        self.dump(self.run_dir / 'collected-summary.json', {
+            'schema_version': 1,
+            'source': dict(name=source.name, size_bytes=info.st_size, mtime_ns=info.st_mtime_ns,
+                           ctime_ns=info.st_ctime_ns, inode=info.st_ino),
+            'collected': {'run': {'run_id': 'run-uuid', 'n_produced': 14, 'status': 'succeeded',
+                'count_details': {'tasks': {'0000': {'status': 'succeeded', 'n_produced': 14}}}}}})
+        records = {('901', -1): dict(state='COMPLETED', exit='0:0')}
+        _, _, cell = self.collect(records)
+        self.assertEqual((cell['reported_produced'], cell['phase']), (14, 'generated'))
+        with source.open('a') as handle:
+            handle.write('\n')
+        _, _, cell = self.collect(records)
+        self.assertIsNone(cell['reported_produced'])
+        self.assertEqual(cell['state'], 'unknown')
+
     def test_offline_ignores_stale_journal_running_state(self):
         self.metadata(dict(status='partial', n_produced=3))
         _, _, cell = self.collect(error='Offline metadata-only snapshot')

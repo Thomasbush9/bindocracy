@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=2G
-#SBATCH --time=24:00:00
+#SBATCH --time=3-00:00:00
 #SBATCH --output=campaign-watch-%j.log
 
 # Read-only CPU monitor. Slurm spools this file elsewhere: pass its source directory.
@@ -25,6 +25,6 @@ export PYTHONNOUSERSITE=1
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
 ulimit -c 0
 # Slurm enforces the memory/wall-time limits; there is no automatic resubmission.
-ulimit -t 86400
+ulimit -t 259200
 python_bin="${CAMPAIGN_WATCH_PYTHON:-python3}"
 exec "${python_bin}" -B "${watch_dir}/collector.py" "$@"

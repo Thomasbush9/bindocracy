@@ -26,8 +26,8 @@ use the login node only to edit inputs, inspect help, and submit jobs.
 - **[Campaign workflow](workflow/README.md)** — frozen execution plans, explicit
   approval, controller/worker lifecycle, and the shared Snakemake rule graph
   that takes registered tools to DuckDB
-- **[Campaign Watch](#campaign-watch)** — lightweight local TUI over SSH for frozen
-  Mosaic campaigns; validated counts, conditional ETA and sampled GPU utilization
+- **[Campaign Watch](#campaign-watch)** — lightweight local TUI over SSH for Mosaic
+  and generator campaigns; per-arm/tool progress, conditional ETA and sampled GPU utilization
 - **[Stored ranking and cohort selection](docs/scoring-stage.md#11-stored-ranking-and-cohort-selection)**
   — reproducible global or per-generator head/tail selections and frozen handoffs
 - **[Adding a tool](docs/adding-a-tool.md)** — the five things a tool supplies,
@@ -78,9 +78,11 @@ checking. Omit `--host` and `--ssh-config` to inspect a local snapshot instead.
 Update with `git pull --ff-only`, rerun the requirements-install command, then
 restart the TUI. No tarball or `scp` is needed.
 
-Controls: `j/k` or arrows move through rows or scroll details; `l` opens stages,
-then details; `h` or Escape returns to campaigns. Tab switches panes, `r` refreshes,
-and `q` quits. `87% [8/95]` means mean GPU utilization across **8 sampled tasks
+Controls: `j/k` or arrows move through rows or scroll details; `l` or Enter drills
+from campaigns into stages, then arms, generators and details for generation.
+Mosaic stages open details directly. `h` or Escape backs up one level. Tab switches
+panes, `r` refreshes, and `q` quits. Selection survives snapshot refreshes.
+`87% [8/95]` means mean GPU utilization across **8 sampled tasks
 out of 95 running tasks**, not all 95 GPUs. Details show range, memory, coverage,
 and observation age. These are Slurm accounting readings, not instantaneous device
 polls or statistically representative campaign-wide estimates. Missing, partial,
@@ -105,23 +107,83 @@ sbatch --output="$STATE/collector-%j.log" scripts/campaign_watch/collect.sbatch 
   --config "$STATE/campaigns.json" --output "$STATE/snapshot.json" --interval 60
 ```
 
-The launcher requests one CPU and 2 GiB on `kempner_priority`, for up to 24 hours,
-with no automatic resubmission. Override site-specific Slurm options at submission.
+The launcher requests one CPU and 2 GiB on `kempner_priority`, for up to 72 hours,
+with no automatic resubmission. Renew deliberately for longer campaigns; never
+overlap writers. Override site-specific Slurm options at submission.
 Pass `--once` after the collector arguments for a one-snapshot qualification,
 using a **separate output path** from any running monitor. Python defaults to
 `python3` if `CAMPAIGN_WATCH_PYTHON` is unset; the collector itself uses only the
 standard library plus the trusted campaign validator.
 
-Current scope: frozen Mosaic batch-two campaigns with `campaign.json`, `tasks.json`,
-`parents.json`, `launch.json`, arm recipes, and the campaign's trusted `scripts/collect.py`
-validator resolved through `runtime_root`. Only register campaigns you trust:
-their validator is imported as Python code, not sandboxed. ESMFold and Protenix are
-explicit **not-submitted plans**, not live scoring adapters; generator adapters
-are not implemented. Counts are validated units within each stage, never summed
-across stages. ETA assumes continued concurrency and excludes queue wait.
+### Registering generation campaigns
 
-Collection is incremental and CPU-allocation-only, with bounded file/command sizes,
-atomic snapshot publication, and a 15-second scheduler-command deadline. GPU
+Registration freezes the monitoring inventory; it does **not** render execution
+bundles, submit jobs, or change scientific outputs. DIO3 uses four production
+bundles (126 arm/generator components) plus a separate qualification bundle
+(14 components). The generation-only registration excludes downstream stages:
+
+```bash
+STATE=/n/netscratch/kempner_bsabatini_lab/Lab/tbush/campaign-watch-generators
+ROOT=/n/netscratch/kempner_bsabatini_lab/Lab/tbush/dio3-generators-20261105
+PROPOSAL=/n/netscratch/kempner_bsabatini_lab/Lab/tbush/dio3-generators-proposal-20261105
+mkdir -p "$STATE"
+python3 scripts/campaign_watch/register_generation.py \
+  --allocation "$PROPOSAL/allocation.json" --root "$ROOT" \
+  --manifest "$STATE/live-manifest.json" --config "$STATE/live-campaigns.json" \
+  --name "DIO3 generators" --generation-only \
+  --qualification-bundle bundles/qualification \
+  --bundle wave1_catalytic=bundles/wave1_catalytic \
+  --bundle wave2_sites=bundles/wave2_sites \
+  --bundle wave3_major=bundles/wave3_major \
+  --bundle wave4_minor=bundles/wave4_minor
+python3 scripts/campaign_watch/collector.py \
+  --config "$STATE/live-campaigns.json" --output "$STATE/snapshot.json" --offline
+```
+
+`--offline` is a bounded, metadata-only preview: no scheduler commands and no
+Slurm allocation required. It does not claim historical journal states are live.
+For continuous scheduler/GPU observations, launch the CPU collector above using
+this state directory and `--config "$STATE/live-campaigns.json"`; point the local
+TUI at its `snapshot.json`. Never run an offline writer against a live snapshot.
+
+The generation adapter reads each bundle's `control/status.json`, frozen plans,
+run manifests, worker journals, and task status/collection summaries. Individual
+worker job IDs are tracked, not just arrays. Controller allocations are excluded
+from worker/GPU totals. It reports preparing/generating/generated/ingested phases,
+reported production, task coverage, scheduler failures and partial output by arm
+and generator. Repeated metadata references are deduplicated by run/task identity;
+this is **not** cross-run sequence deduplication or coordinate validation.
+Optional atomic `control/stages/<tier>.json` records expose the CPU stage job and
+its success dependency. Queued dependencies and failed stage jobs remain visible,
+without counting CPU controllers as generator jobs or GPUs. Worker activity and
+already-produced output remain visible even if a stage controller fails.
+
+Generator counts are tool-reported, never labeled unique validated designs.
+Missing counts and coordinate readiness remain `?`, and overshoot is retained.
+BindCraft2/FreeBindCraft native requests are accepted-design stopping targets,
+not raw-candidate quotas; those two quantities are not compared for completion.
+The bounded collection-summary fallback is skipped above 1 MiB; unavailable
+counts remain unknown rather than triggering a scan of model outputs.
+Per-component ETA requires at least five successful same-arm/tool elapsed samples
+and running workers, and is suppressed on failures, ambiguous retries or unknown
+scheduler evidence. It estimates remaining **planned-task execution** at current
+concurrency, not an output quota; queue wait is excluded. Tier-wide ETA remains
+unknown. GPU utilization is campaign-scoped, not attributed to individual tools.
+
+### Scope and safety
+
+Snapshot schema v2 supports generation and Mosaic; the TUI still accepts v1 Mosaic
+snapshots. Malformed campaign records retain their last-good data without hiding
+healthy campaigns. Frozen Mosaic batch-two campaigns use `campaign.json`,
+`tasks.json`, `parents.json`, `launch.json`, arm recipes, and the campaign's trusted
+`scripts/collect.py` validator resolved through `runtime_root`. Only register
+campaigns you trust: that validator is imported Python, not sandboxed.
+Generation geometry, parent selection, optimization, ESMFold2, Protenix and
+analysis rows are explicit **not-submitted plans**, not live downstream adapters.
+Counts are units within a stage, never summed across generation and downstream stages.
+
+Live scheduler collection runs only in a CPU allocation, with incremental reads,
+bounded file/command sizes, atomic snapshots, and a 15-second scheduler deadline. GPU
 sampling queries at most eight spread-out running tasks per refresh; it never
 SSHes into GPU nodes. The client fetches at most 1 MiB every 30 seconds by default.
 Live state, logs, SSH credentials and debug captures are not part of the repository.

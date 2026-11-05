@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Read-only Mosaic campaign monitor prototype; run only in a Slurm CPU job.
+"""Read-only campaign monitor; live mode requires a Slurm CPU job.
 
-Only manifest-declared designs_seed*.json artifacts are inspected. The frozen
-campaign's pure validator supplies the existing lineage and sequence contract.
+Mosaic uses its frozen lineage/sequence validator. Registered generation bundles
+use bounded stdlib JSON readers for reported counts, plans and worker journals.
+--offline exports metadata once without querying Slurm or requiring an allocation.
 No collection/export main, optimizer, model, or campaign-write code is called.
 
 GPU telemetry is one bounded Slurm accounting query over at most eight spread-out
@@ -173,16 +174,13 @@ def scheduler_snapshot(job_ids):
         if len(fields) != 6:
             raise ValueError('unexpected sacct record shape')
         job, state, exit_code, elapsed, start, end = fields
-        match = re.fullmatch(r'(\d+)_(\d+)', job)
-        if not match:
-            # Parent array allocation, compressed pending range, and job steps
-            # are not unique task records. squeue expands all pending elements.
+        match = re.fullmatch(r'(\d+)(?:_(\d+))?', job)
+        if not match or match[1] not in job_ids:
             continue
-        if match[1] not in job_ids:
-            continue
-        record = {'state': state_name(state), 'exit': exit_code,
-                  'elapsed': int(elapsed), 'start': start, 'end': end}
-        records[(match[1], int(match[2]))] = record
+        # -1 denotes an ordinary allocation; nonnegative indices are array tasks.
+        key = (match[1], int(match[2]) if match[2] is not None else -1)
+        records[key] = {'state': state_name(state), 'exit': exit_code,
+                        'elapsed': int(elapsed), 'start': start, 'end': end}
     for line in queue.splitlines():
         if not line.strip():
             continue
@@ -190,10 +188,11 @@ def scheduler_snapshot(job_ids):
         if len(fields) != 5:
             raise ValueError('unexpected squeue record shape')
         job, state, elapsed, _node, raw_job_id = fields
-        match = re.fullmatch(r'(\d+)_(\d+)', job)
+        match = re.fullmatch(r'(\d+)(?:_(\d+))?', job)
         if not match or match[1] not in job_ids:
             continue
-        records[(match[1], int(match[2]))] = {
+        key = (match[1], int(match[2]) if match[2] is not None else -1)
+        records[key] = {
             'state': state_name(state), 'exit': None,
             'elapsed': elapsed_seconds(elapsed), 'current': True, 'raw_job_id': raw_job_id,
         }
@@ -233,12 +232,22 @@ def gpu_snapshot(campaigns, records, scheduler_error):
     """One bounded batch of <=8 current tasks; accounting samples, not live GPU probes."""
     eligible = {}
     for campaign in campaigns:
+        candidates = (campaign.gpu_keys() if hasattr(campaign, 'gpu_keys') else
+                      {(campaign.job_id, task['task_id']) for task in campaign.tasks})
         eligible[campaign.root] = {
-            (campaign.job_id, task['task_id']) for task in campaign.tasks
-            if not scheduler_error
-            and records.get((campaign.job_id, task['task_id']), {}).get('current')
-            and records[(campaign.job_id, task['task_id'])]['state'] == 'RUNNING'
+            key for key in candidates if not scheduler_error
+            and records.get(key, {}).get('current') and records[key]['state'] == 'RUNNING'
         }
+    # An array element and an ordinary ID can name the same physical allocation.
+    # Canonicalize before sampling and averaging so shared allocations count once.
+    canonical = {}
+    for jobs in eligible.values():
+        for key in sorted(jobs):
+            raw = records[key].get('raw_job_id')
+            if raw:
+                canonical.setdefault(raw, key)
+    eligible = {root: {canonical.get(records[key].get('raw_job_id'), key) for key in jobs}
+                for root, jobs in eligible.items()}
     result = {root: empty_gpu_utilization(len(keys), scheduler_error)
               for root, keys in eligible.items()}
     keys = sorted(set().union(*eligible.values()), key=lambda key: (int(key[0]), key[1]))
@@ -585,15 +594,22 @@ def main():
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--once', action='store_true')
+    parser.add_argument('--offline', action='store_true',
+                        help='One metadata-only snapshot, without Slurm queries or an allocation')
     parser.add_argument('--interval', type=int, default=60)
     args = parser.parse_args()
-    require_cpu_job()
+    if args.offline:
+        args.once = True
+    else:
+        require_cpu_job()
     interval = max(30, args.interval)
     config = load_json(args.config, SNAPSHOT_LIMIT)
     definitions = config['campaigns']
     if not isinstance(definitions, list) or not 0 < len(definitions) <= MAX_CAMPAIGNS:
         raise ValueError('configure between one and eight campaigns')
-    campaigns = [Campaign(item) for item in definitions]
+    from generation import GenerationCampaign
+    campaigns = [(GenerationCampaign(item) if item.get('kind') == 'bindocracy_generation'
+                  else Campaign(item)) for item in definitions]
     if len({campaign.root for campaign in campaigns}) != len(campaigns):
         raise ValueError('duplicate campaign roots')
     output = args.output.resolve()
@@ -623,7 +639,11 @@ def main():
                 preparation_errors[campaign.root] = short_error(exc)
         scheduler_error = None
         try:
-            records = scheduler_snapshot([campaign.job_id for campaign in prepared])
+            ids = {job_id for campaign in prepared for job_id in
+                   (campaign.job_ids if hasattr(campaign, 'job_ids') else [campaign.job_id])}
+            records = {} if args.offline else scheduler_snapshot(ids)
+            if args.offline:
+                scheduler_error = 'Offline metadata-only snapshot; scheduler not queried'
         except Exception as exc:
             records, scheduler_error = {}, short_error(exc)
             errors.append(f'Scheduler: {scheduler_error}')
@@ -643,8 +663,9 @@ def main():
                 error = short_error(exc)
                 errors.append(f'{campaign.name}: {error}')
                 results.append(campaign.stale(error))
-        snapshot = dict(schema_version=1, generated_at=utc_now(), refresh_seconds=interval,
-                        collector=dict(job_id=os.environ['SLURM_JOB_ID'], host=socket.gethostname()),
+        snapshot = dict(schema_version=2, generated_at=utc_now(), refresh_seconds=interval,
+                        collector=dict(job_id=os.environ.get('SLURM_JOB_ID') if not args.offline else None,
+                                       host=socket.gethostname(), mode='metadata_only' if args.offline else 'live'),
                         campaigns=results, errors=errors)
         try:
             publish(output, snapshot)

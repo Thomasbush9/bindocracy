@@ -3,6 +3,8 @@
 
 Mosaic uses its frozen lineage/sequence validator. Registered generation bundles
 use bounded stdlib JSON readers for reported counts, plans and worker journals.
+Each JSON read pins one file descriptor: atomic replacements are picked up on
+the next sweep, while changed content on the opened inode is rejected.
 --offline exports metadata once without querying Slurm or requiring an allocation.
 No collection/export main, optimizer, model, or campaign-write code is called.
 
@@ -82,11 +84,20 @@ def unique_object(pairs):
 
 
 def load_json(path, limit=MANIFEST_LIMIT):
-    before = fingerprint(path, limit)
-    with path.open('rb') as stream:
+    # Nonblocking open lets fstat reject FIFOs without waiting for a writer.
+    with open(path, 'rb', opener=lambda name, flags: os.open(name, flags | os.O_NONBLOCK)) as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+            raise ValueError(f'not a bounded regular file: {path}')
         raw = stream.read(limit + 1)
-    if len(raw) > limit or fingerprint(path, limit) != before:
-        raise ValueError(f'file changed during read or exceeds limit: {path}')
+        after = os.fstat(stream.fileno())
+        # Atomic replacement unlinks this inode, changing ctime but not its bytes.
+        ctime_changed = (before.st_ctime_ns != after.st_ctime_ns
+                         and after.st_nlink >= before.st_nlink)
+        if (len(raw) > limit or len(raw) != before.st_size
+                or before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns or ctime_changed):
+            raise ValueError(f'file changed during read or exceeds limit: {path}')
     return json.loads(raw, parse_constant=reject_constant, object_pairs_hook=unique_object)
 
 

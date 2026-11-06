@@ -431,6 +431,12 @@ success. Index, status, plan, and history paths must remain within the registere
 root, and existing file/byte/task bounds apply. Without this index, original
 bundle/stage controls continue to supply the live input.
 
+A queued unit without its own native controller remains queued even while its
+shared generator supervisor is running. JSON reads pin one file descriptor so an
+atomic journal replacement does not discard a campaign during collection; byte
+bounds and in-place mutation checks still apply. Scheduler RPC timeouts remain
+explicit unknown-state warnings, not evidence of idle GPUs or successful work.
+
 
 ---
 

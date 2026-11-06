@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -55,6 +56,102 @@ class GenerationWatchTests(unittest.TestCase):
         campaign.prepare()
         result = campaign.collect(records or {}, error)
         return campaign, result, result['stages'][0]['components'][0]
+
+    @contextmanager
+    def changing_json_read(self, source, change):
+        original_open = open
+        reads = []
+
+        class ChangingStream:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                self.stream.__enter__()
+                return self
+
+            def __exit__(self, *args):
+                return self.stream.__exit__(*args)
+
+            def fileno(self):
+                return self.stream.fileno()
+
+            def read(self, size):
+                reads.append(size)
+                raw = self.stream.read(size)
+                change()
+                return raw
+
+        def changing_open(path, mode='r', *args, **kwargs):
+            stream = original_open(path, mode, *args, **kwargs)
+            return ChangingStream(stream) if Path(path) == source and mode == 'rb' else stream
+
+        with patch.object(Path, 'open', changing_open), \
+             patch('collector.open', changing_open, create=True):
+            yield reads
+
+    def test_atomic_journal_replacement_keeps_published_campaign_and_refreshes(self):
+        self.metadata({'status': 'partial', 'n_produced': 4})
+        journal = self.plan_dir / 'control/journal.json'
+        replacement = journal.with_suffix('.next')
+        updated = json.loads(journal.read_text())
+        updated['attempts'][0]['jobs'][1]['id'] = '902'
+        self.dump(replacement, updated)
+        config = self.root / 'config.json'
+        output = self.root.parent / (self.root.name + '.snapshot.json')
+        self.addCleanup(lambda: output.unlink(missing_ok=True))
+        self.dump(config, {'campaigns': [dict(self.config, kind='bindocracy_generation')]})
+        with self.changing_json_read(journal, lambda: os.replace(replacement, journal)) as reads, \
+             patch.object(sys, 'argv', ['collector', '--config', str(config), '--output', str(output), '--offline']), \
+             patch.object(collector, 'require_cpu_job', side_effect=AssertionError('CPU allocation requested')), \
+             patch.object(collector, 'bounded_command', side_effect=AssertionError('scheduler queried')):
+            self.assertEqual(collector.main(), 0)
+        snapshot = json.loads(output.read_text())
+        self.assertEqual(snapshot['errors'], [])
+        cell = snapshot['campaigns'][0]['stages'][0]['components'][0]
+        self.assertEqual((cell['reported_produced'], cell['job_ids']), (4, ['901']))
+        self.assertEqual(reads, [collector.MANIFEST_LIMIT + 1])
+        self.assertFalse(replacement.exists())
+        _, _, refreshed = self.collect()
+        self.assertEqual(refreshed['job_ids'], ['902'])
+
+    def test_json_reads_preserve_bounds_and_strict_parsing(self):
+        source = self.root / 'bounded.json'
+        raw = b'{"value":1}'
+        source.write_bytes(raw)
+        self.assertEqual(collector.load_json(source, len(raw)), {'value': 1})
+        with self.changing_json_read(source, lambda: None) as reads, \
+             self.assertRaisesRegex(ValueError, 'bounded regular file'):
+            collector.load_json(source, len(raw) - 1)
+        self.assertEqual(reads, [])
+        for invalid in (b'{"value":', b'{"value":NaN}', b'{"value":1,"value":2}', b'"\xff"'):
+            with self.subTest(raw=invalid):
+                source.write_bytes(invalid)
+                with self.assertRaises(ValueError):
+                    collector.load_json(source)
+        fifo = self.root / 'not-regular.json'
+        os.mkfifo(fifo)
+        with self.assertRaisesRegex(ValueError, 'bounded regular file'):
+            collector.load_json(fifo)
+
+    def test_json_reads_reject_in_place_changes_including_restored_mtime(self):
+        source = self.root / 'changing.json'
+        original = b'{"value":1}'
+        for mutation, raw in (('same_size', b'{"value":2}'), ('truncate', b'{}'),
+                              ('grow', original + b' '), ('restored_mtime', b'{"value":2}')):
+            with self.subTest(mutation=mutation):
+                source.write_bytes(original)
+                before = source.stat()
+
+                def change():
+                    source.write_bytes(raw)
+                    mtime = before.st_mtime_ns if mutation == 'restored_mtime' else before.st_mtime_ns + 40_000_000
+                    os.utime(source, ns=(before.st_atime_ns, mtime))
+
+                with self.changing_json_read(source, change) as reads, \
+                     self.assertRaisesRegex(ValueError, 'changed during read'):
+                    collector.load_json(source, len(original))
+                self.assertEqual(reads, [len(original) + 1])
 
     def test_actual_plan_journal_mapping_and_duplicate_attempts(self):
         self.metadata({'status': 'partial', 'n_produced': 4}, duplicate=True)
@@ -279,15 +376,18 @@ class GenerationWatchTests(unittest.TestCase):
         self.metadata({'status': 'succeeded', 'n_produced': None})
         source = self.canonical_collection()
         original_fstat = os.fstat
+        identity = source.stat()
         calls = 0
 
         def changing_fstat(fd):
             nonlocal calls
-            calls += 1
-            if calls == 2:
-                info = source.stat()
-                os.utime(source, ns=(info.st_atime_ns, info.st_mtime_ns + 40_000_000))
-            return original_fstat(fd)
+            info = original_fstat(fd)
+            if (info.st_dev, info.st_ino) == (identity.st_dev, identity.st_ino):
+                calls += 1
+                if calls == 2:
+                    os.utime(source, ns=(info.st_atime_ns, info.st_mtime_ns + 40_000_000))
+                    info = original_fstat(fd)
+            return info
 
         with patch('generation.os.fstat', side_effect=changing_fstat):
             campaign, _, cell = self.collect({('901', -1): {'state': 'COMPLETED', 'exit': '0:0'}})
@@ -433,6 +533,22 @@ class GenerationWatchTests(unittest.TestCase):
             'schema_version': 1, 'mode': 'independent_generators', 'units': units,
             'supervisors': {'boltzgen': {'job_id': '200', 'state': 'running'}}})
         return units
+
+    def test_running_shared_supervisor_does_not_start_queued_unit(self):
+        units = self.independent(state='queued')
+        unit = units[0]
+        unit.pop('original_plan')
+        self.dump(self.root / 'control/independent.json', {
+            'schema_version': 1, 'mode': 'independent_generators', 'units': units})
+        self.dump(Path(unit['status_path']), {'state': 'queued', 'job_id': '200'})
+        self.dump(Path(unit['plan']).parent / 'control/journal.json',
+                  {'digest': unit['id'], 'attempts': []})
+        (self.run_dir / 'tasks/0000/status.json').unlink()
+        _, result, cell = self.collect({
+            ('200', -1): {'state': 'RUNNING', 'current': True}})
+        self.assertEqual((cell['state'], cell['phase']), ('queued', 'queued'))
+        self.assertEqual((cell['active_gpus'], cell['running_jobs']), (0, 0))
+        self.assertEqual(result['stages'][0]['phase'], 'queued')
 
     def test_independent_failure_isolated_with_original_history_deduplicated(self):
         self.independent(second=True)

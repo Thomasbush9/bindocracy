@@ -507,7 +507,7 @@ class GenerationCampaign:
             job_id = native or supervisor
             record = records.get((str(job_id), -1), {}) if not scheduler_error else {}
             if record.get('current') and record.get('state') in ALLOCATED:
-                state = 'running'
+                state = 'queued' if state == 'queued' and native is None else 'running'
             elif record.get('current') and record.get('state') in PENDING:
                 state = 'queued'
             else:

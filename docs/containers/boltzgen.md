@@ -38,3 +38,16 @@ the installed interface with `singularity run "$SIF" --help` and use a small
 
 Standard BoltzGen checkpoints and data are embedded, and offline mode is the
 default. Runtime/JIT caches should still point to writable scratch.
+
+## Collected structure identity
+
+The harness associates each ranked CIF with its design using the numeric
+`final_rank` and exact native `file_name`, independent of rank zero-padding
+(`rank01_…` and `rank001_…`). Conflicting files for the same rank and filename
+fail collection rather than silently selecting a pose.
+
+Older collections can omit ranks 1–99 when native filenames use three digits.
+The generated designs and structures are still present: repair collection and
+re-ingest through an explicit backed-up recovery, then verify exact binder and
+target sequences. Do not rerun generation or bypass an existing ingestion-digest
+conflict to repair these associations.

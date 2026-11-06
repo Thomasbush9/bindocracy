@@ -15,6 +15,7 @@ import pytest
 import yaml
 from conftest import write_boltzgen_task
 
+from bindocracy.adapters.base import CollectionError
 from bindocracy.tools import collect_run, load_configs, plan
 from bindocracy.tools.boltzgen.adapter import BoltzGenOutputAdapter
 
@@ -263,3 +264,39 @@ def test_a_native_attempt_count_wins_over_the_configured_one(
     write_boltzgen_task(manifest.directory, 0, status={"n_attempted": 6})
 
     assert collect(manifest).run.n_attempted == 6
+
+
+@pytest.mark.parametrize("width", [1, 2, 3, 4])
+def test_rank_padding_preserves_exact_design_structure_associations(
+    boltzgen_configs, tmp_path: Path, width: int
+) -> None:
+    manifest = planned(boltzgen_configs, tmp_path / "run")
+    write_boltzgen_task(manifest.directory, 0, status={})
+    directory = manifest.path("tasks/0000/final_ranked_designs/final_40_designs")
+    expected = {}
+    for path in list(directory.glob("*.cif")):
+        prefix, _, filename = path.name.partition("_")
+        rank = int(prefix.removeprefix("rank"))
+        renamed = path.with_name(f"rank{rank:0{width}d}_{filename}")
+        path.rename(renamed)
+        expected[f"task-0000-{Path(filename).stem}"] = str(renamed.relative_to(manifest.directory))
+        renamed.with_name(f"rank{rank + 1000}_{filename}").write_text("wrong rank")
+    collected = collect(manifest)
+    native_ids = {design.design_id: design.native_id for design in collected.designs}
+    actual = {
+        native_ids[record.design_id]: record.uri
+        for record in collected.artifacts if record.kind == "design_complex"
+    }
+    assert actual == expected
+
+
+def test_ambiguous_rank_padding_cannot_silently_choose_a_pose(boltzgen_configs, tmp_path: Path) -> None:
+    manifest = planned(boltzgen_configs, tmp_path / "run")
+    write_boltzgen_task(manifest.directory, 0, status={})
+    directory = manifest.path("tasks/0000/final_ranked_designs/final_40_designs")
+    path = next(directory.glob("*.cif"))
+    prefix, _, filename = path.name.partition("_")
+    rank = int(prefix.removeprefix("rank"))
+    path.with_name(f"rank{rank:03d}_{filename}").write_text("conflicting pose")
+    with pytest.raises(CollectionError, match="ambiguous ranked structure"):
+        collect(manifest)

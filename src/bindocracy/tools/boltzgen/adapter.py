@@ -109,12 +109,13 @@ class BoltzGenOutputAdapter(OutputAdapter):
                 **rejected,
             }
 
+            structures = _structure_index(run_dir, task)
             for row in rows:
                 design = _design_record(run.run_id, row, manifest.created_at)
                 designs.append(design)
                 metrics.extend(_metric_records(run.run_id, design, row))
                 decisions.extend(_decision_records(run.run_id, design, row, task))
-                artifacts.extend(_structure_artifacts(run_dir, run.run_id, task, design, row))
+                artifacts.extend(_structure_artifacts(run_dir, run.run_id, design, row, structures))
             artifacts.extend(_task_artifacts(run_dir, run.run_id, task))
 
         artifacts.extend(provenance_artifacts(run_dir, run.run_id, manifest, {"spec": "design_spec", "driver": "driver_script"}))
@@ -276,18 +277,39 @@ def _attempted(status, task: TaskPlan) -> int:
 
 
 def _structure_artifacts(
-    run_dir: Path, run_id: str, task: TaskPlan, design: DesignRecord, row: dict[str, str]
+    run_dir: Path, run_id: str, design: DesignRecord, row: dict[str, str],
+    structures: dict[tuple[int, str], str],
 ) -> list[ArtifactRecord]:
     """The ranked CIF for one design, whose filename carries its rank."""
     file_name = (row.get("file_name") or "").strip()
     rank = _number(row.get("final_rank"))
-    structures = _structure_dir(run_dir, task)
-    if not file_name or rank is None or structures is None:
+    relative = structures.get((int(rank), file_name)) if rank is not None else None
+    if relative is None:
         return []
-    relative = f"{task.directory}/{RANKED_DIR}/{structures.name}/rank{int(rank):02d}_{file_name}"
     record = artifact(run_dir, run_id, relative, "design_complex",
                       design_id=design.design_id)
     return [record] if record is not None else []
+
+
+def _structure_index(run_dir: Path, task: TaskPlan) -> dict[tuple[int, str], str]:
+    """Match native rank and filename without assuming rank zero-padding."""
+    directory = _structure_dir(run_dir, task)
+    if directory is None:
+        return {}
+    indexed = {}
+    for path in directory.glob("rank*_*.cif"):
+        prefix, _, filename = path.name.partition("_")
+        digits = prefix.removeprefix("rank")
+        if not digits.isdigit() or not path.is_file():
+            continue
+        key = (int(digits), filename)
+        relative = path.relative_to(run_dir).as_posix()
+        if key in indexed:
+            raise CollectionError(
+                f"ambiguous ranked structure: {indexed[key]} and {relative}"
+            )
+        indexed[key] = relative
+    return indexed
 
 
 def _structure_dir(run_dir: Path, task: TaskPlan) -> Path | None:

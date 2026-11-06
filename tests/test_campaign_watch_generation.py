@@ -143,7 +143,7 @@ class GenerationWatchTests(unittest.TestCase):
                 source.write_bytes(original)
                 before = source.stat()
 
-                def change():
+                def change(raw=raw, before=before, mutation=mutation):
                     source.write_bytes(raw)
                     mtime = before.st_mtime_ns if mutation == 'restored_mtime' else before.st_mtime_ns + 40_000_000
                     os.utime(source, ns=(before.st_atime_ns, mtime))

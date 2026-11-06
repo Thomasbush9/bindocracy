@@ -393,9 +393,9 @@ def test_independent_failed_unit_remains_visible_beside_running_unit(monkeypatch
         app = OfflineWatch("same-snapshot.json", None, 30)
         async with app.run_test(size=(200, 50)) as pilot:
             failed = component(generator="protein_hunter", state="needs_attention", phase="blocked",
-                               warnings=["Independent unit tier1--arm00--protein_hunter: failed. "
-                                         "MissingOutputException: task0146; CPU supervisor 200 "
-                                         "excluded from worker/GPU totals."])
+                               warnings=[("Independent unit tier1--arm00--protein_hunter: failed. "
+                                          "MissingOutputException: task0146; CPU supervisor 200 "
+                                          "excluded from worker/GPU totals.")])
             running = component(generator="boltzgen", state="running", phase="generating",
                                 reported_produced=10, running_jobs=1, active_gpus=1,
                                 job_ids=["901"], tasks_observed=2, counts_reported_tasks=1)

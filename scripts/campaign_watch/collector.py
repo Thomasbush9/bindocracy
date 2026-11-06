@@ -17,12 +17,11 @@ from __future__ import annotations
 
 import argparse
 import copy
-from datetime import datetime, timezone
 import importlib.util
 import json
+import logging
 import math
 import os
-from pathlib import Path
 import re
 import selectors
 import signal
@@ -33,7 +32,10 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import UTC, datetime
+from pathlib import Path
 
+LOGGER = logging.getLogger(__name__)
 sys.dont_write_bytecode = True
 SNAPSHOT_LIMIT = 1024 * 1024
 MANIFEST_LIMIT = 16 * 1024 * 1024
@@ -52,7 +54,7 @@ PENDING = {'PENDING', 'REQUEUED', 'REQUEUE_FED', 'REQUEUE_HOLD'}
 
 
 def utc_now():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def short_error(exc):
@@ -205,10 +207,11 @@ def scheduler_snapshot(job_ids):
 
 
 def empty_gpu_utilization(eligible_jobs=0, error=None):
-    return dict(source='Slurm sstat TRESUsageInAve', observed_at=None,
-                eligible_jobs=eligible_jobs, queried_jobs=0, sampled_jobs=0,
-                mean_percent=None, min_percent=None, max_percent=None, low_util_jobs=0,
-                memory_sampled_jobs=0, mean_memory_mib=None, error=error)
+    return {'source': 'Slurm sstat TRESUsageInAve (native-step mean per allocation; batch fallback)',
+            'observed_at': None,
+            'eligible_jobs': eligible_jobs, 'queried_jobs': 0, 'sampled_jobs': 0,
+            'mean_percent': None, 'min_percent': None, 'max_percent': None, 'low_util_jobs': 0,
+            'memory_sampled_jobs': 0, 'mean_memory_mib': None, 'error': error}
 
 
 def gpu_reading(value, *, memory=False):
@@ -256,22 +259,25 @@ def gpu_snapshot(campaigns, records, scheduler_error):
     count = min(MAX_GPU_SAMPLES, len(queryable))
     selected = (queryable if count <= 1 else
                 [queryable[i * (len(queryable) - 1) // (count - 1)] for i in range(count)])
-    requested = {records[key]['raw_job_id'] + '.batch' for key in selected}
+    requested = {records[key]['raw_job_id'] for key in selected}
     readings, seen = {}, set()
     query_error = None
     malformed = 0
     if requested:
         try:
             output, query_error = bounded_command([
-                'sstat', '-j', ','.join(sorted(requested, key=lambda job: int(job.split('.')[0]))),
+                'sstat', '--allsteps', '-j', ','.join(sorted(requested, key=int)),
                 '--noheader', '--parsable2', '--format=JobID%64,TRESUsageInAve%1024',
             ], allow_partial=True)
             for line in output.splitlines():
                 if not line.strip():
                     continue
                 fields = line.strip().split('|')
-                if len(fields) != 2 or fields[0].strip() not in requested:
+                match = re.fullmatch(r'(\d+)\.(\d+|batch|extern)', fields[0].strip())
+                if len(fields) != 2 or not match or match[1] not in requested:
                     malformed += 1
+                    continue
+                if match[2] == 'extern':
                     continue
                 job, tres = fields[0].strip(), fields[1]
                 if job in seen:
@@ -291,8 +297,23 @@ def gpu_snapshot(campaigns, records, scheduler_error):
                     values[name] = None
                 readings[job] = (gpu_reading(values.get('gres/gpuutil')),
                                  gpu_reading(values.get('gres/gpumem'), memory=True))
-        except Exception as exc:
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
             query_error = short_error(exc)
+    allocations, multiple_steps = {}, set()
+    for allocation in requested:
+        native = {job for job in seen
+                  if job.startswith(allocation + '.') and job.rsplit('.', 1)[1].isdigit()}
+        # Native GPU work runs under srun; its batch wrapper can report zero.
+        # Missing or invalid native evidence must not fall back to wrapper zeros.
+        preferred = native or {allocation + '.batch'}
+        if len(native) > 1:
+            multiple_steps.add(allocation)
+        samples = [readings.get(job, (None, None)) for job in preferred]
+        allocations[allocation] = tuple(
+            statistics.mean(sample[index] for sample in samples)
+            if all(sample[index] is not None for sample in samples) else None
+            for index in (0, 1)
+        )
     observed_at = utc_now()
     selected = set(selected)
     queryable = set(queryable)
@@ -307,8 +328,11 @@ def gpu_snapshot(campaigns, records, scheduler_error):
             errors.append(query_error)
         if queried and malformed:
             errors.append(f'{malformed} malformed or duplicate sstat rows')
-        values = [readings.get(records[key]['raw_job_id'] + '.batch', (None, None))
-                  for key in queried]
+        averaged = sum(records[key]['raw_job_id'] in multiple_steps for key in queried)
+        if averaged:
+            errors.append(f'{averaged} allocations have multiple native steps; '
+                          'using unweighted step means, not device-weighted utilization')
+        values = [allocations.get(records[key]['raw_job_id'], (None, None)) for key in queried]
         utilization = [value for value, _ in values if value is not None]
         memory = [value for _, value in values if value is not None]
         if utilization:
@@ -328,10 +352,10 @@ def gpu_snapshot(campaigns, records, scheduler_error):
 
 
 def stage(identifier, name, unit, planned, state='unknown'):
-    return dict(id=identifier, name=name, state=state, unit=unit, planned=planned,
-                valid=0, running_jobs=0, pending_jobs=0, failed_jobs=0,
-                scheduler_warning_jobs=0, active_gpus=0, eta_seconds=None,
-                throughput_per_hour=None, warnings=[])
+    return {'id': identifier, 'name': name, 'state': state, 'unit': unit, 'planned': planned,
+            'valid': 0, 'running_jobs': 0, 'pending_jobs': 0, 'failed_jobs': 0,
+            'scheduler_warning_jobs': 0, 'active_gpus': 0, 'eta_seconds': None,
+            'throughput_per_hour': None, 'warnings': []}
 
 
 class Campaign:
@@ -432,8 +456,8 @@ class Campaign:
         return count, error
 
     def empty(self):
-        return dict(id=str(self.root), name=self.name, root=str(self.root),
-                    observed_at=None, stages=[], warnings=[])
+        return {'id': str(self.root), 'name': self.name, 'root': str(self.root),
+                'observed_at': None, 'stages': [], 'warnings': []}
 
     def stale(self, error):
         result = copy.deepcopy(self.last_good) if self.last_good else self.empty()
@@ -636,6 +660,7 @@ def main():
                     raise ValueError('configured campaigns exceed 20000-task sweep bound')
                 prepared.append(campaign)
             except Exception as exc:
+                LOGGER.exception('Campaign preparation failed: %s', campaign.root)
                 preparation_errors[campaign.root] = short_error(exc)
         scheduler_error = None
         try:
@@ -645,12 +670,14 @@ def main():
             if args.offline:
                 scheduler_error = 'Offline metadata-only snapshot; scheduler not queried'
         except Exception as exc:
+            LOGGER.exception('Scheduler snapshot failed')
             records, scheduler_error = {}, short_error(exc)
             errors.append(f'Scheduler: {scheduler_error}')
         # Telemetry failure is independent of scheduler counts, validated artifacts, and ETA.
         try:
             gpu = gpu_snapshot(prepared, records, scheduler_error)
         except Exception as exc:
+            LOGGER.exception('GPU telemetry snapshot failed')
             gpu = {campaign.root: empty_gpu_utilization(error=short_error(exc))
                    for campaign in prepared}
         results = []
@@ -660,16 +687,21 @@ def main():
                     raise ValueError(preparation_errors[campaign.root])
                 results.append(campaign.collect(records, scheduler_error, gpu.get(campaign.root)))
             except Exception as exc:
+                LOGGER.exception('Campaign collection failed: %s', campaign.root)
                 error = short_error(exc)
                 errors.append(f'{campaign.name}: {error}')
                 results.append(campaign.stale(error))
-        snapshot = dict(schema_version=2, generated_at=utc_now(), refresh_seconds=interval,
-                        collector=dict(job_id=os.environ.get('SLURM_JOB_ID') if not args.offline else None,
-                                       host=socket.gethostname(), mode='metadata_only' if args.offline else 'live'),
-                        campaigns=results, errors=errors)
+        snapshot = {
+            'schema_version': 2, 'generated_at': utc_now(), 'refresh_seconds': interval,
+            'collector': {
+                'job_id': os.environ.get('SLURM_JOB_ID') if not args.offline else None,
+                'host': socket.gethostname(), 'mode': 'metadata_only' if args.offline else 'live',
+            },
+            'campaigns': results, 'errors': errors,
+        }
         try:
             publish(output, snapshot)
-        except Exception as exc:
+        except (OSError, ValueError, TypeError) as exc:
             print(f'Publication failed; previous snapshot retained: {short_error(exc)}',
                   file=sys.stderr, flush=True)
             if args.once:

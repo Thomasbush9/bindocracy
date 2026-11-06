@@ -13,12 +13,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import shlex
 import socket
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from rich.text import Text
 from textual import on
@@ -27,6 +28,7 @@ from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Footer, Header, Static
 
+LOGGER = logging.getLogger(__name__)
 MAX_BYTES = 1024 * 1024
 MAX_STDERR = 64 * 1024
 FETCH_TIMEOUT = 15
@@ -36,9 +38,9 @@ COUNTS = ("valid", "running_jobs", "pending_jobs", "failed_jobs", "scheduler_war
 
 def timestamp(value: Any, location: str) -> datetime:
     if not isinstance(value, str):
-        raise ValueError(f"{location}: expected UTC ISO timestamp")
+        raise TypeError(f"{location}: expected UTC ISO timestamp")
     try:
-        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        result = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ValueError(f"{location}: invalid timestamp") from exc
     if result.tzinfo is None or result.utcoffset().total_seconds() != 0:
@@ -50,7 +52,7 @@ def validate_snapshot(data: Any, previous: dict | None = None) -> dict[str, Any]
     """Validate the envelope strictly and quarantine individual bad campaigns."""
     def obj(value: Any, where: str) -> dict:
         if not isinstance(value, dict):
-            raise ValueError(f"{where}: expected object")
+            raise TypeError(f"{where}: expected object")
         return value
 
     def text(value: Any, where: str, *, maximum: int = 4096) -> None:
@@ -331,7 +333,7 @@ async def fetch_snapshot(path: str, host: str | None = None, ssh_config: str | N
         await process.wait()
 
 
-def duration(seconds: float | int | None) -> str:
+def duration(seconds: float | None) -> str:
     if seconds is None:
         return "unavailable"
     if seconds >= 86400:
@@ -418,11 +420,13 @@ def summary_stage(campaign: dict) -> dict | None:
 
 class CampaignWatch(App):
     TITLE = "Campaign Watch — READ-ONLY PROTOTYPE"
-    BINDINGS = [("q", "quit", "Quit"), ("r", "refresh", "Refresh"),
-                ("escape", "campaigns", "Back"), ("tab", "focus_next", "Next pane"),
-                Binding("j", "move_down", "Down", show=False),
-                Binding("k", "move_up", "Up", show=False),
-                ("h", "campaigns", "Back"), ("l", "drill_down", "Open")]
+    BINDINGS: ClassVar[list[Binding | tuple[str, str, str]]] = [
+        ("q", "quit", "Quit"), ("r", "refresh", "Refresh"),
+        ("escape", "campaigns", "Back"), ("tab", "focus_next", "Next pane"),
+        Binding("j", "move_down", "Down", show=False),
+        Binding("k", "move_up", "Up", show=False),
+        ("h", "campaigns", "Back"), ("l", "drill_down", "Open"),
+    ]
     CSS = """
     Screen { layout: vertical; }
     #source { height: auto; max-height: 3; padding: 0 1; color: $text-muted; }
@@ -492,10 +496,11 @@ class CampaignWatch(App):
         try:
             snapshot = await fetch_snapshot(self.snapshot_path, self.host, self.ssh_config, self.snapshot)
             self.snapshot = snapshot
-            self.last_success = datetime.now(timezone.utc)
+            self.last_success = datetime.now(UTC)
             self.fetch_error = None
             self.render_snapshot()
         except Exception as exc:
+            LOGGER.exception("Snapshot refresh failed")
             self.fetch_error = plain(f"{type(exc).__name__}: {exc}")[:2200]
         finally:
             self.fetching = False
@@ -542,7 +547,7 @@ class CampaignWatch(App):
     def age(self, observed_at: str | None) -> tuple[str, bool]:
         if observed_at is None:
             return "NEVER OBSERVED", True
-        seconds = (datetime.now(timezone.utc) - timestamp(observed_at, "observed_at")).total_seconds()
+        seconds = (datetime.now(UTC) - timestamp(observed_at, "observed_at")).total_seconds()
         if seconds < -30:
             return "CLOCK SKEW", True
         threshold = max(120, 2 * self.snapshot["refresh_seconds"]) if self.snapshot else 120
@@ -745,14 +750,14 @@ class CampaignWatch(App):
         if event.cursor_row != event.data_table.cursor_row:
             return
         identifier = event.row_key.value
-        if self.snapshot and any(item["id"] == identifier for item in self.snapshot["campaigns"]):
-            if identifier != self.selected_campaign:
-                self.selected_campaign = identifier
-                self.selected_stage = None
-                self.selected_arm = self.selected_generator = None
-                self.level = "stages"
-                self.render_stages()
-                self.update_ages()
+        if (self.snapshot and any(item["id"] == identifier for item in self.snapshot["campaigns"])
+                and identifier != self.selected_campaign):
+            self.selected_campaign = identifier
+            self.selected_stage = None
+            self.selected_arm = self.selected_generator = None
+            self.level = "stages"
+            self.render_stages()
+            self.update_ages()
 
     @on(DataTable.RowSelected, "#campaigns")
     def select_campaign(self, event: DataTable.RowSelected) -> None:

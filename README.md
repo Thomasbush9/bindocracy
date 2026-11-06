@@ -87,6 +87,10 @@ out of 95 running tasks**, not all 95 GPUs. Details show range, memory, coverage
 and observation age. These are Slurm accounting readings, not instantaneous device
 polls or statistically representative campaign-wide estimates. Missing, partial,
 stale and disconnected data remain distinguishable from a measured zero.
+Native numeric job steps take precedence over CPU-only `.batch` wrappers. Each
+allocation contributes at most one sample; multiple native steps use an explicitly
+unweighted mean, not a device-weighted estimate. Missing or invalid native readings
+stay unknown rather than falling back to a misleading wrapper zero.
 
 ### Collector deployment on the cluster
 
@@ -163,11 +167,16 @@ Missing counts and coordinate readiness remain `?`, and overshoot is retained.
 BindCraft2/FreeBindCraft native requests are accepted-design stopping targets,
 not raw-candidate quotas; those two quantities are not compared for completion.
 Current generator collections publish compact `collected-summary.json` files.
-The monitor checks their run identity and source-file metadata before using them;
-it never reads large design/metric arrays. Historical runs use the bounded
-`collected.json` fallback only below 1 MiB. Missing or stale summaries leave counts
-unknown. Counts update when canonical collection publishes them, not continuously
-within native model steps; scheduler/GPU observations refresh independently.
+The monitor checks their run identity and source-file metadata before using them.
+Snakemake can touch the canonical output after that summary is published. A stale
+or missing sidecar therefore triggers a bounded read of the canonical file's
+leading run metadata (up to 1 MiB), not its design/metric inventories. Legacy
+layouts retain the small-file fallback. Reads are cached by file identity and
+timestamps; an unreadable or changing source leaves counts unknown.
+Canonical run totals are counted once even when per-task counts are unavailable;
+the monitor does not invent a per-task breakdown. Counts update when canonical
+collection publishes them, not continuously within native model steps;
+scheduler/GPU observations refresh independently.
 Per-component ETA requires at least five successful same-arm/tool elapsed samples
 and running workers, and is suppressed on failures, ambiguous retries or unknown
 scheduler evidence. It estimates remaining **planned-task execution** at current

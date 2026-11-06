@@ -4,7 +4,7 @@ import asyncio
 import copy
 import importlib.util
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -12,7 +12,6 @@ import pytest
 pytest.importorskip("textual")
 from textual.containers import VerticalScroll
 from textual.widgets import DataTable
-
 
 SPEC = importlib.util.spec_from_file_location(
     "campaign_watch_tui", Path(__file__).resolve().parents[1] / "scripts/campaign_watch/tui.py"
@@ -22,12 +21,12 @@ SPEC.loader.exec_module(tui)
 
 
 def stage(identifier="optimization", **changes):
-    record = dict(
-        id=identifier, name=identifier, state="running", unit="designs", planned=100,
-        valid=25, running_jobs=1, pending_jobs=0, failed_jobs=0,
-        scheduler_warning_jobs=0, active_gpus=1, eta_seconds=3600,
-        throughput_per_hour=75, warnings=[],
-    )
+    record = {
+        "id": identifier, "name": identifier, "state": "running", "unit": "designs", "planned": 100,
+        "valid": 25, "running_jobs": 1, "pending_jobs": 0, "failed_jobs": 0,
+        "scheduler_warning_jobs": 0, "active_gpus": 1, "eta_seconds": 3600,
+        "throughput_per_hour": 75, "warnings": [],
+    }
     record.update(changes)
     return record
 
@@ -58,15 +57,15 @@ def generation_stage(identifier="tier1", components=None):
 
 
 def campaign(identifier="mosaic", stages=None):
-    return dict(id=identifier, name=identifier, root="/trusted/campaign",
-                observed_at=datetime.now(timezone.utc).isoformat(), warnings=[],
-                stages=stages if stages is not None else [stage()])
+    return {"id": identifier, "name": identifier, "root": "/trusted/campaign",
+            "observed_at": datetime.now(UTC).isoformat(), "warnings": [],
+            "stages": stages if stages is not None else [stage()]}
 
 
 def snapshot(*campaigns, version=2):
-    return dict(schema_version=version, generated_at=datetime.now(timezone.utc).isoformat(),
-                refresh_seconds=30, collector=dict(host="cluster", job_id="123"),
-                errors=[], campaigns=list(campaigns))
+    return {"schema_version": version, "generated_at": datetime.now(UTC).isoformat(),
+            "refresh_seconds": 30, "collector": {"host": "cluster", "job_id": "123"},
+            "errors": [], "campaigns": list(campaigns)}
 
 
 def generation_campaign():
@@ -75,10 +74,10 @@ def generation_campaign():
 
 
 def gpu():
-    return dict(source="Slurm accounting", observed_at=datetime.now(timezone.utc).isoformat(),
-                eligible_jobs=2, queried_jobs=2, sampled_jobs=1, low_util_jobs=0,
-                memory_sampled_jobs=1, mean_percent=50, min_percent=50, max_percent=50,
-                mean_memory_mib=1024, error=None)
+    return {"source": "Slurm accounting", "observed_at": datetime.now(UTC).isoformat(),
+            "eligible_jobs": 2, "queried_jobs": 2, "sampled_jobs": 1, "low_util_jobs": 0,
+            "memory_sampled_jobs": 1, "mean_percent": 50, "min_percent": 50, "max_percent": 50,
+            "mean_memory_mib": 1024, "error": None}
 
 
 def test_mosaic_v1_preserves_progress_runtime_and_telemetry():
@@ -186,6 +185,43 @@ def test_envelope_remains_strict(change):
         tui.validate_snapshot(data)
 
 
+@pytest.mark.parametrize("change", [{"generated_at": 123}, {"collector": []}])
+def test_envelope_type_errors_are_explicit(change):
+    data = snapshot(campaign())
+    data.update(change)
+    with pytest.raises(TypeError):
+        tui.validate_snapshot(data)
+
+
+@pytest.mark.parametrize("suffix", ["Z", "+00:00"])
+def test_utc_timestamp_spellings_remain_supported(suffix):
+    data = snapshot(campaign())
+    data["generated_at"] = f"2026-11-05T12:00:00{suffix}"
+    data["campaigns"][0]["observed_at"] = data["generated_at"]
+    assert tui.validate_snapshot(data) == data
+
+
+@pytest.mark.parametrize("change", [{"observed_at": 123}, {"gpu_utilization": []}])
+def test_campaign_type_errors_retain_last_good_without_hiding_peers(change):
+    previous = tui.validate_snapshot(snapshot(campaign("bad"), campaign("good")))
+    incoming = copy.deepcopy(previous)
+    incoming["campaigns"][0].update(change)
+    incoming["campaigns"][1]["stages"][0]["valid"] = 30
+    result = tui.validate_snapshot(incoming, previous)
+    assert result["campaigns"][0]["stages"] == previous["campaigns"][0]["stages"]
+    assert result["campaigns"][0]["observed_at"] == previous["campaigns"][0]["observed_at"]
+    assert result["campaigns"][0]["_invalid"]
+    assert result["campaigns"][1]["stages"][0]["valid"] == 30
+    assert len(result["errors"]) == 1
+
+
+def test_nonobject_campaign_is_quarantined():
+    good = campaign()
+    result = tui.validate_snapshot(snapshot([], good))
+    assert result["campaigns"] == [good]
+    assert "expected object" in result["errors"][0]
+
+
 def test_campaign_gpu_validation_and_explicit_scope():
     item = generation_campaign()
     item["gpu_utilization"] = gpu()
@@ -214,6 +250,54 @@ def test_safe_text_and_bounded_transport(tmp_path):
 class OfflineWatch(tui.CampaignWatch):
     def action_refresh(self):
         pass
+
+
+@pytest.mark.parametrize("change", [{"generated_at": 123}, {"collector": []}])
+def test_refresh_type_errors_keep_last_success_and_report_failure(tmp_path, caplog, change):
+    path = tmp_path / "snapshot.json"
+    original = snapshot(campaign())
+    path.write_text(json.dumps(original))
+
+    async def exercise():
+        app = OfflineWatch(str(path), None, 30)
+        async with app.run_test(size=(120, 30)) as pilot:
+            await app.load_snapshot()
+            await pilot.pause()
+            last_success = app.last_success
+            path.write_text(json.dumps({**original, **change}))
+            app.fetching = True
+            await app.load_snapshot()
+            await pilot.pause()
+            assert app.snapshot == original
+            assert app.last_success == last_success
+            assert app.fetch_error.startswith("TypeError:")
+            assert not app.fetching
+
+    asyncio.run(exercise())
+    assert any(record.exc_info and record.exc_info[0] is TypeError for record in caplog.records)
+
+
+def test_unexpected_fetch_fault_is_logged_and_keeps_last_snapshot(monkeypatch, caplog):
+    async def failing_fetch(*_args):
+        raise RuntimeError("unexpected transport fault")
+
+    async def exercise():
+        app = OfflineWatch("unused", None, 30)
+        async with app.run_test(size=(120, 30)) as pilot:
+            original = tui.validate_snapshot(snapshot(campaign()))
+            app.snapshot = original
+            app.render_snapshot()
+            await pilot.pause()
+            monkeypatch.setattr(tui, "fetch_snapshot", failing_fetch)
+            app.fetching = True
+            await app.load_snapshot()
+            await pilot.pause()
+            assert app.snapshot is original
+            assert app.fetch_error == "RuntimeError: unexpected transport fault"
+            assert not app.fetching
+
+    asyncio.run(exercise())
+    assert any(record.exc_info and record.exc_info[0] is RuntimeError for record in caplog.records)
 
 
 def test_navigation_all_arms_tools_and_stable_refresh_selection():

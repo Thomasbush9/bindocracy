@@ -1,22 +1,39 @@
 """Bounded, read-only adapter for registered single-generate-stage bundles.
 
-Only frozen plans, run manifests, controller journals and task status JSON are read.
-No generator imports, output parsing, database access, or controller.status() calls.
+Only frozen plans, run manifests, controller journals and bounded count metadata are read.
+No generator imports, design/metric parsing, database access, or controller.status() calls.
 """
 from __future__ import annotations
 
 import copy
-from pathlib import Path
+import json
+import os
 import re
 import stat
 import statistics
+from pathlib import Path
 
-from collector import (ALLOCATED, PENDING, TERMINAL, MAX_TASKS, MANIFEST_LIMIT,
-                       fingerprint, load_json, stage, utc_now)
+from collector import (
+    ALLOCATED,
+    MANIFEST_LIMIT,
+    MAX_TASKS,
+    PENDING,
+    TERMINAL,
+    fingerprint,
+    load_json,
+    reject_constant,
+    stage,
+    unique_object,
+    utc_now,
+)
 
 MAX_FILES = 25000
 MAX_BYTES = 64 * 1024 * 1024
 MAX_COMPONENTS = 256
+COLLECTED_LIMIT = 1024 * 1024
+RUN_PREFIX = re.compile(
+    rb'\A\s*\{\s*"bundle_version"\s*:\s*1\s*,\s*"collected"\s*:\s*\{\s*"run"\s*:\s*(?=\{)'
+)
 # These native adapters request an accepted-design stopping target but collect raw candidates.
 ACCEPTED_STOP_TOOLS = {'bindcraft2', 'freebindcraft'}
 
@@ -46,6 +63,32 @@ def reported_stage(identifier, name, planned):
     return result
 
 
+def collection_stamp(info):
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError('collection is not a regular file')
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def count_metadata(run):
+    """Keep only counts and outcomes, not unrelated run configuration."""
+    if not isinstance(run, dict):
+        raise TypeError('collected run must be an object')
+    count = run.get('n_produced')
+    if count is not None:
+        nonnegative(count, 'collected run n_produced')
+    outcome = run.get('status')
+    if outcome is not None and outcome not in ('succeeded', 'partial', 'failed'):
+        raise ValueError('invalid collected run outcome')
+    tasks = (run.get('count_details') or {}).get('tasks') or {}
+    return {
+        'run_id': run['run_id'], 'n_produced': count, 'status': outcome,
+        'count_details': {'tasks': {
+            key: {'n_produced': value.get('n_produced'), 'status': value.get('status')}
+            for key, value in tasks.items()
+        }},
+    }
+
+
 class GenerationCampaign:
     def __init__(self, config):
         self.root = Path(config['root']).resolve()
@@ -58,7 +101,7 @@ class GenerationCampaign:
         self.job_ids = set()
         self.definition = None
 
-    def read(self, path, *, optional=False, limit=MANIFEST_LIMIT, collected=False):
+    def read(self, path, *, optional=False, limit=MANIFEST_LIMIT):
         path = path.resolve()
         if path != self.manifest and not path.is_relative_to(self.root):
             raise ValueError(f'metadata symlink escapes registered root: {path}')
@@ -80,11 +123,108 @@ class GenerationCampaign:
         if cached and cached[0] == stamp:
             return cached[1]
         value = load_json(path, limit)
-        if collected:
-            # Retain only the count summary, never the candidate/structure inventory.
-            value = value['collected']['run']
         self.cache[path] = (stamp, value)
         return value
+
+    def read_collected(self, path):
+        """Read only the leading canonical run object, bounded even for huge inventories."""
+        path = inside(self.root, path)
+        self.files += 1
+        if self.files > MAX_FILES:
+            raise ValueError('generation metadata file-count bound exceeded')
+        self.visited.add(path)
+        try:
+            stamp = collection_stamp(path.stat())
+        except FileNotFoundError:
+            self.cache.pop(path, None)
+            return None
+        cached = self.cache.get(path)
+        if cached and cached[0] == stamp:
+            self.bytes += cached[2]
+            if self.bytes > MAX_BYTES:
+                raise ValueError('generation metadata sweep-byte bound exceeded')
+            return cached[1]
+        raw = bytearray()
+        start = None
+        depth, quoted, escaped = 0, False, False
+        value = None
+        with path.open('rb') as stream:
+            if collection_stamp(os.fstat(stream.fileno())) != stamp:
+                raise ValueError('collection changed before read')
+            while len(raw) < COLLECTED_LIMIT:
+                size = min(4096, COLLECTED_LIMIT - len(raw), MAX_BYTES - self.bytes)
+                if size <= 0:
+                    raise ValueError('generation metadata sweep-byte bound exceeded')
+                chunk = stream.read(size)
+                self.bytes += len(chunk)
+                if not chunk:
+                    break
+                offset = len(raw)
+                raw.extend(chunk)
+                if start is None:
+                    prefix = RUN_PREFIX.match(raw)
+                    if prefix is None:
+                        # Older tiny fixtures/bundles had an unversioned envelope.
+                        # Never load a large inventory to accommodate another layout.
+                        if stamp[2] > COLLECTED_LIMIT:
+                            raise ValueError('unsupported canonical collection prefix')
+                        continue
+                    start = offset = prefix.end()
+                for index in range(offset, len(raw)):
+                    char = raw[index]
+                    if quoted:
+                        if escaped:
+                            escaped = False
+                        elif char == 92:
+                            escaped = True
+                        elif char == 34:
+                            quoted = False
+                    elif char == 34:
+                        quoted = True
+                    elif char in (123, 91):
+                        depth += 1
+                    elif char in (125, 93):
+                        depth -= 1
+                        if depth == 0:
+                            value = count_metadata(json.loads(
+                                raw[start:index + 1], parse_constant=reject_constant,
+                                object_pairs_hook=unique_object))
+                            break
+                if value is not None:
+                    break
+            if value is None:
+                if start is not None or len(raw) != stamp[2]:
+                    raise ValueError('canonical run metadata exceeds prefix bound or is incomplete')
+                legacy = json.loads(raw, parse_constant=reject_constant, object_pairs_hook=unique_object)
+                if 'bundle_version' in legacy:
+                    raise ValueError('unsupported canonical collection prefix')
+                value = count_metadata(legacy['collected']['run'])
+            if (collection_stamp(os.fstat(stream.fileno())) != stamp
+                    or collection_stamp(path.stat()) != stamp):
+                raise ValueError('collection changed during read')
+        self.cache[path] = (stamp, value, len(raw))
+        return value
+
+    def collected_counts(self, directory):
+        source = inside(self.root, directory / 'collected.json')
+        try:
+            compact = self.read(directory / 'collected-summary.json', optional=True,
+                                limit=COLLECTED_LIMIT)
+            if compact is not None:
+                before = collection_stamp(source.stat())
+                expected = {
+                    'name': source.name, 'size_bytes': before[2], 'mtime_ns': before[3],
+                    'ctime_ns': before[4], 'inode': before[1],
+                }
+                if compact.get('schema_version') == 1 and compact.get('source') == expected:
+                    value = count_metadata(compact['collected']['run'])
+                    if collection_stamp(source.stat()) == before:
+                        return value
+        except (ValueError, KeyError, TypeError, AttributeError, OSError):
+            pass
+        # Snakemake touches declared outputs after collection. A mismatched sidecar
+        # is never trusted: recover counts from the current canonical file instead.
+        return self.read_collected(source)
 
     def prepare(self):
         self.files, self.bytes, self.visited = 0, 0, set()
@@ -113,6 +253,7 @@ class GenerationCampaign:
             nonnegative(item['tasks_planned'], 'tasks_planned')
             self.cells[key] = item
         self.tasks, self.jobs, self.job_ids = [], {}, set()
+        self.runs = {}
         self.stage_controls = {}
         seen_runs, seen_status = {}, set()
         for tier in tiers:
@@ -168,26 +309,13 @@ class GenerationCampaign:
                     ingested = self.read(directory / 'ingested.json', optional=True, limit=65536)
                     collected, collected_warning = None, None
                     try:
-                        source_path = inside(self.root, directory / 'collected.json')
-                        compact = self.read(directory / 'collected-summary.json', optional=True,
-                                            limit=1024 * 1024)
-                        if compact is None:
-                            collected = self.read(source_path, optional=True,
-                                                  limit=1024 * 1024, collected=True)
-                        else:
-                            info = source_path.stat()
-                            expected = dict(name=source_path.name, size_bytes=info.st_size,
-                                            mtime_ns=info.st_mtime_ns, ctime_ns=info.st_ctime_ns,
-                                            inode=info.st_ino)
-                            if (compact.get('schema_version') != 1 or
-                                    not stat.S_ISREG(info.st_mode) or compact.get('source') != expected):
-                                raise ValueError('compact counts do not match the current collection file')
-                            collected = compact['collected']['run']
+                        collected = self.collected_counts(directory)
                         if collected and collected.get('run_id') != run_id:
                             raise ValueError('collected run identity mismatch')
-                    except (ValueError, KeyError, OSError) as exc:
+                    except (ValueError, KeyError, TypeError, AttributeError, OSError) as exc:
                         collected_warning = f'Collected count summary unavailable: {str(exc)[:180]}'
                         collected = None
+                    self.runs[run_id] = collected or {}
                     reported_tasks = (collected or {}).get('count_details', {}).get('tasks', {})
                     for task in manifest['tasks']:
                         task_id = nonnegative(task['task_id'], 'task_id')
@@ -214,11 +342,11 @@ class GenerationCampaign:
                             if outcome in ('succeeded', 'partial', 'failed'):
                                 status = dict(status or {}, task_id=task_id, status=outcome,
                                               n_produced=count, count_source='collected.json')
-                        self.tasks.append(dict(identity=identity, key=key, run_id=run_id,
-                                               task_id=task_id, status=status,
-                                               requested=nonnegative(task['n_requested'], 'n_requested'),
-                                               gpus=gpus, ingested=ingested is not None,
-                                               warning=collected_warning))
+                        self.tasks.append({'identity': identity, 'key': key, 'run_id': run_id,
+                                           'task_id': task_id, 'status': status,
+                                           'requested': nonnegative(task['n_requested'], 'n_requested'),
+                                           'gpus': gpus, 'ingested': ingested is not None,
+                                           'warning': collected_warning})
                         if len(self.tasks) > MAX_TASKS:
                             raise ValueError('generation task-count bound exceeded')
                 for attempt in journal.get('attempts', []):
@@ -247,8 +375,8 @@ class GenerationCampaign:
         return {(job_id, -1) for job_id, identity in self.jobs.items() if tasks[identity]['gpus'] > 0}
 
     def empty(self):
-        return dict(id=str(self.root), name=self.name, root=str(self.root),
-                    kind='bindocracy_generation', observed_at=None, stages=[], warnings=[])
+        return {'id': str(self.root), 'name': self.name, 'root': str(self.root),
+                'kind': 'bindocracy_generation', 'observed_at': None, 'stages': [], 'warnings': []}
 
     @staticmethod
     def calibrate_eta(cell, tasks, task_jobs, records, scheduler_error):
@@ -317,7 +445,7 @@ class GenerationCampaign:
             message += f" Requires successful job {control['dependency_job_id']}."
         if control.get('error'):
             message += f" {str(control['error'])[:300]}"
-        return dict(state=state, phase=phase, warning=message)
+        return {'state': state, 'phase': phase, 'warning': message}
 
     def collect(self, records, scheduler_error, gpu_utilization=None):
         result = self.empty()
@@ -340,6 +468,7 @@ class GenerationCampaign:
         for job_id, identity in self.jobs.items():
             task_jobs.setdefault(identity, []).append(job_id)
         tasks_by_cell = {}
+        counted_runs = set()
         for task in self.tasks:
             cell = cells[task['key']]
             tasks_by_cell.setdefault(task['key'], []).append(task)
@@ -351,14 +480,20 @@ class GenerationCampaign:
             status = task['status'] or {}
             count = status.get('n_produced')
             if count is not None:
-                cell['reported_produced'] = (cell['reported_produced'] or 0) + count
                 cell['counts_reported_tasks'] += 1
+            run_count = self.runs[task['run_id']].get('n_produced')
+            if run_count is not None:
+                if task['run_id'] not in counted_runs:
+                    cell['reported_produced'] = (cell['reported_produced'] or 0) + run_count
+                    counted_runs.add(task['run_id'])
+            elif count is not None:
+                cell['reported_produced'] = (cell['reported_produced'] or 0) + count
             partial = status.get('status') == 'partial' or (
                 task['key'][2] not in ACCEPTED_STOP_TOOLS and count is not None and 0 < count < task['requested'])
             cell['partial_jobs'] += int(partial)
             ids = task_jobs.get(task['identity'], [])
             cell['job_ids'].extend(ids)
-            if not ids and status and count is None:
+            if not ids and status and count is None and run_count is None:
                 cell['unknown_jobs'] += 1
             failed_before = cell['failed_jobs']
             for job_id in ids:
@@ -380,18 +515,41 @@ class GenerationCampaign:
                 cell['failed_by_state']['TASK_FAILED'] = cell['failed_by_state'].get('TASK_FAILED', 0) + 1
         for key, cell in cells.items():
             tasks = tasks_by_cell.get(key, [])
+            collection_incomplete = any(
+                self.runs[run_id].get('status') in ('partial', 'failed')
+                for run_id in cell['run_ids'])
             if tasks:
                 all_reported = cell['counts_reported_tasks'] == len(tasks)
-                done = (all_reported and len(tasks) >= cell['tasks_planned']
+                run_tasks = {}
+                for task in tasks:
+                    run_tasks.setdefault(task['run_id'], []).append(task)
+                complete_runs = []
+                for run_id, members in run_tasks.items():
+                    summary = self.runs[run_id]
+                    total = summary.get('n_produced')
+                    shortfall = (total is not None and key[2] not in ACCEPTED_STOP_TOOLS
+                                 and total < sum(task['requested'] for task in members))
+                    collection_incomplete = collection_incomplete or shortfall
+                    if total is not None and summary.get('status') is not None:
+                        complete_runs.append(
+                            summary['status'] == 'succeeded'
+                            and not shortfall)
+                    else:
+                        complete_runs.append(all(
+                            (task['status'] or {}).get('n_produced') is not None
+                            and (key[2] in ACCEPTED_STOP_TOOLS
+                                 or task['status']['n_produced'] >= task['requested'])
+                            for task in members))
+                done = (len(tasks) >= cell['tasks_planned'] and all(complete_runs)
+                        and cell['reported_produced'] is not None
                         and cell['reported_produced'] >= cell['planned']
-                        and all(task['status']['status'] == 'succeeded' and
-                                (key[2] in ACCEPTED_STOP_TOOLS or task['status']['n_produced'] >= task['requested'])
-                                for task in tasks))
+                        and not collection_incomplete
+                        and all((task['status'] or {}).get('status') == 'succeeded' for task in tasks))
                 if cell['running_jobs']:
                     cell.update(state='running', phase='generating')
                 elif cell['pending_jobs']:
                     cell.update(state='queued', phase='queued')
-                elif cell['failed_jobs']:
+                elif cell['failed_jobs'] or collection_incomplete:
                     cell.update(state='needs_attention', phase='partial' if cell['reported_produced'] else 'unknown')
                 elif cell['unknown_jobs']:
                     phase = ('ingested' if all(task['ingested'] for task in tasks) else 'generated') if done else (
@@ -407,11 +565,13 @@ class GenerationCampaign:
                     cell['phase'] = 'preparing'
                 if not all_reported:
                     cell['warnings'].append(f"Reported counts available for {cell['counts_reported_tasks']}/{len(tasks)} tasks; missing counts are not zero.")
+                if collection_incomplete:
+                    cell['warnings'].append('Canonical collection is partial, failed, or below the requested total; counts are retained, not success.')
                 if cell['failed_jobs'] and cell['reported_produced']:
                     cell['warnings'].append('Reported outputs retained despite worker failures; completeness and coordinates are not validated.')
             if scheduler_error and cell['job_ids']:
                 cell['warnings'].append(f'Scheduler unavailable: {scheduler_error}')
-            if self.arm_states.get(key[:2]) != 'failed':
+            if self.arm_states.get(key[:2]) != 'failed' and not collection_incomplete:
                 self.calibrate_eta(cell, tasks, task_jobs, records, scheduler_error)
             control = controls[key[0]]
             if control:
@@ -448,7 +608,7 @@ class GenerationCampaign:
             if all(cell['phase'] in ('generated', 'ingested') for cell in children):
                 item['phase'] = 'ingested' if all(cell['phase'] == 'ingested' for cell in children) else 'generated'
             if item['counts_reported_tasks'] < item['tasks_observed']:
-                item['warnings'].append('Reported production is a partial tally; some task counts are unavailable.')
+                item['warnings'].append('Some task counts are unavailable; canonical run totals are used where available, without inferring task distribution.')
             control = controls[tier['id']]
             if control:
                 item['warnings'].append(control['warning'])

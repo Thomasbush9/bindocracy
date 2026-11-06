@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from bindocracy.config.load import LoadedConfigs
+from bindocracy.runs.completion import record_completion, restore_completion
 from bindocracy.runs.ingest import ingest_bundle
 from bindocracy.runs.launch import LaunchSpec
 from bindocracy.runs.manifest import RunManifest, write_json_atomic
@@ -47,7 +48,12 @@ def generate_step(
     manifest = RunManifest.read(manifest_path)
     manifest.verify_inputs()
     spec: LaunchSpec = launch_spec(manifest, task_id)
-    return run_task(spec.argv, spec.env, log_path, status_path, task_id, spec.mkdirs)
+    completed = restore_completion(manifest, task_id)
+    if completed is not None:
+        return completed.exit_code if completed.exit_code is not None else 0
+    result = run_task(spec.argv, spec.env, log_path, status_path, task_id, spec.mkdirs)
+    record_completion(manifest, task_id)
+    return result
 
 
 def collect_step(

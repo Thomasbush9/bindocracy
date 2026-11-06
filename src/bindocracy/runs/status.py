@@ -82,8 +82,16 @@ def write_task_status(
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(status.model_dump_json(indent=2, exclude_none=False) + "\n")
+        with tmp.open("w") as handle:
+            handle.write(status.model_dump_json(indent=2, exclude_none=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp, path)
+        directory = os.open(path.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     except OSError as error:
         raise HarnessError(f"cannot record task status at {path}: {error}") from error
     return True

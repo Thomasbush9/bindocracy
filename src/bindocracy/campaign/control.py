@@ -23,6 +23,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from bindocracy.campaign.plan import load_plan
+from bindocracy.runs.completion import restore_completion
 from bindocracy.runs.manifest import RunManifest
 from bindocracy.runs.status import read_task_status
 
@@ -501,6 +502,13 @@ def _launcher(plan, plan_path, attempt, scheduler):
     return script
 
 
+def _restore_completions(plan):
+    for run in plan["runs"]:
+        manifest = RunManifest.read(run["manifest"])
+        for task in manifest.tasks:
+            restore_completion(manifest, task.task_id)
+
+
 def _recover_interrupted(plan, journal, attempt):
     """Move interrupted shards aside before drivers can append duplicate IDs.
 
@@ -508,6 +516,7 @@ def _recover_interrupted(plan, journal, attempt):
     when the control directory is on a different mount. Record the source and
     destination before every move; a crash leaves preserved, discoverable data.
     """
+    _restore_completions(plan)
     for run, observed in zip(plan["runs"], _artifacts(plan), strict=True):
         manifest = RunManifest.read(run["manifest"])
         interrupted = [
@@ -716,6 +725,11 @@ def worker_submit(plan_path, attempt_id, args, *, scheduler=None):
     if len(association) != 1:
         raise CampaignError(f"unrecognized worker identity: {comment!r}")
     wrapped = _option(args, "--wrap")
+    qos = plan["site"].get("worker_qos")
+    if qos:
+        if any(arg == "-q" or arg.startswith("-q") and not arg.startswith("--") for arg in args):
+            raise CampaignError("use the frozen site worker_qos, not a short QoS override")
+        args = _replace_option(args, "--qos", qos)
     with _locked(plan):
         journal = _read(plan)
         attempt = _allowed(plan, journal, attempt_id)
@@ -789,6 +803,7 @@ def _run_controller(plan_path, attempt_id):
                 raise CampaignError("controller is not inside its recorded allocation")
             controller.update(id=job_id, state="RUNNING")
             _save(plan, journal)
+        _restore_completions(plan)
         env = _clean_environment()
         if plan.get("benchmark"):
             env.update(BINDOCRACY_ATTEMPT_ID=plan["benchmark"]["attempt_id"],
@@ -848,6 +863,7 @@ def _run_controller(plan_path, attempt_id):
             "--latency-wait",
             str(site["latency_wait"]),
             "--rerun-incomplete",
+            "--keep-going",
             "--rerun-triggers",
             "mtime",
             "--printshellcmds",

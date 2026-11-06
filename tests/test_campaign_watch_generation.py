@@ -389,6 +389,219 @@ class GenerationWatchTests(unittest.TestCase):
         _, _, cell = self.collect(records)
         self.assertEqual((cell['partial_jobs'], cell['state']), (0, 'complete'))
 
+    def independent(self, state='running', second=False):
+        self.metadata({'status': 'succeeded', 'n_produced': 10})
+        self.stage_control()
+        self.dump(self.root / 'control/stages/tier1.json',
+                  {'stage_id': 'tier1', 'state': 'failed', 'job_id': '100',
+                   'error': 'Historical stage failed'})
+        units = []
+        generators = ['boltzgen', 'protein_hunter'] if second else ['boltzgen']
+        definition = json.loads(self.manifest_path.read_text())
+        for generator in generators:
+            identifier = f'tier1--arm1--{generator}'
+            directory = self.root / 'independent' / identifier
+            status_path = self.root / 'control/components' / f'{identifier}.json'
+            plan = json.loads((self.plan_dir / 'plan.json').read_text())
+            plan.update(plan_dir=str(directory), digest=identifier)
+            if generator != 'boltzgen':
+                run_dir = self.bundle / 'output/runs/arm1/run-two'
+                manifest = json.loads((self.run_dir / 'run.json').read_text())
+                manifest.update(tool=generator, run_id='run-two', run_dir=str(run_dir))
+                self.dump(run_dir / 'run.json', manifest)
+                plan['runs'] = [{'name': generator, 'manifest': str(run_dir / 'run.json'),
+                                 'resources': {'gpu': 1}}]
+                definition['components'].append({
+                    'tier': 'tier1', 'arm': 'arm1', 'generator': generator,
+                    'planned': 10, 'tasks_planned': 1})
+            else:
+                journal = json.loads((self.plan_dir / 'control/journal.json').read_text())
+                journal['digest'] = identifier
+                self.dump(directory / 'control/journal.json', journal)
+            self.dump(directory / 'plan.json', plan)
+            self.dump(status_path, {
+                'state': state if generator == 'boltzgen' else 'failed', 'job_id': '200',
+                'native_controller_job_id': '201',
+                'error': None if generator == 'boltzgen' else 'MissingOutputException: task0146'})
+            units.append({
+                'id': identifier, 'stage_id': 'tier1', 'arm': 'arm1', 'generator': generator,
+                'plan': str(directory / 'plan.json'), 'status_path': str(status_path),
+                'database': str(directory / 'campaign.duckdb'),
+                'original_plan': str(self.plan_dir / 'plan.json')})
+        self.dump(self.manifest_path, definition)
+        self.dump(self.root / 'control/independent.json', {
+            'schema_version': 1, 'mode': 'independent_generators', 'units': units,
+            'supervisors': {'boltzgen': {'job_id': '200', 'state': 'running'}}})
+        return units
+
+    def test_independent_failure_isolated_with_original_history_deduplicated(self):
+        self.independent(second=True)
+        campaign, result, cell = self.collect({
+            ('901', -1): {'state': 'RUNNING', 'current': True},
+            ('200', -1): {'state': 'RUNNING', 'current': True},
+            ('201', -1): {'state': 'RUNNING', 'current': True},
+            ('100', -1): {'state': 'FAILED', 'exit': '1:0'}})
+        tier = result['stages'][0]
+        failed = tier['components'][1]
+        self.assertEqual((tier['state'], tier['phase']), ('running', 'generating'))
+        self.assertEqual((cell['state'], cell['active_gpus'], cell['tasks_observed']), ('running', 1, 1))
+        self.assertEqual((failed['state'], failed['phase']), ('needs_attention', 'blocked'))
+        self.assertEqual(failed['failed_jobs'], 0)  # A CPU failure is not a failed GPU worker.
+        self.assertTrue(any('MissingOutputException' in warning for warning in failed['warnings']))
+        self.assertTrue(any('protein_hunter' in warning for warning in tier['warnings']))
+        self.assertFalse(any('Historical stage failed' in warning for warning in cell['warnings']))
+        self.assertEqual(cell['reported_produced'], 10)
+        self.assertEqual(cell['job_ids'], ['901'])
+        self.assertEqual(campaign.gpu_keys(), {('901', -1)})
+        self.assertEqual(campaign.job_ids, {'200', '201', '901'})
+        self.assertEqual((tier['tasks_observed'], tier['active_gpus']), (2, 1))
+
+    def test_independent_failure_retains_counts_even_when_workers_succeed(self):
+        self.independent(state='failed')
+        _, result, cell = self.collect({('901', -1): {'state': 'COMPLETED', 'exit': '0:0'}})
+        self.assertEqual((cell['state'], cell['phase'], cell['reported_produced']),
+                         ('needs_attention', 'partial', 10))
+        self.assertEqual(result['stages'][0]['state'], 'needs_attention')
+
+    def test_independent_complete_without_task_markers_is_not_success(self):
+        self.independent(state='complete')
+        (self.run_dir / 'tasks/0000/status.json').unlink()
+        _, _, cell = self.collect({
+            ('901', -1): {'state': 'COMPLETED', 'exit': '0:0'},
+            ('200', -1): {'state': 'COMPLETED', 'exit': '0:0'}})
+        self.assertNotEqual(cell['state'], 'complete')
+        self.assertIsNone(cell['reported_produced'])
+
+    def test_missing_independent_status_does_not_fall_back_to_failed_stage(self):
+        units = self.independent()
+        Path(units[0]['status_path']).unlink()
+        _, _, cell = self.collect({('901', -1): {'state': 'COMPLETED', 'exit': '0:0'}})
+        self.assertEqual(cell['state'], 'unknown')
+        self.assertTrue(any('status unavailable' in warning for warning in cell['warnings']))
+        self.assertFalse(any('Historical stage failed' in warning for warning in cell['warnings']))
+
+    def test_independent_sources_are_bounded_and_root_confined(self):
+        units = self.independent()
+        index = self.root / 'control/independent.json'
+        self.dump(index, {'schema_version': 1, 'mode': 'independent_generators', 'units': units * 2})
+        with patch('generation.MAX_COMPONENTS', 1), self.assertRaisesRegex(ValueError, 'unit-count bound'):
+            self.collect()
+        units[0]['plan'] = '/etc/passwd'
+        self.dump(index, {'schema_version': 1, 'mode': 'independent_generators', 'units': units})
+        with self.assertRaisesRegex(ValueError, 'escapes'):
+            self.collect()
+        units[0]['plan'] = str(self.plan_dir / 'plan.json')
+        self.dump(index, {'schema_version': 1, 'mode': 'independent_generators',
+                          'units': units, 'padding': 'x' * (1024 * 1024)})
+        with self.assertRaises(ValueError):
+            self.collect()
+
+    def test_independent_duplicate_units_and_missing_coverage_rejected(self):
+        units = self.independent()
+        index = self.root / 'control/independent.json'
+        for invalid in (units * 2, []):
+            self.dump(index, {'schema_version': 1, 'mode': 'independent_generators', 'units': invalid})
+            with self.assertRaises(ValueError):
+                self.collect()
+
+    def test_independent_history_only_workers_and_new_attempts_share_counts(self):
+        units = self.independent(state='complete')
+        plan_dir = Path(units[0]['plan']).parent
+        self.dump(plan_dir / 'control/journal.json', {
+            'digest': units[0]['id'], 'attempts': [{'jobs': [
+                {'role': 'worker', 'id': '902', 'run': 'arm1-boltzgen', 'task': 0},
+                {'role': 'controller', 'id': '201'}]}]})
+        campaign, _, cell = self.collect({
+            ('901', -1): {'state': 'COMPLETED', 'exit': '0:0'},
+            ('902', -1): {'state': 'COMPLETED', 'exit': '0:0'}})
+        self.assertEqual(set(cell['job_ids']), {'901', '902'})
+        self.assertEqual((cell['reported_produced'], cell['tasks_observed']), (10, 1))
+        self.assertEqual(campaign.gpu_keys(), {('901', -1), ('902', -1)})
+        self.assertEqual(cell['run_ids'], ['run-uuid'])
+        self.assertEqual(cell['state'], 'complete')
+
+    def test_completed_unit_not_poisoned_by_later_supervisor_failure(self):
+        self.independent(state='complete')
+        records = {('901', -1): {'state': 'COMPLETED', 'exit': '0:0'},
+                   ('200', -1): {'state': 'FAILED', 'exit': '1:0'},
+                   ('201', -1): {'state': 'COMPLETED', 'exit': '0:0'}}
+        _, _, cell = self.collect(records)
+        self.assertEqual(cell['state'], 'complete')
+        records[('201', -1)] = {'state': 'FAILED', 'exit': '1:0'}
+        _, _, cell = self.collect(records)
+        self.assertEqual(cell['state'], 'needs_attention')
+
+    def test_independent_component_status_size_and_sweep_bounds(self):
+        units = self.independent()
+        campaign = GenerationCampaign(self.config)
+        with patch('generation.MAX_FILES', 2), self.assertRaisesRegex(ValueError, 'file-count'):
+            campaign.prepare()
+        with patch('generation.MAX_BYTES', 100), self.assertRaisesRegex(ValueError, 'sweep-byte'):
+            campaign.prepare()
+        self.dump(Path(units[0]['status_path']), {'state': 'failed', 'error': 'x' * 65536})
+        with self.assertRaises(ValueError):
+            campaign.prepare()
+
+    def test_independent_production_retains_fourteen_legacy_qualification_cells(self):
+        units = self.independent(second=True)
+        definition = json.loads(self.manifest_path.read_text())
+        bundle = self.root / 'qualification'
+        arms = ['site_16', 'site_18']
+        control_path = self.root / 'control/stages/qualification.json'
+        definition['tiers'].insert(0, {
+            'id': 'qualification', 'name': 'Qualification', 'bundle_root': str(bundle),
+            'arms': arms, 'control_status': str(control_path)})
+        self.dump(control_path, {'stage_id': 'qualification', 'state': 'complete', 'job_id': '500'})
+        records = {
+            ('500', -1): {'state': 'COMPLETED', 'exit': '0:0'},
+            ('200', -1): {'state': 'RUNNING', 'current': True},
+            ('201', -1): {'state': 'RUNNING', 'current': True},
+            ('901', -1): {'state': 'RUNNING', 'current': True}}
+        arm_controls = {}
+        for arm_index, arm in enumerate(arms):
+            plan_dir = bundle / 'control/plans' / arm / 'generate'
+            runs, jobs = [], []
+            for tool_index in range(7):
+                tool = f'tool{tool_index}'
+                run_id = f'qualified-{arm}-{tool}'
+                run_dir = bundle / 'output/runs' / arm / run_id
+                job_id = str(510 + 7 * arm_index + tool_index)
+                definition['components'].append({
+                    'tier': 'qualification', 'arm': arm, 'generator': tool,
+                    'planned': 1, 'tasks_planned': 1})
+                self.dump(run_dir / 'run.json', {
+                    'run_id': run_id, 'tool': tool, 'kind': 'generate', 'arm': arm,
+                    'run_dir': str(run_dir), 'resources': {'gpu': 1},
+                    'tasks': [{'task_id': 0, 'status': 'tasks/0000/status.json', 'n_requested': 1}]})
+                self.dump(run_dir / 'tasks/0000/status.json',
+                          {'task_id': 0, 'status': 'succeeded', 'n_produced': 1})
+                runs.append({'name': run_id, 'manifest': str(run_dir / 'run.json')})
+                jobs.append({'role': 'worker', 'id': job_id, 'run': run_id, 'task': 0})
+                records[(job_id, -1)] = {'state': 'COMPLETED', 'exit': '0:0'}
+            self.dump(plan_dir / 'plan.json', {
+                'plan_dir': str(plan_dir), 'digest': arm, 'runs': runs})
+            self.dump(plan_dir / 'control/journal.json', {
+                'digest': arm, 'attempts': [{'jobs': jobs}]})
+            arm_controls[arm] = {'state': 'complete', 'plan': str(plan_dir / 'plan.json')}
+        self.dump(bundle / 'control/status.json', {'stages': {'generate': arm_controls}})
+        self.dump(self.manifest_path, definition)
+        campaign, result, _ = self.collect(records)
+        qualification, production = result['stages'][:2]
+        self.assertEqual((qualification['id'], qualification['state'], qualification['reported_produced']),
+                         ('qualification', 'complete', 14))
+        self.assertEqual(len(qualification['components']), 14)
+        self.assertEqual(len(campaign.component_controls), 2)
+        self.assertEqual((production['state'], production['active_gpus']), ('running', 1))
+        self.assertTrue(all(not any('Independent unit' in warning for warning in cell['warnings'])
+                            for cell in qualification['components']))
+        # A fake qualification unit must not replace immutable legacy evidence.
+        forged = dict(units[0], id='qualification--site_16--tool0', stage_id='qualification',
+                      arm='site_16', generator='tool0')
+        self.dump(self.root / 'control/independent.json', {
+            'schema_version': 1, 'mode': 'independent_generators', 'units': [*units, forged]})
+        with self.assertRaisesRegex(ValueError, 'unregistered independent unit'):
+            self.collect(records)
+
     def stage_control(self):
         definition = json.loads(self.manifest_path.read_text())
         path = self.root / 'control/stages/tier1.json'

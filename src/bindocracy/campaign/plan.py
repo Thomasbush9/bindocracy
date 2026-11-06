@@ -567,3 +567,113 @@ def load_plan(path: str | Path, verify: bool = True) -> dict:
         return plan
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise PlanError(f"cannot load campaign plan {path}: {error}") from error
+
+
+def build_continuation_plan(
+    original_plan: str | Path, generator: str, output_dir: str | Path,
+    database: str | Path, approved_revision: str | Path,
+) -> dict:
+    """Freeze a single-generator execution without rebinding or rewriting runs.
+
+    The revision names original plan digests and explicit source-only hash
+    transitions. Historical identity and every scientific artifact remain
+    checked; the new plan has its own ordinary, fully verified digest.
+    """
+    original_path = Path(original_plan).resolve()
+    revision_path = Path(approved_revision).resolve()
+    directory = Path(output_dir).resolve()
+    database = Path(database).resolve()
+    original = load_plan(original_path, verify=False)
+    revision = json.loads(revision_path.read_text())
+    if (revision.get("schema_version") != 1 or
+            revision.get("mode") != "independent_generators" or
+            revision.get("original_plans", {}).get(str(original_path)) != original["digest"]):
+        raise PlanError("approved execution revision does not identify this original plan")
+    changes = {}
+    for change in revision.get("changes", []):
+        path = str(Path(change["path"]).resolve())
+        if path in changes:
+            raise PlanError(f"duplicate approved source transition: {path}")
+        changes[path] = change
+
+    def transitioned(path, before, after):
+        if before == after:
+            return after
+        change = changes.get(str(path))
+        normalize = lambda value: value.removeprefix("sha256:") if value else None
+        if (change is None or normalize(change.get("before_sha256")) != normalize(before)
+                or normalize(change.get("after_sha256")) != normalize(after)):
+            raise PlanError(f"unapproved execution source transition: {path}")
+        return after
+
+    trees = {}
+    for root, old_tree in original["source_trees"].items():
+        current = _tree(Path(root))
+        for relative in old_tree.keys() | current.keys():
+            transitioned(Path(root) / relative, old_tree.get(relative), current.get(relative))
+        trees[root] = current
+    references = dict(original["referenced_inputs"])
+    for filename, before in references.items():
+        source = Path(filename)
+        # Only Python execution source can change; configs, inputs and binaries cannot.
+        if source.suffix == ".py" and any(source.is_relative_to(root) for root in trees):
+            references[filename] = transitioned(source, before, _hash(source))
+    current = {**original, "source_trees": trees, "referenced_inputs": references}
+    _verify(current)
+    runs = [run for run in original["runs"] if run["tool"] == generator]
+    if not runs or any(run["kind"] != "generate" for run in runs):
+        raise PlanError("continuations require a nonempty single generation tool")
+    provenance = {
+        "original_plan": str(original_path), "original_digest": original["digest"],
+        "generator": generator, "approved_revision": str(revision_path),
+        "approved_revision_sha256": _hash(revision_path),
+    }
+    plan_path = directory / "plan.json"
+    if plan_path.exists():
+        existing = load_plan(plan_path)
+        if existing.get("continuation") != provenance or existing["database"] != str(database):
+            raise PlanError("continuation request differs from the frozen execution")
+        return existing
+    if directory.exists() and any(directory.iterdir()):
+        raise PlanError(f"incomplete continuation planning requires inspection: {directory}")
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / ".planning").open("x"):
+        pass
+    snakefile = directory / "Snakefile"
+    shutil.copyfile(original["snakefile"], snakefile)
+    workflow = yaml.safe_load(Path(original["workflow_index"]).read_text())
+    names = {run["name"] for run in runs}
+    workflow.update(database=str(database), campaign_plan=str(plan_path),
+                    runs=[run for run in workflow["runs"] if run["name"] in names])
+    workflow_path = directory / "workflow.yaml"
+    workflow_path.write_text(yaml.safe_dump(workflow, sort_keys=False))
+    total = sum(run["tasks"] for run in runs)
+    cap = min(96, total)
+    if original["site"]["controller"]["gpus"] != 0:
+        raise PlanError("independent generation requires CPU-only controllers")
+    site = Site.model_validate({
+        **original["site"], "worker_qos": "kemp_id59", "latency_wait": 600,
+        "max_workers": cap, "max_total_gpus": cap,
+    }).model_dump(mode="json", exclude_none=True)
+    artifacts = {**original["artifacts"], str(snakefile): _hash(snakefile),
+                 str(workflow_path): _hash(workflow_path)}
+    references.update({str(original_path): _hash(original_path),
+                       str(revision_path): _hash(revision_path)})
+    plan = {
+        **current, "plan_dir": str(directory), "snakefile": str(snakefile),
+        "workflow_index": str(workflow_path), "database": str(database),
+        "runs": runs, "site": site, "artifacts": artifacts,
+        "referenced_inputs": references, "continuation": provenance,
+        "budget": {
+            **original["budget"], "total_tasks": total,
+            "max_workers": cap, "max_total_gpus": cap, "worker_gpu_budget": cap,
+            "largest_worker_gpus": max(run["resources"]["gpu"] for run in runs),
+            "largest_worker_cpus": max(run["resources"]["cpus_per_task"] for run in runs),
+            "largest_worker_mem_mb": max(run["resources"]["mem_mb"] for run in runs),
+        },
+    }
+    plan["digest"] = _identity(plan)
+    _verify(plan)
+    write_json_atomic(plan_path, plan)
+    (directory / ".planning").unlink()
+    return plan

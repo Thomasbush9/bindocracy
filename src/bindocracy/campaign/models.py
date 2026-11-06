@@ -28,3 +28,4 @@ class Site(ConfigModel):
     max_total_gpus: int = Field(ge=0, strict=True)
     nofile: int = Field(default=65536, ge=1024, strict=True)
     latency_wait: int = Field(default=60, ge=0, strict=True)
+    worker_qos: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]+$")

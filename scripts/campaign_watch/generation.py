@@ -226,6 +226,93 @@ class GenerationCampaign:
         # is never trusted: recover counts from the current canonical file instead.
         return self.read_collected(source)
 
+    def _plan_sources(self, definition):
+        """Normalize live schemas before reading the shared native plan/task evidence."""
+        sources = {tier['id']: [] for tier in definition['tiers']}
+        self.component_controls = {}
+        self.stage_controls = {}
+        independent = self.read(self.root / 'control/independent.json', optional=True,
+                                limit=1024 * 1024)
+        self.independent = independent is not None
+        if self.independent:
+            if independent.get('schema_version') != 1 or independent.get('mode') != 'independent_generators':
+                raise ValueError('unsupported independent generation index')
+            units = independent['units']
+            if not isinstance(units, list) or not 0 < len(units) <= MAX_COMPONENTS:
+                raise ValueError('independent unit-count bound exceeded')
+            seen_ids, history = set(), set()
+            production = {key for key in self.cells if key[0] != 'qualification'}
+            for unit in units:
+                key = (unit['stage_id'], unit['arm'], unit['generator'])
+                if key not in production or key in self.component_controls or unit['id'] in seen_ids:
+                    raise ValueError('duplicate or unregistered independent unit')
+                if unit['id'] != '--'.join(key):
+                    raise ValueError('independent unit identity mismatch')
+                seen_ids.add(unit['id'])
+                for field in ('plan', 'status_path', 'database'):
+                    if not Path(unit[field]).is_absolute():
+                        raise ValueError('independent metadata paths must be absolute')
+                    inside(self.root, unit[field])
+                status = self.read(inside(self.root, unit['status_path']), optional=True, limit=65536)
+                if status is None:
+                    status = {'state': 'unknown', 'error': 'Component status unavailable; not proof of completion.'}
+                else:
+                    if status.get('state') not in ('planned', 'queued', 'running', 'complete', 'failed'):
+                        raise ValueError('invalid independent component state')
+                    for field, value in zip(('stage_id', 'arm', 'generator'), key):
+                        if status.get(field, value) != value:
+                            raise ValueError('independent component identity mismatch')
+                    if status.get('id', unit['id']) != unit['id']:
+                        raise ValueError('independent component identity mismatch')
+                    for field in ('job_id', 'native_controller_job_id'):
+                        job_id = status.get(field)
+                        if job_id is not None:
+                            if not re.fullmatch(r'[0-9]+', str(job_id)):
+                                raise ValueError(f'invalid component control {field}')
+                            self.job_ids.add(str(job_id))
+                self.component_controls[key] = status
+                sources[key[0]].append({
+                    'arm': key[1], 'root': self.root, 'plan': inside(self.root, unit['plan']),
+                    'generator': key[2]})
+                if unit.get('original_plan'):
+                    original = inside(self.root, unit['original_plan'])
+                    identity = (key[0], key[1], original)
+                    if identity not in history:
+                        history.add(identity)
+            if set(self.component_controls) != production:
+                raise ValueError('independent units do not cover registered production components')
+            # Old journals retain GPU allocations that were not resubmitted. Their
+            # controls are historical, but run/task/allocation identities are shared.
+            for tier, arm, path in sorted(history):
+                sources[tier].append({'arm': arm, 'root': self.root, 'plan': path})
+        for tier in definition['tiers']:
+            if self.independent and tier['id'] != 'qualification':
+                continue
+            bundle = inside(self.root, tier['bundle_root'])
+            if tier.get('control_status'):
+                status = self.read(inside(self.root, tier['control_status']), optional=True, limit=65536)
+                if status is not None:
+                    if status.get('stage_id') != tier['id'] or status.get('state') not in (
+                            'planned', 'queued', 'running', 'complete', 'failed'):
+                        raise ValueError('invalid generation stage control identity/state')
+                    for field in ('job_id', 'dependency_job_id'):
+                        if status.get(field) is not None and not re.fullmatch(r'[0-9]+', str(status[field])):
+                            raise ValueError(f'invalid stage control {field}')
+                    self.stage_controls[tier['id']] = status
+                    if status.get('job_id'):
+                        self.job_ids.add(str(status['job_id']))
+            control = self.read(bundle / 'control/status.json', optional=True) or {}
+            arms = control.get('stages', {}).get('generate', {})
+            for arm in tier['arms']:
+                if not any(key[:2] == (tier['id'], arm) for key in self.cells):
+                    raise ValueError('registered arm has no components')
+                entry = arms.get(arm, {})
+                self.arm_states[(tier['id'], arm)] = entry.get('state')
+                sources[tier['id']].append({
+                    'arm': arm, 'root': bundle, 'plan': inside(bundle, entry.get('plan') or
+                        f'control/plans/{arm}/generate/plan.json')})
+        return sources
+
     def prepare(self):
         self.files, self.bytes, self.visited = 0, 0, set()
         definition = self.read(self.manifest, limit=1024 * 1024)
@@ -254,33 +341,17 @@ class GenerationCampaign:
             self.cells[key] = item
         self.tasks, self.jobs, self.job_ids = [], {}, set()
         self.runs = {}
-        self.stage_controls = {}
+        sources = self._plan_sources(definition)
         seen_runs, seen_status = {}, set()
         for tier in tiers:
-            bundle = inside(self.root, tier['bundle_root'])
-            if tier.get('control_status'):
-                status = self.read(inside(self.root, tier['control_status']), optional=True, limit=65536)
-                if status is not None:
-                    if status.get('stage_id') != tier['id'] or status.get('state') not in (
-                            'planned', 'queued', 'running', 'complete', 'failed'):
-                        raise ValueError('invalid generation stage control identity/state')
-                    for field in ('job_id', 'dependency_job_id'):
-                        if status.get(field) is not None and not re.fullmatch(r'[0-9]+', str(status[field])):
-                            raise ValueError(f'invalid stage control {field}')
-                    self.stage_controls[tier['id']] = status
-                    if status.get('job_id'):
-                        self.job_ids.add(str(status['job_id']))
-            control = self.read(bundle / 'control' / 'status.json', optional=True) or {}
-            arms = control.get('stages', {}).get('generate', {})
-            for arm in tier['arms']:
-                if not any(key[:2] == (tier['id'], arm) for key in self.cells):
-                    raise ValueError('registered arm has no components')
-                entry = arms.get(arm, {})
-                self.arm_states[(tier['id'], arm)] = entry.get('state')
-                plan_path = inside(bundle, entry.get('plan') or
-                                   f'control/plans/{arm}/generate/plan.json')
-                plan = self.read(plan_path, optional=True)
+            for source in sources[tier['id']]:
+                bundle, arm = source['root'], source['arm']
+                plan = self.read(source['plan'], optional=True)
                 if plan is None:
+                    if source.get('generator'):
+                        key = (tier['id'], arm, source['generator'])
+                        self.component_controls[key] = dict(
+                            self.component_controls[key], plan_missing=True)
                     continue
                 plan_dir = inside(bundle, plan['plan_dir'])
                 journal = self.read(plan_dir / 'control' / 'journal.json', optional=True) or {}
@@ -293,6 +364,8 @@ class GenerationCampaign:
                     key = (tier['id'], arm, manifest['tool'])
                     if key not in self.cells:
                         raise ValueError(f'unregistered generator in plan: {key}')
+                    if source.get('generator') and manifest['tool'] != source['generator']:
+                        raise ValueError('independent plan contains another generator')
                     if manifest.get('kind') != 'generate' or manifest.get('arm') not in (None, arm):
                         raise ValueError('run kind/arm differs from registered generation plan')
                     directory = inside(bundle, manifest['run_dir'])
@@ -415,6 +488,42 @@ class GenerationCampaign:
             cell['throughput_per_hour'] = (
                 sum(count for _, count in samples) * 3600 * len(running)
                 / sum(elapsed for elapsed, _ in samples))
+
+    def _component_evidence(self, key, records, scheduler_error):
+        control = self.component_controls[key]
+        state = control['state']
+        supervisor = control.get('job_id')
+        native = control.get('native_controller_job_id')
+        evidence = []
+        for label, job_id in (('supervisor', supervisor), ('native controller', native)):
+            if job_id is not None:
+                record = records.get((str(job_id), -1), {}) if not scheduler_error else {}
+                evidence.append(f"{label} {job_id}: {record.get('state', 'UNKNOWN')}")
+                if (state != 'failed' and (state != 'complete' or label == 'native controller')
+                        and record.get('state') in TERMINAL and (
+                            record['state'] != 'COMPLETED' or record.get('exit') not in (None, '0:0'))):
+                    state = 'failed'
+        if state in ('running', 'queued'):
+            job_id = native or supervisor
+            record = records.get((str(job_id), -1), {}) if not scheduler_error else {}
+            if record.get('current') and record.get('state') in ALLOCATED:
+                state = 'running'
+            elif record.get('current') and record.get('state') in PENDING:
+                state = 'queued'
+            else:
+                state = 'unknown'
+        if control.get('plan_missing') and state == 'complete':
+            state = 'unknown'
+        message = f"Independent unit {'--'.join(key)}: {state}."
+        if evidence:
+            message += ' CPU ' + '; '.join(evidence) + '; excluded from worker/GPU totals.'
+        if control.get('error'):
+            message += f" {str(control['error'])[:300]}"
+        if control.get('plan_missing'):
+            message += ' Native plan unavailable; not proof of completion.'
+        return {'state': state, 'warning': message,
+                'phase': {'failed': 'blocked', 'running': 'preparing', 'queued': 'queued',
+                          'planned': 'planned', 'complete': 'generated'}.get(state, 'unknown')}
 
     def control_evidence(self, tier_id, records, scheduler_error):
         control = self.stage_controls.get(tier_id)
@@ -573,7 +682,8 @@ class GenerationCampaign:
                 cell['warnings'].append(f'Scheduler unavailable: {scheduler_error}')
             if self.arm_states.get(key[:2]) != 'failed' and not collection_incomplete:
                 self.calibrate_eta(cell, tasks, task_jobs, records, scheduler_error)
-            control = controls[key[0]]
+            control = (self._component_evidence(key, records, scheduler_error)
+                       if key in self.component_controls else controls[key[0]])
             if control:
                 cell['warnings'].append(control['warning'])
                 if not cell['tasks_observed'] or (
@@ -583,6 +693,20 @@ class GenerationCampaign:
                                 phase=control['phase'])
                 if control['state'] == 'failed':
                     cell['eta_seconds'] = cell['throughput_per_hour'] = None
+                if key in self.component_controls:
+                    if control['state'] == 'failed':
+                        cell.update(state='needs_attention',
+                                    phase='partial' if cell['reported_produced'] else 'blocked')
+                    elif control['state'] == 'unknown' and not cell['running_jobs'] and not cell['pending_jobs']:
+                        cell.update(state='unknown', phase='unknown')
+                    elif control['state'] in ('running', 'queued') and not cell['running_jobs'] and not cell['pending_jobs']:
+                        cell.update(state=control['state'], phase=control['phase'])
+                    elif control['state'] == 'complete' and cell['state'] == 'not_submitted':
+                        cell.update(state='unknown', phase='unknown')
+                    if control['state'] != 'complete' and cell['state'] == 'complete':
+                        cell.update(state='unknown', phase='unknown')
+                    if control['state'] in ('failed', 'unknown'):
+                        cell['eta_seconds'] = cell['throughput_per_hour'] = None
         for tier in self.definition['tiers']:
             children = [cell for key, cell in cells.items() if key[0] == tier['id']]
             item = reported_stage(tier['id'], tier['name'], sum(cell['planned'] for cell in children))
@@ -609,6 +733,12 @@ class GenerationCampaign:
                 item['phase'] = 'ingested' if all(cell['phase'] == 'ingested' for cell in children) else 'generated'
             if item['counts_reported_tasks'] < item['tasks_observed']:
                 item['warnings'].append('Some task counts are unavailable; canonical run totals are used where available, without inferring task distribution.')
+            if self.independent and tier['id'] != 'qualification':
+                for cell in children:
+                    if cell['state'] == 'needs_attention':
+                        item['warnings'].append(
+                            f"{cell['arm']}/{cell['generator']}: {cell['phase']}; "
+                            'other units proceed independently.')
             control = controls[tier['id']]
             if control:
                 item['warnings'].append(control['warning'])

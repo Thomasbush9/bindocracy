@@ -388,6 +388,41 @@ def test_detail_pane_separates_evidence_phase_tasks_and_identifiers(monkeypatch)
     asyncio.run(exercise())
 
 
+def test_independent_failed_unit_remains_visible_beside_running_unit(monkeypatch):
+    async def exercise():
+        app = OfflineWatch("same-snapshot.json", None, 30)
+        async with app.run_test(size=(200, 50)) as pilot:
+            failed = component(generator="protein_hunter", state="needs_attention", phase="blocked",
+                               warnings=["Independent unit tier1--arm00--protein_hunter: failed. "
+                                         "MissingOutputException: task0146; CPU supervisor 200 "
+                                         "excluded from worker/GPU totals."])
+            running = component(generator="boltzgen", state="running", phase="generating",
+                                reported_produced=10, running_jobs=1, active_gpus=1,
+                                job_ids=["901"], tasks_observed=2, counts_reported_tasks=1)
+            tier = generation_stage(components=[failed, running])
+            tier.update(state="running", phase="generating", running_jobs=1, active_gpus=1)
+            item = dict(campaign("generation", [tier]), kind="bindocracy_generation")
+            app.snapshot = tui.validate_snapshot(snapshot(item))
+            assert not app.snapshot["errors"]
+            app.render_snapshot()
+            await pilot.press("l", "l", "l")
+            assert app.level == "generators"
+            assert [(row["state"], row["active_gpus"]) for row in app.visible_records()] == [
+                ("needs_attention", 0), ("running", 1)]
+            messages = []
+            monkeypatch.setattr(app.query_one("#details"), "update", messages.append)
+            app.render_details()
+            assert "MissingOutputException: task0146" in messages[-1]
+            assert "Phase: blocked" in messages[-1]
+            assert "excluded from worker/GPU totals" in messages[-1]
+            await pilot.press("j")
+            app.render_details()
+            assert "Phase: generating" in messages[-1]
+            assert "Job IDs: 901" in messages[-1]
+            assert "10/100 designs (reported)" in messages[-1]
+    asyncio.run(exercise())
+
+
 def test_generation_task_eta_accepts_calibration_without_inventing_arm_eta():
     child = component(state="running", phase="generating", running_jobs=1, active_gpus=1,
                       eta_seconds=1800, eta_sample_count=5,

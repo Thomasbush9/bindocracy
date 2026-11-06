@@ -146,6 +146,15 @@ harness trusted `sacct`, an hour of correct GPU work would have been discarded.
 parse*, with exit status as corroboration only. The adapter from §3 already knows
 what those artifacts are, so it should own the predicate.
 
+Workflow completion markers are not native scientific outputs. The harness now
+persists a manifest-bound receipt in `.task-completions/` after native execution,
+outside Snakemake's task-output cleanup. Controller startup and recovery can
+restore an absent `status.json` from that receipt without recomputation. Recovery
+refuses changed manifests/inputs, conflicting statuses, or a successful receipt
+whose declared native output is missing; partial and failed outcomes remain such.
+Marker and receipt writes flush file contents and directory renames. This improves
+durability but does not guarantee immediate cross-node filesystem visibility.
+
 ## 7. Images are not self-describing: probe capability, don't read the manifest
 
 A weight audit that asks only "are the checkpoints present" passes both of the
@@ -387,6 +396,41 @@ always the same as peak utilisation.
   a fixed-prefix rerun overwrites instead of silently no-oping; Protein-Hunter
   has no seed at all, so its runs are **not reproducible and cannot be split
   across jobs**.
+- **Failure isolation follows generator/arm identity.** Independent generation
+  plans use separate controllers and databases, rather than a shared writer or
+  wave-wide success dependency. Controllers use `--keep-going` so one missing
+  output does not prevent independent tasks in the same workflow from running.
+  The DIO3 supervisors preserve failed-unit evidence and continue unrelated work;
+  they never turn a missing result into success or automatically repeat native
+  GPU computation.
+- **Independent queues still need one enforced resource ceiling.** A frozen
+  site's `worker_qos` is applied to every worker submission. DIO3 verifies that
+  `kemp_id59` enforces a shared 96-GPU limit before independent submission.
+  Per-controller concurrency limits alone cannot enforce a campaign-wide cap.
+- **Do not patch an active execution source tree.** Frozen plans deliberately
+  reject source drift. Changes need an explicit, versioned continuation, not a
+  live edit that invalidates unrelated running generators.
+
+When `<registered root>/control/independent.json` exists, its version-1
+`independent_generators` index is the authoritative production control source.
+The registration and snapshot paths stay unchanged. Each indexed
+`(stage_id, arm, generator)` reads its own native `plan`, component `status_path`,
+and task/count evidence through the same bounded adapter used for older campaigns.
+The index must cover every registered production component, not qualification.
+The existing `qualification` tier retains its original read-only bundle/stage
+evidence; independent qualification units are rejected and no new qualification
+plans, databases, or execution are introduced.
+Component records expose `state`, supervisor `job_id`, `native_controller_job_id`,
+and `error`; both CPU job types stay outside worker/GPU totals. Referenced
+`original_plan` journals retain historical workers, deduplicated by allocation ID,
+while reused run/task identities are counted once. Original stage failures do not
+block independent units in the display. A failed unit remains visible with its
+error in generator details while its stage can still show other units running;
+zero worker failures or a missing completion/count marker never establishes
+success. Index, status, plan, and history paths must remain within the registered
+root, and existing file/byte/task bounds apply. Without this index, original
+bundle/stage controls continue to supply the live input.
+
 
 ---
 

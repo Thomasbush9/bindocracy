@@ -11,6 +11,7 @@ import os
 import re
 import stat
 import statistics
+from datetime import datetime, timezone
 from pathlib import Path
 
 from collector import (
@@ -31,6 +32,8 @@ MAX_FILES = 25000
 MAX_BYTES = 64 * 1024 * 1024
 MAX_COMPONENTS = 256
 COLLECTED_LIMIT = 1024 * 1024
+RECOVERY_MAX_AGE = 15 * 60
+RECOVERY_JOB_LIMIT = 1024
 RUN_PREFIX = re.compile(
     rb'\A\s*\{\s*"bundle_version"\s*:\s*1\s*,\s*"collected"\s*:\s*\{\s*"run"\s*:\s*(?=\{)'
 )
@@ -313,6 +316,128 @@ class GenerationCampaign:
                         f'control/plans/{arm}/generate/plan.json')})
         return sources
 
+    def _recovery_sources(self):
+        """Read only explicitly indexed summaries; never inspect native recovery output."""
+        self.recovery_controls = {}
+        self.recovery_job_ids = set()
+        try:
+            index = self.read(self.root / 'control/recovery/index.json', limit=1024 * 1024)
+        except FileNotFoundError:
+            return
+        if (not isinstance(index, dict) or index.get('schema_version') != 1
+                or Path(index['campaign_root']).resolve() != self.root):
+            raise ValueError('invalid recovery index schema/campaign root')
+        units = index['units']
+        if not isinstance(units, list) or len(units) > MAX_COMPONENTS:
+            raise ValueError('recovery unit-count bound exceeded')
+        seen = set()
+        task_keys = {task['identity']: task['key'] for task in self.tasks}
+        for unit in units:
+            key = (unit['stage_id'], unit['arm'], unit['generator'])
+            if (key not in self.component_controls or key in seen
+                    or unit['id'] != '--'.join(key)):
+                raise ValueError('duplicate or unregistered recovery unit identity')
+            seen.add(key)
+            if nonnegative(unit['target'], 'recovery target') != self.cells[key]['planned']:
+                raise ValueError('recovery target differs from original nominal target')
+            expected = self.root / 'control/recovery/components' / f"{unit['id']}.json"
+            # Require the declared location, then separately check resolved symlinks.
+            if Path(unit['status_path']) != expected:
+                raise ValueError('recovery status path differs from registered component location')
+            try:
+                status = self.read(inside(self.root, expected), limit=65536)
+                if status.get('schema_version') != 1:
+                    raise ValueError('invalid recovery status schema')
+                for field in ('id', 'stage_id', 'arm', 'generator', 'target'):
+                    if status.get(field) != unit[field]:
+                        raise ValueError(f'recovery status {field} mismatch')
+                nonnegative(status['target'], 'recovery status target')
+                if status['state'] not in ('planned', 'qualifying', 'running', 'complete', 'blocked', 'failed'):
+                    raise ValueError('invalid recovery state')
+                nonnegative(status['retained_raw_candidates'], 'retained raw candidates')
+                nonnegative(status['completed_batches'], 'completed recovery batches')
+                if (not isinstance(status['count_basis'], str)
+                        or not status['count_basis'].strip() or len(status['count_basis']) > 1000):
+                    raise ValueError('invalid recovery count basis')
+                if status['error'] is not None and not isinstance(status['error'], str):
+                    raise ValueError('invalid recovery error')
+                ids = status['active_job_ids']
+                if (not isinstance(ids, list) or len(ids) > RECOVERY_JOB_LIMIT
+                        or any(not isinstance(job_id, str)
+                               or not re.fullmatch(r'[0-9]{1,20}', job_id) for job_id in ids)
+                        or len(set(ids)) != len(ids)):
+                    raise ValueError('invalid recovery GPU allocation IDs')
+                if any(job_id in self.recovery_job_ids or (
+                        job_id in self.jobs and task_keys[self.jobs[job_id]] != key) for job_id in ids):
+                    raise ValueError('recovery allocation belongs to multiple units')
+                updated = datetime.fromisoformat(status['updated_at'].replace('Z', '+00:00'))
+                if updated.tzinfo is None:
+                    raise ValueError('recovery timestamp requires timezone')
+                age = (datetime.now(timezone.utc) - updated).total_seconds()
+                if age < -60:
+                    raise ValueError('recovery timestamp is in the future')
+                if status['state'] == 'complete' and (
+                        status['retained_raw_candidates'] < status['target'] or ids or status['error']):
+                    raise ValueError('recovery completion contradicts count, active jobs, or error')
+                # Terminal output counts remain valid after the supervisor exits.
+                # Nonterminal summaries need a heartbeat, even without active GPUs.
+                status = dict(status)
+                if status['state'] != 'complete' and age > RECOVERY_MAX_AGE:
+                    status.update(state='unknown', error='Recovery status stale (older than 15 minutes).')
+                self.recovery_job_ids.update(ids)
+                if len(self.recovery_job_ids) > MAX_TASKS:
+                    raise ValueError('recovery allocation-count bound exceeded')
+                self.job_ids.update(ids)
+            except (ValueError, KeyError, TypeError, AttributeError, OSError) as exc:
+                status = {'state': 'unknown', 'error': f'Recovery status unavailable: {str(exc)[:300]}'}
+            self.recovery_controls[key] = status
+
+    def _apply_recovery(self, key, cell, records, scheduler_error):
+        status = self.recovery_controls[key]
+        state = status['state']
+        ids = status.get('active_job_ids', [])
+        cell.update(reported_produced=status.get('retained_raw_candidates'),
+                    phase=f'recovery_{state}', job_ids=ids,
+                    state={'planned': 'not_submitted', 'qualifying': 'running', 'running': 'running',
+                           'complete': 'complete', 'blocked': 'needs_attention',
+                           'failed': 'needs_attention'}.get(state, 'unknown'),
+                    eta_seconds=None, throughput_per_hour=None)
+        # Old task errors/counts belong to history, not the current recovery attempt.
+        cell['warnings'] = []
+        for job_id in ids:
+            record = records.get((job_id, -1), {}) if not scheduler_error else {}
+            scheduler_state = record.get('state', 'UNKNOWN')
+            if record.get('current') and scheduler_state in ALLOCATED:
+                cell['running_jobs'] += 1
+                cell['active_gpus'] += 1  # Recovery contract: individual single-GPU allocations.
+            elif record.get('current') and scheduler_state in PENDING:
+                cell['pending_jobs'] += 1
+            elif scheduler_state in TERMINAL:
+                if scheduler_state != 'COMPLETED' or record.get('exit') not in (None, '0:0'):
+                    cell['failed_jobs'] += 1
+                    cell['failed_by_state'][scheduler_state] = cell['failed_by_state'].get(scheduler_state, 0) + 1
+            else:
+                cell['unknown_jobs'] += 1
+        if state == 'running':
+            if cell['failed_jobs']:
+                cell['state'] = 'needs_attention'
+            elif cell['running_jobs']:
+                cell['state'] = 'running'
+            elif cell['pending_jobs']:
+                cell['state'] = 'queued'
+            elif ids:
+                cell['state'] = 'unknown'
+        count = cell['reported_produced']
+        cell['warnings'].append(
+            f"Recovery {'--'.join(key)}: {state}; generated {count if count is not None else '?'}/{cell['planned']}; "
+            f"completed batches {status.get('completed_batches', '?')}; "
+            f"active GPU jobs: {', '.join(ids) or 'none'}. "
+            f"Count basis: {status.get('count_basis', 'unavailable')}; includes original and recovery outputs, not added twice.")
+        if status.get('error'):
+            cell['warnings'].append(f"Recovery error: {status['error'][:1000]}")
+        if scheduler_error and ids:
+            cell['warnings'].append(f'Scheduler unavailable: {scheduler_error}')
+
     def prepare(self):
         self.files, self.bytes, self.visited = 0, 0, set()
         definition = self.read(self.manifest, limit=1024 * 1024)
@@ -440,12 +565,14 @@ class GenerationCampaign:
                         if len(self.jobs) > MAX_TASKS:
                             raise ValueError('generation worker-allocation bound exceeded')
                         self.job_ids.add(job_id)
+        self._recovery_sources()
         self.cache = {path: value for path, value in self.cache.items() if path in self.visited}
         self.definition = definition
 
     def gpu_keys(self):
         tasks = {task['identity']: task for task in self.tasks}
-        return {(job_id, -1) for job_id, identity in self.jobs.items() if tasks[identity]['gpus'] > 0}
+        return ({(job_id, -1) for job_id, identity in self.jobs.items() if tasks[identity]['gpus'] > 0}
+                | {(job_id, -1) for job_id in self.recovery_job_ids})
 
     def empty(self):
         return {'id': str(self.root), 'name': self.name, 'root': str(self.root),
@@ -579,6 +706,8 @@ class GenerationCampaign:
         tasks_by_cell = {}
         counted_runs = set()
         for task in self.tasks:
+            if task['key'] in self.recovery_controls:
+                continue
             cell = cells[task['key']]
             tasks_by_cell.setdefault(task['key'], []).append(task)
             if task['warning'] and task['warning'] not in cell['warnings']:
@@ -623,6 +752,9 @@ class GenerationCampaign:
                 cell['failed_jobs'] += 1
                 cell['failed_by_state']['TASK_FAILED'] = cell['failed_by_state'].get('TASK_FAILED', 0) + 1
         for key, cell in cells.items():
+            if key in self.recovery_controls:
+                self._apply_recovery(key, cell, records, scheduler_error)
+                continue
             tasks = tasks_by_cell.get(key, [])
             collection_incomplete = any(
                 self.runs[run_id].get('status') in ('partial', 'failed')
@@ -731,6 +863,8 @@ class GenerationCampaign:
                              'preparing' if any(cell['phase'] == 'preparing' for cell in children) else 'planned')
             if all(cell['phase'] in ('generated', 'ingested') for cell in children):
                 item['phase'] = 'ingested' if all(cell['phase'] == 'ingested' for cell in children) else 'generated'
+            if any(cell['phase'].startswith('recovery_') for cell in children):
+                item['phase'] = f"recovery_{item['phase']}"
             if item['counts_reported_tasks'] < item['tasks_observed']:
                 item['warnings'].append('Some task counts are unavailable; canonical run totals are used where available, without inferring task distribution.')
             if self.independent and tier['id'] != 'qualification':

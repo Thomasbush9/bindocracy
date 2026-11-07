@@ -183,6 +183,35 @@ scheduler evidence. It estimates remaining **planned-task execution** at current
 concurrency, not an output quota; queue wait is excluded. Tier-wide ETA remains
 unknown. GPU utilization is campaign-scoped, not attributed to individual tools.
 
+The independent-generation recovery overlay is optional and read-only. With no
+`control/recovery/index.json`, the original view is unchanged. Index schema v1
+contains `campaign_root` (the registered absolute root) and at most 256 `units`,
+each with `id`, `stage_id`, `arm`, `generator`, `target`, and absolute `status_path`.
+IDs must match an original independent unit (`stage_id--arm--generator`), targets
+must equal its original nominal target, and status paths must be exactly
+`<root>/control/recovery/components/<id>.json`, without escaping-root symlinks.
+Each status (at most 64 KiB) repeats schema version and identity/target and supplies
+`state` (`planned`, `qualifying`, `running`, `complete`, `blocked`, or `failed`),
+nonnegative integer `retained_raw_candidates` and `completed_batches`,
+`active_job_ids` (at most 1,024 unique individual single-GPU allocation ID strings,
+not controller or array IDs), nullable text `error`, timezone-aware ISO8601
+`updated_at`, and nonempty text `count_basis`.
+
+The publisher's retained count includes original output plus terminal immutable
+recovery batches; it **replaces**, rather than adds to, original counts. Recovery
+phases, generated/target, active allocations, batch count, count basis and errors
+appear through existing snapshot fields/details. Raw overshoot remains visible,
+but recovery progress is capped at 100%. Old failures do not override recovery;
+new allocation IDs join the existing scheduler and GPU accounting queries.
+Recovery ETA is unavailable: old task timing is not a calibration for new batches.
+Non-complete statuses expire after 15 minutes without a heartbeat; timestamps over
+60 seconds in the future are rejected. Valid `complete` statuses are durable after
+the supervisor exits, but require count >= target, no active allocations, and no
+error. The publisher must use terminal original runs and immutable finished
+batches for that completion claim. Missing, malformed, stale or contradictory
+status never implies completion. No recovery directory scans, native candidate
+counts, job commands or local-TUI protocol changes are performed.
+
 ### Scope and safety
 
 Snapshot schema v2 supports generation and Mosaic; the TUI still accepts v1 Mosaic

@@ -366,6 +366,8 @@ def progress(stage: dict) -> str:
     if planned is None or planned == 0:
         return "n/a"
     fraction = total / planned
+    if "recovery_" in stage.get("phase", ""):
+        fraction = min(1, fraction)
     filled = min(10, int(10 * fraction))
     return f"[{'#' * filled}{'.' * (10 - filled)}] {fraction:.0%}"
 

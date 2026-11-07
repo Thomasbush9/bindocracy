@@ -107,6 +107,15 @@ def test_generation_unknown_and_overshoot_are_not_validated_counts():
     assert tui.progress(record) == "n/a"
 
 
+def test_recovery_progress_is_bounded_without_hiding_raw_overshoot():
+    record = generation_stage(components=[component()])
+    record.update(planned=100, reported_produced=125, phase="recovery_complete")
+    assert tui.progress(record) == "[##########] 100%"
+    assert tui.units(record) == "125/100 designs (reported)"
+    record["phase"] = "mixed: recovery_complete, generated"
+    assert tui.progress(record) == "[##########] 100%"
+
+
 def test_arm_aggregate_retains_partial_coverage_and_failure_state():
     known = component("arm", "tool0", reported_produced=120, state="needs_attention", phase="partial",
                       tasks_observed=2, counts_reported_tasks=1, partial_jobs=1,

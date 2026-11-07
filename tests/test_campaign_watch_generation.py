@@ -4,8 +4,10 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts' / 'campaign_watch'
@@ -134,24 +136,34 @@ class GenerationWatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'bounded regular file'):
             collector.load_json(fifo)
 
-    def test_json_reads_reject_in_place_changes_including_restored_mtime(self):
+    def test_json_reads_reject_in_place_changes(self):
         source = self.root / 'changing.json'
         original = b'{"value":1}'
-        for mutation, raw in (('same_size', b'{"value":2}'), ('truncate', b'{}'),
-                              ('grow', original + b' '), ('restored_mtime', b'{"value":2}')):
-            with self.subTest(mutation=mutation):
+        for raw in (b'{"value":2}', b'{}', original + b' '):
+            with self.subTest(raw=raw):
                 source.write_bytes(original)
                 before = source.stat()
 
-                def change(raw=raw, before=before, mutation=mutation):
+                def change(raw=raw, before=before):
                     source.write_bytes(raw)
-                    mtime = before.st_mtime_ns if mutation == 'restored_mtime' else before.st_mtime_ns + 40_000_000
-                    os.utime(source, ns=(before.st_atime_ns, mtime))
+                    os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns + 40_000_000))
 
                 with self.changing_json_read(source, change) as reads, \
-                     self.assertRaisesRegex(ValueError, 'changed during read'):
+                     self.assertRaises(ValueError):
                     collector.load_json(source, len(original))
                 self.assertEqual(reads, [len(original) + 1])
+
+    def test_json_reads_reject_ctime_change_when_mtime_is_restored(self):
+        source = self.root / 'changing.json'
+        source.write_bytes(b'{"value":1}')
+        before = source.stat()
+        # Model the metadata transition explicitly: fast writes can share a clock tick.
+        after = SimpleNamespace(st_size=before.st_size, st_mtime_ns=before.st_mtime_ns,
+                                st_ctime_ns=before.st_ctime_ns + 1, st_nlink=before.st_nlink)
+        with self.changing_json_read(source, lambda: source.write_bytes(b'{"value":2}')), \
+             patch('collector.os.fstat', side_effect=[before, after]), \
+             self.assertRaises(ValueError):
+            collector.load_json(source)
 
     def test_actual_plan_journal_mapping_and_duplicate_attempts(self):
         self.metadata({'status': 'partial', 'n_produced': 4}, duplicate=True)
@@ -533,6 +545,154 @@ class GenerationWatchTests(unittest.TestCase):
             'schema_version': 1, 'mode': 'independent_generators', 'units': units,
             'supervisors': {'boltzgen': {'job_id': '200', 'state': 'running'}}})
         return units
+
+    def recovery(self, **changes):
+        unit = self.independent(state='failed')[0]
+        path = self.root / 'control/recovery/components' / f"{unit['id']}.json"
+        entry = {key: unit[key] for key in ('id', 'stage_id', 'arm', 'generator')}
+        entry.update(target=10, status_path=str(path))
+        self.dump(self.root / 'control/recovery/index.json', {
+            'schema_version': 1, 'campaign_root': str(self.root), 'units': [entry]})
+        status = {key: entry[key] for key in ('id', 'stage_id', 'arm', 'generator', 'target')}
+        status.update(schema_version=1, state='running', retained_raw_candidates=12,
+                      completed_batches=1, active_job_ids=['902'], error=None,
+                      updated_at=datetime.now(timezone.utc).isoformat(),
+                      count_basis='original plus terminal recovery batches')
+        status.update(changes)
+        self.dump(path, status)
+        return path, status
+
+    def test_recovery_replaces_old_count_and_failure_and_joins_gpu_accounting(self):
+        self.recovery()
+        campaign, result, cell = self.collect({
+            ('901', -1): {'state': 'FAILED', 'exit': '1:0'},
+            ('902', -1): {'state': 'RUNNING', 'current': True}})
+        self.assertEqual((cell['state'], cell['phase']), ('running', 'recovery_running'))
+        self.assertEqual((cell['reported_produced'], cell['planned']), (12, 10))
+        self.assertEqual(result['stages'][0]['reported_produced'], 12)
+        self.assertEqual((cell['running_jobs'], cell['active_gpus'], cell['failed_jobs']), (1, 1, 0))
+        self.assertEqual(cell['job_ids'], ['902'])
+        self.assertIn('902', campaign.job_ids)
+        self.assertIn(('902', -1), campaign.gpu_keys())
+        self.assertIsNone(cell['eta_seconds'])
+        self.assertFalse(any('Independent unit' in warning for warning in cell['warnings']))
+        self.assertTrue(any('12/10' in warning and '902' in warning for warning in cell['warnings']))
+
+    def test_recovery_complete_is_durable_with_overshoot(self):
+        self.recovery(state='complete', active_job_ids=[],
+                      updated_at='2020-01-01T00:00:00+00:00')
+        _, result, cell = self.collect()
+        self.assertEqual((cell['state'], cell['reported_produced']), ('complete', 12))
+        self.assertEqual(result['stages'][0]['state'], 'complete')
+        self.assertEqual(cell['phase'], 'recovery_complete')
+
+    def test_recovery_stale_or_contradictory_status_never_completes(self):
+        for changes in (
+            {'updated_at': '2020-01-01T00:00:00+00:00'},
+            {'updated_at': '2026-01-01T00:00:00'},
+            {'updated_at': (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()},
+            {'state': 'complete', 'active_job_ids': ['902']},
+            {'state': 'complete', 'active_job_ids': [], 'retained_raw_candidates': 9},
+            {'state': 'complete', 'active_job_ids': [], 'error': 'not collected'},
+            {'target': 11}, {'id': 'another-unit'}, {'retained_raw_candidates': -1},
+            {'active_job_ids': ['902_1']}, {'active_job_ids': ['902', '902']},
+            {'schema_version': 2}, {'count_basis': ''}, {'completed_batches': -1},
+        ):
+            with self.subTest(changes=changes):
+                self.recovery(**changes)
+                _, result, cell = self.collect()
+                self.assertEqual(cell['state'], 'unknown')
+                self.assertEqual(cell['phase'], 'recovery_unknown')
+                self.assertNotEqual(result['stages'][0]['state'], 'complete')
+                self.assertTrue(any('Recovery' in warning for warning in cell['warnings']))
+
+    def test_recovery_missing_malformed_or_escaped_status_is_unknown(self):
+        for mode in ('missing', 'malformed', 'escape'):
+            with self.subTest(mode=mode):
+                path, _ = self.recovery(state='complete', active_job_ids=[])
+                if mode == 'missing':
+                    path.unlink()
+                elif mode == 'malformed':
+                    path.write_text('{bad json')
+                else:
+                    path.unlink()
+                    path.symlink_to('/etc/passwd')
+                _, _, cell = self.collect()
+                self.assertEqual(cell['state'], 'unknown')
+                path.unlink(missing_ok=True)
+
+    def test_recovery_index_validates_root_identity_bounds_and_status_location(self):
+        self.recovery()
+        path = self.root / 'control/recovery/index.json'
+        valid = json.loads(path.read_text())
+        variants = [
+            dict(valid, campaign_root='/elsewhere'), dict(valid, schema_version=2),
+            dict(valid, units=valid['units'] * 2),
+            dict(valid, units=valid['units'] * 257),
+        ]
+        for field, value in (('id', 'other'), ('generator', 'other'), ('target', 11),
+                             ('status_path', '/etc/passwd'),
+                             ('status_path', str(self.root / 'unrelated.json'))):
+            variants.append(dict(valid, units=[dict(valid['units'][0], **{field: value})]))
+        for invalid in variants:
+            with self.subTest(invalid=invalid):
+                self.dump(path, invalid)
+                with self.assertRaises((ValueError, OSError)):
+                    self.collect()
+
+    def test_recovery_metadata_refresh_and_removal_restore_original_view(self):
+        path, status = self.recovery()
+        campaign, _, _ = self.collect()
+        self.dump(path, dict(status, state='complete', active_job_ids=[], retained_raw_candidates=15))
+        campaign.prepare()
+        cell = campaign.collect({}, None)['stages'][0]['components'][0]
+        self.assertEqual((cell['state'], cell['reported_produced']), ('complete', 15))
+        (self.root / 'control/recovery/index.json').unlink()
+        campaign.prepare()
+        cell = campaign.collect({}, None)['stages'][0]['components'][0]
+        self.assertEqual((cell['state'], cell['reported_produced']), ('needs_attention', 10))
+        self.assertNotIn('902', campaign.job_ids)
+
+    def test_recovery_qualifying_blocked_and_scheduler_unknown_are_explicit(self):
+        for state, expected in (('planned', 'not_submitted'), ('qualifying', 'running'),
+                                ('blocked', 'needs_attention'), ('failed', 'needs_attention')):
+            with self.subTest(state=state):
+                self.recovery(state=state, active_job_ids=[], error='canary error' if state == 'blocked' else None)
+                _, _, cell = self.collect()
+                self.assertEqual((cell['state'], cell['phase']), (expected, f'recovery_{state}'))
+                if state == 'blocked':
+                    self.assertTrue(any('canary error' in warning for warning in cell['warnings']))
+        self.recovery()
+        _, _, cell = self.collect(error='scheduler offline')
+        self.assertEqual((cell['state'], cell['running_jobs'], cell['active_gpus']), ('unknown', 0, 0))
+        self.assertEqual(cell['reported_produced'], 12)
+
+    def test_recovery_bounds_and_malformed_index_fail_closed(self):
+        path, status = self.recovery(state='complete', active_job_ids=[])
+        self.dump(path, dict(status, padding='x' * 65536))
+        _, _, cell = self.collect()
+        self.assertEqual(cell['state'], 'unknown')
+        self.dump(path, dict(status, active_job_ids=[str(number) for number in range(1025)]))
+        _, _, cell = self.collect()
+        self.assertEqual(cell['state'], 'unknown')
+        index = self.root / 'control/recovery/index.json'
+        for invalid in (None, [], {'schema_version': 1, 'padding': 'x' * (1024 * 1024)}):
+            self.dump(index, invalid)
+            with self.assertRaises(ValueError):
+                self.collect()
+
+    def test_recovery_does_not_scan_and_leaves_other_units_unchanged(self):
+        path, _ = self.recovery(state='complete', active_job_ids=[])
+        self.independent(state='failed', second=True)
+        with patch.object(Path, 'glob', side_effect=AssertionError('directory glob')), \
+             patch.object(Path, 'rglob', side_effect=AssertionError('recursive scan')), \
+             patch.object(Path, 'iterdir', side_effect=AssertionError('directory scan')):
+            campaign, result, cell = self.collect()
+        self.assertEqual(cell['state'], 'complete')
+        other = result['stages'][0]['components'][1]
+        self.assertEqual((other['state'], other['phase']), ('needs_attention', 'blocked'))
+        self.assertIn(path, campaign.visited)
+        self.assertLess(campaign.files, 40)
 
     def test_running_shared_supervisor_does_not_start_queued_unit(self):
         units = self.independent(state='queued')

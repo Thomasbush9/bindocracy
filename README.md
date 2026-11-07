@@ -203,6 +203,8 @@ phases, generated/target, active allocations, batch count, count basis and error
 appear through existing snapshot fields/details. Raw overshoot remains visible,
 but recovery progress is capped at 100%. Old failures do not override recovery;
 new allocation IDs join the existing scheduler and GPU accounting queries.
+Live original GPU jobs remain visible while recovery waits for their arm; queued
+canaries are shown as queued rather than running.
 Recovery ETA is unavailable: old task timing is not a calibration for new batches.
 Non-complete statuses expire after 15 minutes without a heartbeat; timestamps over
 60 seconds in the future are rejected. Valid `complete` statuses are durable after

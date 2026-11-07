@@ -418,7 +418,9 @@ class GenerationCampaign:
                     cell['failed_by_state'][scheduler_state] = cell['failed_by_state'].get(scheduler_state, 0) + 1
             else:
                 cell['unknown_jobs'] += 1
-        if state == 'running':
+        if state == 'planned' and ids:
+            cell['phase'] = 'recovery_waiting_original'
+        if state in {'planned', 'qualifying', 'running'}:
             if cell['failed_jobs']:
                 cell['state'] = 'needs_attention'
             elif cell['running_jobs']:

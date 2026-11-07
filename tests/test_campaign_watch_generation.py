@@ -578,6 +578,21 @@ class GenerationWatchTests(unittest.TestCase):
         self.assertFalse(any('Independent unit' in warning for warning in cell['warnings']))
         self.assertTrue(any('12/10' in warning and '902' in warning for warning in cell['warnings']))
 
+    def test_live_original_jobs_remain_visible_while_recovery_waits(self):
+        self.recovery(state='planned')
+        _, result, cell = self.collect({
+            ('902', -1): {'state': 'RUNNING', 'current': True}})
+        self.assertEqual(cell['state'], 'running')
+        self.assertEqual(result['stages'][0]['state'], 'running')
+        self.assertEqual((cell['running_jobs'], cell['active_gpus']), (1, 1))
+
+    def test_pending_canary_is_queued_not_running(self):
+        self.recovery(state='qualifying')
+        _, _, cell = self.collect({
+            ('902', -1): {'state': 'PENDING', 'current': True}})
+        self.assertEqual(cell['state'], 'queued')
+        self.assertEqual((cell['pending_jobs'], cell['active_gpus']), (1, 0))
+
     def test_recovery_complete_is_durable_with_overshoot(self):
         self.recovery(state='complete', active_job_ids=[],
                       updated_at='2020-01-01T00:00:00+00:00')

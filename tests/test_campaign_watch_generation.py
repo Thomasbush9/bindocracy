@@ -669,18 +669,106 @@ class GenerationWatchTests(unittest.TestCase):
         self.assertNotIn('902', campaign.job_ids)
 
     def test_recovery_qualifying_blocked_and_scheduler_unknown_are_explicit(self):
-        for state, expected in (('planned', 'not_submitted'), ('qualifying', 'running'),
+        for state, expected in (('planned', 'not_submitted'), ('qualifying', 'needs_attention'),
                                 ('blocked', 'needs_attention'), ('failed', 'needs_attention')):
             with self.subTest(state=state):
                 self.recovery(state=state, active_job_ids=[], error='canary error' if state == 'blocked' else None)
                 _, _, cell = self.collect()
-                self.assertEqual((cell['state'], cell['phase']), (expected, f'recovery_{state}'))
+                phase = 'recovery_idle' if state == 'qualifying' else f'recovery_{state}'
+                self.assertEqual((cell['state'], cell['phase']), (expected, phase))
                 if state == 'blocked':
                     self.assertTrue(any('canary error' in warning for warning in cell['warnings']))
         self.recovery()
         _, _, cell = self.collect(error='scheduler offline')
         self.assertEqual((cell['state'], cell['running_jobs'], cell['active_gpus']), ('unknown', 0, 0))
         self.assertEqual(cell['reported_produced'], 12)
+
+    def test_recovery_accounting_warning_retains_counts_and_live_queue_evidence(self):
+        self.recovery(accounting_warning='sacct failed for 903', controller_job_id='300',
+                      reconciled_at=datetime.now(timezone.utc).isoformat())
+        campaign, result, cell = self.collect({
+            ('902', -1): {'state': 'RUNNING', 'current': True},
+            ('300', -1): {'state': 'RUNNING', 'current': True}},
+            error='partial accounting failure')
+        self.assertEqual((cell['state'], cell['phase']), ('needs_attention', 'recovery_degraded'))
+        self.assertEqual((cell['reported_produced'], cell['running_jobs'], cell['active_gpus']), (12, 1, 1))
+        self.assertNotIn(('300', -1), campaign.gpu_keys())
+        self.assertEqual(result['stages'][0]['state'], 'needs_attention')
+        notes = ' '.join(cell['warnings'])
+        self.assertIn('sacct failed for 903', notes)
+
+    def test_recovery_fresh_monitor_does_not_hide_stalled_controller(self):
+        for changes, records, phase in (
+            ({'controller_warning': 'reconciliation failed'}, {}, 'recovery_degraded'),
+            ({'reconciled_at': '2020-01-01T00:00:00+00:00'}, {}, 'recovery_degraded'),
+            ({'controller_job_id': '300'}, {('300', -1): {'state': 'FAILED'}}, 'recovery_degraded'),
+            ({'controller_job_id': '300'}, {('300', -1): {'state': 'RUNNING', 'current': True}}, 'recovery_idle'),
+        ):
+            with self.subTest(changes=changes):
+                self.recovery(active_job_ids=[], retained_raw_candidates=4, **changes)
+                _, result, cell = self.collect(records)
+                self.assertIsNotNone(result['observed_at'])
+                self.assertEqual((cell['state'], cell['phase']), ('needs_attention', phase))
+                self.assertEqual((cell['reported_produced'], cell['active_gpus']), (4, 0))
+
+    def test_recovery_terminal_ids_are_not_running_and_complete_ignores_exited_controller(self):
+        self.recovery(controller_job_id='300')
+        _, _, cell = self.collect({
+            ('300', -1): {'state': 'RUNNING', 'current': True},
+            ('902', -1): {'state': 'COMPLETED', 'exit': '0:0'}})
+        self.assertEqual((cell['state'], cell['phase']), ('needs_attention', 'recovery_degraded'))
+        self.assertEqual(cell['running_jobs'], 0)
+        self.assertIn('awaiting reconciliation', ' '.join(cell['warnings']))
+        self.recovery(state='complete', active_job_ids=[], controller_job_id='300',
+                      reconciled_at='2020-01-01T00:00:00+00:00')
+        _, _, cell = self.collect({('300', -1): {'state': 'FAILED'}})
+        self.assertEqual(cell['state'], 'complete')
+
+    def test_recovery_warning_prevents_complete_without_discarding_count(self):
+        self.recovery(state='complete', active_job_ids=[], accounting_warning='history unavailable')
+        _, _, cell = self.collect()
+        self.assertEqual((cell['state'], cell['reported_produced']), ('needs_attention', 12))
+
+    def test_recovery_optional_health_fields_are_validated(self):
+        for changes in ({'accounting_warning': []}, {'controller_warning': 2},
+                        {'controller_job_id': '300_2'}, {'reconciled_at': '2020-01-01'},
+                        {'reconciled_at': '2999-01-01T00:00:00+00:00'}):
+            with self.subTest(changes=changes):
+                self.recovery(**changes)
+                _, _, cell = self.collect()
+                self.assertEqual(cell['state'], 'unknown')
+
+    def test_recovery_partial_collector_failure_is_degraded_without_publisher_warning(self):
+        self.recovery()
+        _, _, cell = self.collect({
+            ('902', -1): {'state': 'RUNNING', 'current': True}}, error='sacct unavailable')
+        self.assertEqual((cell['state'], cell['running_jobs']), ('needs_attention', 1))
+        self.assertIn('sacct unavailable', ' '.join(cell['warnings']))
+
+    def test_recovery_degraded_unit_does_not_hide_running_or_complete_units(self):
+        path, status = self.recovery(accounting_warning='history missing for arm1')
+        units = self.independent(second=True)
+        entry = {key: units[1][key] for key in ('id', 'stage_id', 'arm', 'generator')}
+        other_path = path.with_name(f"{entry['id']}.json")
+        entry.update(target=10, status_path=str(other_path))
+        index_path = self.root / 'control/recovery/index.json'
+        index = json.loads(index_path.read_text())
+        index['units'].append(entry)
+        self.dump(index_path, index)
+        for other_state, ids in (('running', ['903']), ('complete', [])):
+            with self.subTest(other_state=other_state):
+                other_status = dict(status, **{key: entry[key] for key in (
+                    'id', 'stage_id', 'arm', 'generator', 'target')})
+                other_status.update(state=other_state, accounting_warning=None, active_job_ids=ids)
+                self.dump(other_path, other_status)
+                _, result, cell = self.collect({
+                    ('902', -1): {'state': 'RUNNING', 'current': True},
+                    ('903', -1): {'state': 'RUNNING', 'current': True}})
+                other = result['stages'][0]['components'][1]
+                self.assertEqual(cell['state'], 'needs_attention')
+                self.assertEqual(other['state'], other_state)
+                self.assertEqual(result['stages'][0]['state'], 'needs_attention')
+                self.assertIn('history missing for arm1', ' '.join(result['stages'][0]['warnings']))
 
     def test_recovery_bounds_and_malformed_index_fail_closed(self):
         path, status = self.recovery(state='complete', active_job_ids=[])

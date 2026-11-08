@@ -196,6 +196,11 @@ nonnegative integer `retained_raw_candidates` and `completed_batches`,
 `active_job_ids` (at most 1,024 unique individual single-GPU allocation ID strings,
 not controller or array IDs), nullable text `error`, timezone-aware ISO8601
 `updated_at`, and nonempty text `count_basis`.
+Optional nullable fields `accounting_warning` and `controller_warning` carry
+reconciliation failures; `controller_job_id` is an individual CPU allocation ID
+string, excluded from worker/GPU totals. `reconciled_at` is a timezone-aware
+ISO8601 timestamp of the last successful arm reconciliation (null means never).
+Older publishers may omit these fields.
 
 The publisher's retained count includes original output plus terminal immutable
 recovery batches; it **replaces**, rather than adds to, original counts. Recovery
@@ -205,6 +210,18 @@ but recovery progress is capped at 100%. Old failures do not override recovery;
 new allocation IDs join the existing scheduler and GPU accounting queries.
 Live original GPU jobs remain visible while recovery waits for their arm; queued
 canaries are shown as queued rather than running.
+Counts are labeled **last-reconciled**, not freshly scanned output. Accounting or
+controller warnings, a missing/exited controller, or reconciliation older than
+15 minutes produce a degraded row even when the monitor itself is fresh. The TUI
+shows `DEGRADED / MONITOR FRESH`, with the actual error in details. Running and
+queued GPU totals require current scheduler evidence; published active IDs alone
+are not evidence of activity. Terminal IDs awaiting reconciliation remain visible,
+and a nonterminal active controller with no worker jobs is labeled idle rather
+than generating. Other units retain their independent running/completed states;
+an affected unit makes the tier need attention without hiding live GPU totals.
+Durably complete units do not become stalled merely because their controller
+exits or their reconciliation timestamp ages. Published warnings still prevent a
+healthy completion display.
 Recovery ETA is unavailable: old task timing is not a calibration for new batches.
 Non-complete statuses expire after 15 minutes without a heartbeat; timestamps over
 60 seconds in the future are rejected. Valid `complete` statuses are durable after

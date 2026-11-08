@@ -355,6 +355,8 @@ def produced(stage: dict) -> int | None:
 
 def units(stage: dict) -> str:
     basis = "reported" if stage.get("count_basis") == "reported" else "unique valid"
+    if stage.get("count_basis") == "reported" and "recovery_" in stage.get("phase", ""):
+        basis = "last-reconciled reported"
     return f"{count_text(produced(stage))}/{count_text(stage['planned'])} {stage['unit']} ({basis})"
 
 
@@ -418,6 +420,13 @@ def summary_stage(campaign: dict) -> dict | None:
         return next((stage for stage in candidates if stage["state"] in {"running", "queued", "needs_attention"}),
                     candidates[-1] if candidates else next(iter(campaign["stages"]), None))
     return next((stage for stage in candidates if stage["id"] == "optimization"), candidates[-1] if candidates else None)
+
+
+def recovery_degraded(campaign: dict) -> bool:
+    return any(
+        "recovery_" in row.get("phase", "") and row["state"] in {"needs_attention", "unknown"}
+        for stage in campaign["stages"] for row in (stage, *stage.get("components", []))
+    )
 
 
 class CampaignWatch(App):
@@ -585,6 +594,8 @@ class CampaignWatch(App):
             age, stale = self.age(self.snapshot["generated_at"])
             campaign_stale = any(self.age(item["observed_at"])[1] for item in self.snapshot["campaigns"])
             state = "STALE / LAST GOOD" if self.fetch_error or stale or campaign_stale or self.snapshot["errors"] else "FRESH"
+            if state == "FRESH" and any(recovery_degraded(item) for item in self.snapshot["campaigns"]):
+                state = "DEGRADED / MONITOR FRESH"
             lines.append(f"{state} | Snapshot age: {age}", style="bold yellow" if state != "FRESH" else "bold green")
             collector = self.snapshot["collector"]
             lines.append(f" | Collector: {plain(collector['host'])} / job {plain(collector['job_id'] or 'not allocated')}"
@@ -597,8 +608,9 @@ class CampaignWatch(App):
             table = self.query_one("#campaigns", DataTable)
             for item in self.snapshot["campaigns"]:
                 label, old = self.age(item["observed_at"])
-                label = "LAST GOOD " + label if item.get("_invalid") else label
-                table.update_cell(item["id"], "age", Text(label, style="yellow" if old or item.get("_invalid") else "green"), update_width=True)
+                degraded = recovery_degraded(item)
+                label = "LAST GOOD " + label if item.get("_invalid") else ("DEGRADED " + label if degraded else label)
+                table.update_cell(item["id"], "age", Text(label, style="yellow" if old or item.get("_invalid") or degraded else "green"), update_width=True)
                 table.update_cell(item["id"], "gpu_util", Text(self.gpu_summary(summary_stage(item), item)), update_width=True)
         else:
             lines.append("NO SNAPSHOT — waiting for readable, valid data", style="bold yellow")

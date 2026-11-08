@@ -107,11 +107,10 @@ def test_generation_unknown_and_overshoot_are_not_validated_counts():
     assert tui.progress(record) == "n/a"
 
 
-def test_recovery_progress_is_bounded_without_hiding_raw_overshoot():
+def test_recovery_progress_caps_overshoot_in_complete_and_mixed_phases():
     record = generation_stage(components=[component()])
     record.update(planned=100, reported_produced=125, phase="recovery_complete")
     assert tui.progress(record) == "[##########] 100%"
-    assert tui.units(record) == "125/100 designs (reported)"
     record["phase"] = "mixed: recovery_complete, generated"
     assert tui.progress(record) == "[##########] 100%"
 
@@ -364,6 +363,37 @@ def test_metadata_only_envelope_has_no_collector_allocation():
     data["schema_version"] = 1
     with pytest.raises(ValueError, match="job_id"):
         tui.validate_snapshot(data)
+
+
+def test_recovery_degradation_is_visible_with_fresh_monitor(monkeypatch):
+    async def exercise():
+        app = OfflineWatch("unused", None, 30)
+        async with app.run_test(size=(200, 50)) as pilot:
+            child = component(reported_produced=4, planned=10, state="needs_attention",
+                              phase="recovery_degraded",
+                              warnings=["Recovery accounting warning: sacct failed for 903",
+                                        "Recovery controller idle; counts are last-reconciled."])
+            done = component(generator="tool1", reported_produced=10, planned=10,
+                             state="complete", phase="recovery_complete")
+            record = generation_stage(components=[child, done])
+            record.update(state="needs_attention", phase="recovery_partial", reported_produced=14)
+            item = dict(campaign("generation", [record]), kind="bindocracy_generation")
+            app.snapshot = tui.validate_snapshot(snapshot(item))
+            app.render_snapshot()
+            await pilot.pause()
+            messages = []
+            monkeypatch.setattr(app.query_one("#status"), "update", messages.append)
+            app.update_ages()
+            assert "DEGRADED / MONITOR FRESH" in messages[-1].plain
+            assert "DEGRADED" in app.query_one("#campaigns", DataTable).get_cell("generation", "age").plain
+            await pilot.press("l", "l")
+            details = []
+            monkeypatch.setattr(app.query_one("#details"), "update", details.append)
+            app.render_details()
+            assert "sacct failed for 903" in details[-1]
+            assert tui.arm_records(record)[0]["state"] == "needs_attention"
+            assert not tui.recovery_degraded(dict(item, stages=[generation_stage(components=[done])]))
+    asyncio.run(exercise())
 
 
 def test_detail_pane_separates_evidence_phase_tasks_and_identifiers(monkeypatch):

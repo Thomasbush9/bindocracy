@@ -252,6 +252,80 @@ sampling queries at most eight spread-out running tasks per refresh; it never
 SSHes into GPU nodes. The client fetches at most 1 MiB every 30 seconds by default.
 Live state, logs, SSH credentials and debug captures are not part of the repository.
 
+## DIO3 confhard2 optimization preparation
+
+`scripts/prepare_dio3_optimization.py` is the campaign-specific transition from the
+stopped DIO3 generation archive to a reviewable optimization cohort. Run preparation,
+validation, collection and launch planning in a CPU allocation on
+`kempner_priority`; `kemp_cpu_id59` permits at most 4 CPUs and 16 GiB per node.
+Preparation does not submit GPU work.
+
+To decouple optimization from full artifact preservation, first run
+`scripts/prepare_dio3_sampling_db.py --smoke`, then the same script with `--workers 4`,
+using the generation checkout's Python environment. This builds the separate
+`archive/optimization_candidates.duckdb` CampaignStore from the complete stopped
+population. Publication requires reconciliation of all 126 strata against the
+final census (751,080 raw production candidates, including labelled canaries).
+Native sequences avoid unnecessary coordinate parsing; structure-only candidates
+still use the archival parser. Conflicting/invalid native sequence observations
+are not replaced from coordinates; unrecoverable sequences remain invalid.
+This catalog is not an artifact backup.
+
+```bash
+python scripts/prepare_dio3_optimization.py prepare \
+  --database /n/netscratch/kempner_bsabatini_lab/Lab/tbush/dio3-generators-20261105/archive/optimization_candidates.duckdb
+python scripts/prepare_dio3_optimization.py validate
+python scripts/prepare_dio3_optimization.py run --task-id 0 --describe
+python scripts/prepare_dio3_optimization.py launch
+```
+
+The output root is
+`/n/netscratch/kempner_bsabatini_lab/Lab/tbush/dio3-confhard2-20261109`.
+Preparation refuses to overwrite a frozen or partial cohort. It samples the
+archive's `generation_candidates` view: 80 parents per generator–arm stratum,
+7 generators × 18 arms = 10,080 parents and 20,160 children. Sampling is
+deterministic, family-first and score-blind. Known families take precedence;
+unknown lineage uses explicitly labelled sequence proxies, never invented native
+families. Parent sequences are distinct within each stratum. Cross-stratum
+duplicates are reported rather than silently removed.
+
+Only production, non-canary, canonical 75-aa sequences with matching target and
+hotspots are eligible. Cysteines are retained. There is no intrinsic-score, Chai1,
+distance or native acceptance filter. Any stratum shortage stops preparation and
+writes `reports/feasibility.json`; variants cannot silently replace missing families.
+
+Every arm uses the full 201-aa target and its generation-specific hotspots,
+validated against target residue identities and converted from 1-based generation
+indices to 0-based optimizer indices. Approved generation source revisions retain
+the original manifest anchor and their checked revision receipts. The frozen
+capsule includes the DB snapshot, parents, seeds, child IDs, hotspot mapping,
+recipes and checksummed prior runtime. Shared external model assets remain required.
+The recipe is confhard contact weight 2.0, three 90-soft/30-sharp cycles,
+hard sharpening, two replicates, sharpening noise 0.1 and `no_cys=false`.
+
+Qualification uses 18 full-schedule parents, one per arm, covering all seven
+generators. The default cap is eight GPUs; this approved launch uses `--gpu-cap 18`.
+These are production parents: successful children are reused, not extra trajectories.
+Production gates only its own arm.
+All earlier submitted arrays must be positively terminal before another launch;
+absence from `squeue` alone is insufficient. Production admits all eligible parents
+in balanced arrays, normally capped at 48 + 48 GPUs on
+`kempner_h100_priority`. Parent failures do not cancel unrelated parents.
+Retries retain failed attempts and reuse validated successes.
+
+`launch` prints a plan by default. Actual submission additionally requires
+`--submit --approval FILE`, with explicit user authorization recorded against the
+campaign root, provenance hash and permitted modes. Preparation creates no approval.
+Use `--root .../dio3-confhard2-20261109/qualification` to inspect the qualification
+plan. No scoring jobs or scoring dependencies are created.
+
+The campaign's `control/launch_approved.py` records the explicit chat authorization
+after freezing the cohort. It submits qualification, then an `afterany` CPU
+controller that admits passing arms to production and queues optimization-only
+collection. Neither full archival ingestion nor packed LF backup gates GPU launch.
+The existing legacy Mosaic watcher adapter does not yet support this campaign's
+18-arm, mapped-array launch protocol; do not register it as a legacy campaign.
+
 ## Machine-readable CLI and readiness
 
 Place `--json` **before** the command. Successful command execution writes one

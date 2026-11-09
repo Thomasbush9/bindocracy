@@ -601,6 +601,28 @@ class GenerationWatchTests(unittest.TestCase):
         self.assertEqual(result['stages'][0]['state'], 'complete')
         self.assertEqual(cell['phase'], 'recovery_complete')
 
+    def test_intentionally_stopped_generation_retains_partial_counts_without_heartbeat(self):
+        self.recovery(state='stopped', active_job_ids=[], retained_raw_candidates=7,
+                      stop_reason='User moved campaign to optimization', controller_job_id='300',
+                      updated_at='2020-01-01T00:00:00+00:00',
+                      reconciled_at='2020-01-01T00:00:00+00:00')
+        _, result, cell = self.collect({('300', -1): {'state': 'CANCELLED'}})
+        self.assertEqual((cell['state'], cell['phase'], cell['reported_produced']),
+                         ('stopped', 'recovery_stopped', 7))
+        self.assertEqual(result['stages'][0]['state'], 'stopped')
+        self.assertEqual(result['stages'][0]['reported_produced'], 7)
+        self.assertEqual((cell['running_jobs'], cell['active_gpus'], cell['failed_jobs']), (0, 0, 0))
+
+    def test_stopped_generation_cannot_hide_active_or_unreconciled_workers(self):
+        for changes in ({'active_job_ids': ['902']}, {'error': 'census failed'}, {'stop_reason': ''}):
+            with self.subTest(changes=changes):
+                state = dict(state='stopped', active_job_ids=[], retained_raw_candidates=7,
+                             stop_reason='User stopped generation')
+                state.update(changes)
+                self.recovery(**state)
+                _, _, cell = self.collect()
+                self.assertEqual(cell['state'], 'unknown')
+
     def test_recovery_stale_or_contradictory_status_never_completes(self):
         for changes in (
             {'updated_at': '2020-01-01T00:00:00+00:00'},

@@ -191,7 +191,7 @@ IDs must match an original independent unit (`stage_id--arm--generator`), target
 must equal its original nominal target, and status paths must be exactly
 `<root>/control/recovery/components/<id>.json`, without escaping-root symlinks.
 Each status (at most 64 KiB) repeats schema version and identity/target and supplies
-`state` (`planned`, `qualifying`, `running`, `complete`, `blocked`, or `failed`),
+`state` (`planned`, `qualifying`, `running`, `complete`, `stopped`, `blocked`, or `failed`),
 nonnegative integer `retained_raw_candidates` and `completed_batches`,
 `active_job_ids` (at most 1,024 unique individual single-GPU allocation ID strings,
 not controller or array IDs), nullable text `error`, timezone-aware ISO8601
@@ -223,13 +223,16 @@ Durably complete units do not become stalled merely because their controller
 exits or their reconciliation timestamp ages. Published warnings still prevent a
 healthy completion display.
 Recovery ETA is unavailable: old task timing is not a calibration for new batches.
-Non-complete statuses expire after 15 minutes without a heartbeat; timestamps over
+Active statuses expire after 15 minutes without a heartbeat; timestamps over
 60 seconds in the future are rejected. Valid `complete` statuses are durable after
 the supervisor exits, but require count >= target, no active allocations, and no
 error. The publisher must use terminal original runs and immutable finished
-batches for that completion claim. Missing, malformed, stale or contradictory
-status never implies completion. No recovery directory scans, native candidate
-counts, job commands or local-TUI protocol changes are performed.
+batches for that completion claim. An intentional `stopped` status also remains
+durable, with reconciled counts, no active allocations/error, and a nonempty
+`stop_reason`. It retains partial output without claiming the quota was met.
+Update the local TUI before loading snapshots containing this new state.
+Missing, malformed, stale or contradictory status never implies completion.
+No recovery directory scans, native candidate counts or job commands are performed.
 
 ### Scope and safety
 

@@ -352,7 +352,7 @@ class GenerationCampaign:
                     if status.get(field) != unit[field]:
                         raise ValueError(f'recovery status {field} mismatch')
                 nonnegative(status['target'], 'recovery status target')
-                if status['state'] not in ('planned', 'qualifying', 'running', 'complete', 'blocked', 'failed'):
+                if status['state'] not in ('planned', 'qualifying', 'running', 'complete', 'blocked', 'failed', 'stopped'):
                     raise ValueError('invalid recovery state')
                 nonnegative(status['retained_raw_candidates'], 'retained raw candidates')
                 nonnegative(status['completed_batches'], 'completed recovery batches')
@@ -391,10 +391,14 @@ class GenerationCampaign:
                 if status['state'] == 'complete' and (
                         status['retained_raw_candidates'] < status['target'] or ids or status['error']):
                     raise ValueError('recovery completion contradicts count, active jobs, or error')
+                if status['state'] == 'stopped' and (
+                        ids or status['error'] or not isinstance(status.get('stop_reason'), str)
+                        or not status['stop_reason'].strip()):
+                    raise ValueError('stopped recovery requires a reason, no active jobs, and reconciled counts')
                 # Terminal output counts remain valid after the supervisor exits.
                 # Nonterminal summaries need a heartbeat, even without active GPUs.
                 status = dict(status)
-                if status['state'] != 'complete' and age > RECOVERY_MAX_AGE:
+                if status['state'] not in {'complete', 'stopped'} and age > RECOVERY_MAX_AGE:
                     previous = status.get('error')
                     status.update(state='unknown', error='Recovery status stale (older than 15 minutes).'
                                   + (f' {previous}' if previous else ''))
@@ -415,7 +419,7 @@ class GenerationCampaign:
         cell.update(reported_produced=status.get('retained_raw_candidates'),
                     phase=f'recovery_{state}', job_ids=ids,
                     state={'planned': 'not_submitted', 'qualifying': 'running', 'running': 'running',
-                           'complete': 'complete', 'blocked': 'needs_attention',
+                           'complete': 'complete', 'stopped': 'stopped', 'blocked': 'needs_attention',
                            'failed': 'needs_attention'}.get(state, 'unknown'),
                     eta_seconds=None, throughput_per_hour=None)
         # Old task errors/counts belong to history, not the current recovery attempt.
@@ -424,7 +428,7 @@ class GenerationCampaign:
             ('accounting_warning', 'Recovery accounting warning'),
             ('controller_warning', 'Recovery controller warning')) if status.get(field)]
         controller_id = status.get('controller_job_id')
-        if scheduler_error and state != 'complete' and any(
+        if scheduler_error and state not in {'complete', 'stopped'} and any(
                 records.get((job_id, -1), {}).get('current') for job_id in [*ids, controller_id]):
             health.append(f'Recovery scheduler partially unavailable: {scheduler_error}')
         if controller_id is not None:
@@ -434,10 +438,10 @@ class GenerationCampaign:
             cell['warnings'].append(
                 f"Recovery CPU controller {controller_id}: {controller.get('state', 'UNKNOWN')}; "
                 'excluded from worker/GPU totals.')
-            if state != 'complete' and not current:
+            if state not in {'complete', 'stopped'} and not current:
                 health.append('Recovery controller is not confirmed active by the scheduler; '
                               'completion is not inferred from queue absence.')
-        if state != 'complete' and status.get('reconciled_at'):
+        if state not in {'complete', 'stopped'} and status.get('reconciled_at'):
             reconciled = datetime.fromisoformat(status['reconciled_at'].replace('Z', '+00:00'))
             if (datetime.now(timezone.utc) - reconciled).total_seconds() > RECOVERY_MAX_AGE:
                 health.append('Recovery reconciliation stale (older than 15 minutes), even if the monitor heartbeat is fresh.')
@@ -486,6 +490,8 @@ class GenerationCampaign:
             f"completed batches {status.get('completed_batches', '?')}; "
             f"published active GPU job IDs (not proof of current activity): {', '.join(ids) or 'none'}. "
             f"Count basis: {status.get('count_basis', 'unavailable')}; includes original and recovery outputs, not added twice.")
+        if state == 'stopped':
+            cell['warnings'].append(f"Generation intentionally stopped: {status['stop_reason']}. Existing outputs retained; quota not claimed complete.")
         if status.get('error'):
             cell['warnings'].append(f"Recovery error: {status['error'][:1000]}")
         if scheduler_error and ids:
@@ -904,10 +910,10 @@ class GenerationCampaign:
             for cell in children:
                 for state, count in cell['failed_by_state'].items():
                     item['failed_by_state'][state] = item['failed_by_state'].get(state, 0) + count
-            priority = ('running', 'queued', 'needs_attention', 'unknown')
+            priority = ('running', 'queued', 'needs_attention', 'unknown', 'stopped')
             if any(cell['phase'].startswith('recovery_') and cell['state'] == 'needs_attention'
                    for cell in children):
-                priority = ('needs_attention', 'running', 'queued', 'unknown')
+                priority = ('needs_attention', 'running', 'queued', 'unknown', 'stopped')
             for state in priority:
                 if any(cell['state'] == state for cell in children):
                     item['state'] = state
@@ -916,7 +922,7 @@ class GenerationCampaign:
                 if all(cell['state'] == 'complete' for cell in children):
                     item['state'] = 'complete'
             item['phase'] = {'running': 'generating', 'queued': 'queued', 'needs_attention': 'partial',
-                             'unknown': 'unknown', 'complete': 'generated'}.get(item['state'],
+                             'unknown': 'unknown', 'complete': 'generated', 'stopped': 'stopped'}.get(item['state'],
                              'preparing' if any(cell['phase'] == 'preparing' for cell in children) else 'planned')
             if all(cell['phase'] in ('generated', 'ingested') for cell in children):
                 item['phase'] = 'ingested' if all(cell['phase'] == 'ingested' for cell in children) else 'generated'

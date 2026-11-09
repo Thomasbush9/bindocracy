@@ -32,7 +32,7 @@ LOGGER = logging.getLogger(__name__)
 MAX_BYTES = 1024 * 1024
 MAX_STDERR = 64 * 1024
 FETCH_TIMEOUT = 15
-STATES = {"complete", "running", "queued", "not_submitted", "needs_attention", "unknown"}
+STATES = {"complete", "running", "queued", "not_submitted", "needs_attention", "unknown", "stopped"}
 COUNTS = ("valid", "running_jobs", "pending_jobs", "failed_jobs", "scheduler_warning_jobs", "active_gpus")
 
 
@@ -399,7 +399,7 @@ def arm_records(stage: dict) -> list[dict]:
         if all("counts_reported_tasks" in child for child in components):
             record["counts_reported_tasks"] = sum(child["counts_reported_tasks"] for child in components)
         states = {child["state"] for child in components}
-        record["state"] = next((state for state in ("needs_attention", "running", "queued", "unknown") if state in states),
+        record["state"] = next((state for state in ("needs_attention", "running", "queued", "unknown", "stopped") if state in states),
                                "complete" if states == {"complete"} else "not_submitted" if states == {"not_submitted"} else "unknown")
         phases = list(dict.fromkeys(child["phase"] for child in components))
         record["phase"] = phases[0] if len(phases) == 1 else "mixed: " + ", ".join(phases)
